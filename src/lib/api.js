@@ -1,0 +1,487 @@
+// ============================================================================
+//  Data access layer — every read/write the app used to do against in-memory
+//  React state now goes through here to Supabase.
+//
+//  DESIGN GOAL: not one UI component changes.
+//  App.jsx keeps exposing the exact same props (`setServices`, `setTimeOff`,
+//  `addBooking`, ...) with the exact same signatures — including the updater
+//  form `setX(prev => next)`. This module diffs the previous array against the
+//  next one and issues the matching insert / update / delete. Children never
+//  learn there's a database.
+//
+//  If Supabase env vars are absent every function resolves to a no-op, so the
+//  app degrades to the original demo behaviour instead of crashing.
+// ============================================================================
+import { supabase, SUPABASE_ENABLED } from "./supabase";
+
+/* ---------------------------------------------------------------- date glue */
+// The app's dateKey() produces an UNPADDED key: "2026-8-31".
+// Postgres DATE wants "2026-08-31". Convert both ways, never mutate the app's format.
+export function keyToISO(key) {
+  if (!key) return null;
+  const [y, m, d] = String(key).split("-").map(Number);
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+export function isoToKey(iso) {
+  if (!iso) return null;
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return `${y}-${m}-${d}`;
+}
+
+const ms = (v) => (v ? new Date(v).getTime() : Date.now());
+
+/* ------------------------------------------------------------------ mappers */
+// DB row -> app object, and back. Column names were deliberately chosen to
+// match the app's field names, so these are thin on purpose.
+
+const map = {
+  services: {
+    fromRow: (r) => ({
+      id: r.id, name: r.name, gender: r.gender, category: r.category,
+      duration_minutes: r.duration_minutes, buffer_minutes: r.buffer_minutes ?? 0,
+      price: r.price === null ? null : Number(r.price),
+      discount_type: r.discount_type, discount_value: Number(r.discount_value || 0),
+      discount_reason: r.discount_reason || "", is_active: r.is_active,
+      loyalty_points: r.loyalty_points ?? 10,
+    }),
+    toRow: (s) => ({
+      id: s.id, name: s.name ?? "", gender: s.gender ?? "female", category: s.category ?? "hair",
+      duration_minutes: s.duration_minutes ?? 30, buffer_minutes: s.buffer_minutes ?? 0,
+      price: s.price ?? null, discount_type: s.discount_type ?? "none",
+      discount_value: s.discount_value ?? 0, discount_reason: s.discount_reason ?? "",
+      is_active: s.is_active ?? true, loyalty_points: s.loyalty_points ?? 10,
+    }),
+  },
+
+  stylists: {
+    // SECURITY: `password` is intentionally never read from or written to
+    // this table — real auth goes through Supabase Auth (bcrypt, in
+    // auth.users), and a redundant plaintext copy here was a real
+    // vulnerability (see CHANGES.md / migration v2.2). Demo mode still uses
+    // an in-memory `password` field on the JS object for its own login
+    // simulation, but that never reaches this mapper since demo mode never
+    // touches Supabase at all.
+    fromRow: (r) => ({
+      id: r.id, name: r.name, gender: r.gender, phone: r.phone || "",
+      active: r.active,
+      reminder_hours_before: r.reminder_hours_before ?? 3,
+    }),
+    toRow: (s) => ({
+      id: s.id, name: s.name ?? "", gender: s.gender ?? "female", phone: s.phone ?? "",
+      active: s.active ?? true,
+      reminder_hours_before: s.reminder_hours_before ?? 3,
+    }),
+  },
+
+  appointments: {
+    fromRow: (r) => ({
+      id: r.id, customer_name: r.customer_name, customer_phone: r.customer_phone,
+      customer_gender: r.customer_gender, service_id: r.service_id,
+      staff_id: r.staff_id, staff_name: r.staff_name || "",
+      date: isoToKey(r.date), start_min: r.start_min, end_min: r.end_min,
+      buffer_minutes: r.buffer_minutes ?? 0, status: r.status,
+      tracking_code: r.tracking_code,
+      original_price: Number(r.original_price || 0),
+      discount_type: r.discount_type, discount_value: Number(r.discount_value || 0),
+      discount_reason: r.discount_reason || "",
+      final_price: r.final_price === null ? null : Number(r.final_price),
+      sms_sent_confirmation: r.sms_sent_confirmation,
+      sms_sent_reminder: r.sms_sent_reminder,
+      campaign_id: r.campaign_id ?? null,
+      points_awarded: r.points_awarded ?? 0,
+      created_at: ms(r.created_at),
+    }),
+    toRow: (b) => {
+      const row = { ...b };
+      if ("date" in row) row.date = keyToISO(row.date);
+      if ("created_at" in row) delete row.created_at; // let Postgres own it
+      delete row.points_awarded;                      // trigger-owned
+      return row;
+    },
+  },
+
+  time_offs: {
+    fromRow: (r) => ({ id: r.id, date: isoToKey(r.date), reason: r.reason || "", staff_id: r.staff_id }),
+    toRow: (t) => ({ id: t.id, date: keyToISO(t.date), reason: t.reason ?? "", staff_id: t.staff_id ?? null }),
+  },
+
+  expenses: {
+    fromRow: (r) => ({
+      id: r.id, title: r.title, category: r.category, amount: Number(r.amount || 0),
+      date: isoToKey(r.date), note: r.note || "", created_at: ms(r.created_at),
+    }),
+    toRow: (e) => ({
+      id: e.id, title: e.title ?? "", category: e.category ?? "other",
+      amount: e.amount ?? 0, date: keyToISO(e.date), note: e.note ?? "",
+    }),
+  },
+
+  waitlist: {
+    fromRow: (r) => ({
+      id: r.id, customer_name: r.customer_name, customer_phone: r.customer_phone,
+      customer_gender: r.customer_gender, service_id: r.service_id,
+      staff_id: r.staff_id, staff_name: r.staff_name || "",
+      date: isoToKey(r.date), created_at: ms(r.created_at),
+    }),
+    toRow: (w) => ({
+      id: w.id, customer_name: w.customer_name ?? "", customer_phone: w.customer_phone ?? "",
+      customer_gender: w.customer_gender ?? "female", service_id: w.service_id ?? null,
+      staff_id: w.staff_id ?? null, staff_name: w.staff_name ?? "", date: keyToISO(w.date),
+    }),
+  },
+};
+
+/* ------------------------------------------------------------------ helpers */
+function fail(where, error) {
+  if (error) console.error(`[salon/api] ${where}:`, error.message || error);
+  return error || null;
+}
+
+const byId = (arr) => new Map((arr || []).map((x) => [x.id, x]));
+const shallowEqual = (a, b) => {
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  return ka.every((k) => a[k] === b[k]);
+};
+
+/* ------------------------------------------------------------------- cache */
+// In-memory, TTL-based. Deliberately opt-in and deliberately NOT applied to
+// appointments/bookings/availability anywhere in this file — that data
+// already has a realtime subscription (subscribeAppointments below) that
+// pushes changes instantly, and a stale read of "what's free right now" is
+// exactly how a booking system double-books someone. This cache is only
+// wired into reads where a few seconds of staleness costs nothing: customer
+// lists, campaign history, RFM segments, SMS templates/log, loyalty settings
+// — the kind of data a manager glances at and can hit "refresh" on.
+const CACHE_TTL_MS = 30_000;
+const cacheStore = new Map(); // key -> { value, expiresAt }
+
+function getCached(key) {
+  const hit = cacheStore.get(key);
+  if (!hit) return undefined;
+  if (Date.now() > hit.expiresAt) { cacheStore.delete(key); return undefined; }
+  return hit.value;
+}
+function setCache(key, value, ttl = CACHE_TTL_MS) {
+  cacheStore.set(key, { value, expiresAt: Date.now() + ttl });
+  return value;
+}
+/** Drop every cached key whose name includes `pattern` (a plain substring, not regex). */
+export function invalidateCache(pattern) {
+  for (const key of cacheStore.keys()) {
+    if (!pattern || key.includes(pattern)) cacheStore.delete(key);
+  }
+}
+export function clearAllCache() {
+  cacheStore.clear();
+}
+export function getCacheStats() {
+  const now = Date.now();
+  let live = 0, expired = 0;
+  for (const { expiresAt } of cacheStore.values()) (expiresAt > now ? live++ : expired++);
+  return { size: cacheStore.size, live, expired };
+}
+
+/**
+ * Diff two arrays of {id,...} and push inserts / updates / deletes.
+ * This is what lets `setServices(prev => ...)` keep working verbatim.
+ */
+export async function syncCollection(table, prev, next) {
+  if (!SUPABASE_ENABLED) return;
+
+  const m = map[table];
+  const before = byId(prev), after = byId(next);
+
+  const inserts = [], updates = [], deletes = [];
+  for (const [id, item] of after) {
+    const old = before.get(id);
+    if (!old) inserts.push(m.toRow(item));
+    else if (!shallowEqual(m.toRow(old), m.toRow(item))) updates.push(m.toRow(item));
+  }
+  for (const id of before.keys()) if (!after.has(id)) deletes.push(id);
+
+  const jobs = [];
+  if (inserts.length) jobs.push(supabase.from(table).upsert(inserts).then(({ error }) => fail(`${table}.insert`, error)));
+  for (const row of updates) {
+    jobs.push(supabase.from(table).update(row).eq("id", row.id).then(({ error }) => fail(`${table}.update`, error)));
+  }
+  if (deletes.length) jobs.push(supabase.from(table).delete().in("id", deletes).then(({ error }) => fail(`${table}.delete`, error)));
+  await Promise.all(jobs);
+  invalidateCache(table);
+}
+
+/* -------------------------------------------------------------- single ops */
+export async function insertOne(table, item) {
+  if (!SUPABASE_ENABLED) return;
+  const { error } = await supabase.from(table).upsert(map[table].toRow(item));
+  invalidateCache(table);
+  return fail(`${table}.insertOne`, error);
+}
+
+export async function updateOne(table, id, patch) {
+  if (!SUPABASE_ENABLED) return;
+  const row = map[table].toRow({ id, ...patch });
+  // only send the keys the caller actually patched (plus the converted date)
+  const allowed = new Set([...Object.keys(patch), "date"]);
+  const slim = Object.fromEntries(Object.entries(row).filter(([k]) => allowed.has(k)));
+  const { error } = await supabase.from(table).update(slim).eq("id", id);
+  invalidateCache(table);
+  return fail(`${table}.updateOne`, error);
+}
+
+export async function deleteOne(table, id) {
+  if (!SUPABASE_ENABLED) return;
+  const { error } = await supabase.from(table).delete().eq("id", id);
+  invalidateCache(table);
+  return fail(`${table}.deleteOne`, error);
+}
+
+/* ------------------------------------------------- working hours (special) */
+// The app models these as a plain 7-element array with no ids, plus a
+// { [stylistId]: array } map of overrides. Persist as a full replace per owner.
+const WH_KEYS = ["day_of_week", "start_time", "end_time", "is_closed"];
+const whFromRow = (r) => ({
+  day_of_week: r.day_of_week, start_time: r.start_time,
+  end_time: r.end_time, is_closed: r.is_closed,
+});
+
+export async function saveWorkingHours(staffId, hours) {
+  if (!SUPABASE_ENABLED) return;
+  const rows = (hours || []).map((h) => ({
+    id: `wh-${staffId || "salon"}-${h.day_of_week}`,
+    staff_id: staffId || null,
+    day_of_week: h.day_of_week,
+    start_time: h.start_time ?? "09:00",
+    end_time: h.end_time ?? "21:00",
+    is_closed: !!h.is_closed,
+  }));
+  const { error } = await supabase.from("working_hours").upsert(rows, { onConflict: "id" });
+  return fail("working_hours.save", error);
+}
+
+export async function clearStaffWorkingHours(staffId) {
+  if (!SUPABASE_ENABLED) return;
+  const { error } = await supabase.from("working_hours").delete().eq("staff_id", staffId);
+  return fail("working_hours.clear", error);
+}
+
+/* ------------------------------------------------ approved dates (special) */
+export async function syncApprovedDates(prev, next) {
+  if (!SUPABASE_ENABLED) return;
+  const before = new Set(prev || []), after = new Set(next || []);
+  const added = [...after].filter((k) => !before.has(k)).map((k) => ({ date: keyToISO(k) }));
+  const removed = [...before].filter((k) => !after.has(k)).map(keyToISO);
+
+  const jobs = [];
+  if (added.length) jobs.push(supabase.from("approved_dates").upsert(added, { onConflict: "date" }).then(({ error }) => fail("approved_dates.add", error)));
+  if (removed.length) jobs.push(supabase.from("approved_dates").delete().in("date", removed).then(({ error }) => fail("approved_dates.remove", error)));
+  await Promise.all(jobs);
+}
+
+/* ---------------------------------------------------------------- bootstrap */
+/**
+ * One parallel fetch of everything the app needs at startup.
+ * Returns null when Supabase isn't configured, so App.jsx keeps its seed data.
+ */
+export async function bootstrap() {
+  if (!SUPABASE_ENABLED) return null;
+
+  const [svc, sty, appt, off, wh, appr, exp, wait] = await Promise.all([
+    supabase.from("services").select("*").order("id"),
+    supabase.from("stylists").select("*").order("id"),
+    supabase.from("appointments").select("*").order("date"),
+    supabase.from("time_offs").select("*"),
+    supabase.from("working_hours").select("*").order("day_of_week"),
+    supabase.from("approved_dates").select("date"),
+    supabase.from("expenses").select("*").order("date", { ascending: false }),
+    supabase.from("waitlist").select("*"),
+  ]);
+
+  const firstError = [svc, sty, appt, off, wh, appr, exp, wait].find((r) => r.error)?.error;
+  if (firstError) {
+    fail("bootstrap", firstError);
+    return null;
+  }
+
+  const allHours = wh.data || [];
+  const salonHours = allHours.filter((r) => r.staff_id === null).map(whFromRow)
+    .sort((a, b) => a.day_of_week - b.day_of_week);
+
+  const staffHours = {};
+  for (const r of allHours.filter((x) => x.staff_id !== null)) {
+    (staffHours[r.staff_id] ||= []).push(whFromRow(r));
+  }
+  for (const k of Object.keys(staffHours)) {
+    staffHours[k].sort((a, b) => a.day_of_week - b.day_of_week);
+  }
+
+  return {
+    services: (svc.data || []).map(map.services.fromRow),
+    stylists: (sty.data || []).map(map.stylists.fromRow),
+    bookings: (appt.data || []).map(map.appointments.fromRow),
+    timeOff: (off.data || []).map(map.time_offs.fromRow),
+    workingHours: salonHours.length === 7 ? salonHours : null,
+    staffWorkingHours: staffHours,
+    approvedDates: (appr.data || []).map((r) => isoToKey(r.date)),
+    expenses: (exp.data || []).map(map.expenses.fromRow),
+    waitlist: (wait.data || []).map(map.waitlist.fromRow),
+  };
+}
+
+/* ----------------------------------------------------------------- realtime */
+/** Live-update the calendar when another device books. Returns an unsubscribe fn. */
+export function subscribeAppointments(onChange) {
+  if (!SUPABASE_ENABLED) return () => {};
+  const channel = supabase
+    .channel("appointments-live")
+    .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, (payload) => {
+      onChange({
+        type: payload.eventType || payload.type,
+        row: payload.new && Object.keys(payload.new).length
+          ? map.appointments.fromRow(payload.new)
+          : null,
+        oldId: payload.old?.id ?? null,
+      });
+    })
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+/* ----------------------------------- phase 3 & 4 reads (campaigns, loyalty) */
+export async function fetchInactiveCustomers(days) {
+  if (!SUPABASE_ENABLED) return [];
+  const key = `inactive_customers:${days}`;
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase.rpc("inactive_customers", { p_days: days });
+  if (error) { fail("inactive_customers", error); return []; }
+  return setCache(key, data || []);
+}
+
+export async function fetchRfmSegments() {
+  if (!SUPABASE_ENABLED) return [];
+  const key = "rfm_segments";
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase.rpc("get_customer_rfm_segments");
+  if (error) { fail("get_customer_rfm_segments", error); return []; }
+  return setCache(key, data || []);
+}
+
+export async function fetchCustomers() {
+  if (!SUPABASE_ENABLED) return [];
+  const key = "customers";
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase
+    .from("customers")
+    .select("*")
+    .order("last_booking_at", { ascending: false });
+  if (error) { fail("customers", error); return []; }
+  return setCache(key, data || []);
+}
+
+// Links a new customer to whoever referred them, and awards points to both
+// sides — mirrors public.apply_referral() in schema.sql exactly. Call this
+// only AFTER the referred customer's first appointment has been inserted
+// (their row is created by the sync_customer_from_appointment trigger, so
+// calling this any earlier would fail the "referrer.phone = p_new_phone"
+// / customer-not-found checks on the database side).
+export async function applyReferral(newPhone, code) {
+  if (!SUPABASE_ENABLED || !code) return { ok: false, error: "دمو یا کد خالی" };
+  const { data, error } = await supabase.rpc("apply_referral", { p_new_phone: newPhone, p_code: code });
+  if (error) { fail("apply_referral", error); return { ok: false, error: error.message }; }
+  invalidateCache("customers"); // points/visit counts on both sides just changed
+  return data || { ok: false };
+}
+
+export async function fetchCampaigns() {
+  if (!SUPABASE_ENABLED) return [];
+  const key = "campaigns";
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase
+    .from("campaigns")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) { fail("campaigns", error); return []; }
+  return setCache(key, data || []);
+}
+
+export async function fetchCustomerLoyalty(phone) {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase.rpc("customer_loyalty", { p_phone: phone });
+  if (error) { fail("customer_loyalty", error); return null; }
+  return data;
+}
+
+export async function fetchSmsTemplates() {
+  if (!SUPABASE_ENABLED) return [];
+  const key = "sms_templates";
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase.from("sms_templates").select("*").order("kind");
+  if (error) { fail("sms_templates", error); return []; }
+  return setCache(key, data || []);
+}
+
+export async function fetchSmsLog(limit = 100) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase
+    .from("sms_messages")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) { fail("sms_messages", error); return []; }
+  return data || [];
+}
+
+/* ------------------------------------------------------- phase 3: campaigns */
+export async function createCampaign(campaign) {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase
+    .from("campaigns")
+    .insert({
+      id: campaign.id,
+      name: campaign.name,
+      inactive_days: campaign.inactive_days,
+      discount_percent: campaign.discount_percent,
+      template_id: campaign.template_id ?? null,
+      valid_until: campaign.valid_until ?? null,
+      targeted_count: campaign.targeted_count ?? 0,
+      status: "draft",
+    })
+    .select()
+    .maybeSingle();
+  if (error) { fail("campaigns.create", error); return null; }
+  invalidateCache("campaigns");
+  return data;
+}
+
+export async function addCampaignTargets(campaignId, phones) {
+  if (!SUPABASE_ENABLED || !phones.length) return;
+  const rows = phones.map((phone) => ({ campaign_id: campaignId, customer_phone: phone }));
+  const { error } = await supabase
+    .from("campaign_targets")
+    .upsert(rows, { onConflict: "campaign_id,customer_phone" });
+  invalidateCache("campaigns");
+  return fail("campaign_targets.add", error);
+}
+
+/* --------------------------------------------------------- phase 4: loyalty */
+export async function fetchLoyaltySettings() {
+  if (!SUPABASE_ENABLED) return null;
+  const key = "loyalty_settings";
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase.from("loyalty_settings").select("*").eq("id", 1).maybeSingle();
+  if (error) { fail("loyalty_settings.fetch", error); return null; }
+  return setCache(key, data);
+}
+
+export async function updateLoyaltySettings(patch) {
+  if (!SUPABASE_ENABLED) return;
+  const { error } = await supabase.from("loyalty_settings").update(patch).eq("id", 1);
+  invalidateCache("loyalty_settings");
+  return fail("loyalty_settings.update", error);
+}

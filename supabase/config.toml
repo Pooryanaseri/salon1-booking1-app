@@ -1,0 +1,10 @@
+# Minimal Supabase CLI config. `supabase link --project-ref <ref>` fills in the rest.
+project_id = "salon-booking"
+
+[functions.send-sms]
+verify_jwt = false      # anonymous customers need the confirmation SMS for their
+                        # own booking; the function authorizes internally by role
+                        # and rate-limits unauthenticated callers.
+
+[functions.cron-reminders]
+verify_jwt = false      # called by pg_cron with the service_role bearer token
