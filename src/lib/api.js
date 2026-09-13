@@ -415,6 +415,18 @@ export async function fetchCustomerLoyalty(phone) {
   return data;
 }
 
+// Staff-triggered: customer has reached the discount cap and is redeeming it
+// in person. Resets their points to zero server-side (see redeem_loyalty_reward
+// in schema.sql) — mirrors public.redeem_loyalty_reward's own permission and
+// cap checks, so this always reflects exactly what the database allows.
+export async function redeemLoyaltyReward(phone) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("redeem_loyalty_reward", { p_phone: phone });
+  if (error) { fail("redeem_loyalty_reward", error); return { ok: false, error: error.message }; }
+  invalidateCache("customers");
+  return data || { ok: false };
+}
+
 export async function fetchSmsTemplates() {
   if (!SUPABASE_ENABLED) return [];
   const key = "sms_templates";

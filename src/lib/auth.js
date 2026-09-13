@@ -7,26 +7,75 @@ import { supabase, SUPABASE_ENABLED, phoneToEmail } from "./supabase";
 
 const OWNER_BOOTSTRAP_PHONE = import.meta.env.VITE_OWNER_PHONE || "09120000000";
 
-/** @returns {{ok:boolean, error?:string, role?:string, stylistId?:string|null, user?:object}} */
-export async function signIn(phone, password) {
+/**
+ * @param {string} phone
+ * @param {string} password
+ * @param {"owner"|"stylist"|null} roleHint — which login form this came
+ *   from. Used only for self-healing (see below); never changes what
+ *   credentials are checked.
+ * @returns {{ok:boolean, error?:string, role?:string, stylistId?:string|null, user?:object}}
+ */
+export async function signIn(phone, password, roleHint = null) {
   if (!SUPABASE_ENABLED) return { ok: false, error: "OFFLINE" };
 
   const { data, error } = await supabase.auth.signInWithPassword({
     email: phoneToEmail(phone),
     password,
   });
-  if (error) return { ok: false, error: "شماره موبایل یا رمز عبور اشتباه است" };
+  if (error) return { ok: false, error: translateSignInError(error.message) };
 
-  const profile = await loadProfile(data.user.id);
+  let profile = await loadProfile(data.user.id);
   if (!profile) {
-    await supabase.auth.signOut();
-    return { ok: false, error: "حساب شما پیدا نشد — با مدیر سالن تماس بگیرید" };
+    // Self-heal: the Auth user exists (we just signed in successfully) but
+    // their public.users profile row is missing. The most common cause —
+    // this app's phone-based accounts use a synthetic @salon.local email
+    // that can never actually receive a confirmation link, so if the
+    // Supabase project has "Confirm email" turned on, registerOwner /
+    // registerStylist's profile INSERT silently failed at signup time: RLS
+    // requires `id = auth.uid()`, but there was no session yet to satisfy
+    // that until email confirmation happened. Now that a session genuinely
+    // exists, retry the same profile creation those functions would have
+    // done, so a person stuck in this state can just log in again instead
+    // of needing manual SQL.
+    profile = await repairMissingProfile(data.user.id, phone, roleHint);
+    if (!profile) {
+      await supabase.auth.signOut();
+      return { ok: false, error: "حساب شما پیدا نشد — با مدیر سالن تماس بگیرید" };
+    }
   }
   if (!profile.active) {
     await supabase.auth.signOut();
     return { ok: false, error: "حساب شما غیرفعال شده — با مدیر سالن تماس بگیرید" };
   }
   return { ok: true, role: profile.role, stylistId: profile.stylist_id, user: profile };
+}
+
+async function repairMissingProfile(userId, phone, roleHint) {
+  if (roleHint === "owner") {
+    const role = phone === OWNER_BOOTSTRAP_PHONE ? "owner" : "manager";
+    const { error } = await supabase.from("users").insert({ id: userId, phone, role, full_name: "مدیر سالن", active: true });
+    if (error) return null;
+    return loadProfile(userId);
+  }
+  if (roleHint === "stylist") {
+    const { data: stylist } = await supabase.from("stylists").select("id, name").eq("phone", phone).maybeSingle();
+    if (!stylist) return null;
+    const { error } = await supabase.from("users").insert({
+      id: userId, phone, full_name: stylist.name, role: "stylist", stylist_id: stylist.id, active: true,
+    });
+    if (error) return null;
+    return loadProfile(userId);
+  }
+  return null;
+}
+
+function translateSignInError(msg = "") {
+  const m = msg.toLowerCase();
+  if (m.includes("email not confirmed")) {
+    return "حساب هنوز تایید نشده — در تنظیمات Supabase (Authentication → Providers → Email) گزینهٔ «Confirm email» را خاموش کنید، چون این حساب‌ها ایمیل واقعی ندارند";
+  }
+  if (m.includes("invalid login credentials")) return "شماره موبایل یا رمز عبور اشتباه است";
+  return "شماره موبایل یا رمز عبور اشتباه است";
 }
 
 export async function loadProfile(userId) {
@@ -104,6 +153,19 @@ export async function registerOwner(phone, password) {
   const userId = data.user?.id;
   if (!userId) return { ok: false, error: "ثبت‌نام ناموفق بود — دوباره تلاش کنید" };
 
+  if (!data.session) {
+    // signUp succeeded at the Auth level but there's no active session yet —
+    // Supabase's "Confirm email" setting is on. These accounts use a
+    // synthetic @salon.local address that can never receive a real
+    // confirmation link, so profile creation (which needs `auth.uid()` to
+    // satisfy RLS) can't proceed. This isn't a dead end though — signIn()
+    // below will self-heal the missing profile the moment login succeeds.
+    return {
+      ok: false,
+      error: "تنظیمات Supabase نیاز به تایید ایمیل دارد — در Authentication → Providers → Email گزینهٔ «Confirm email» را خاموش کنید، سپس دوباره وارد شوید (نیازی به ثبت‌نام مجدد نیست)",
+    };
+  }
+
   const { error: profileError } = await supabase.from("users").insert({
     id: userId,
     phone,
@@ -139,12 +201,21 @@ export async function registerStylist({ phone, password, name, gender, stylistId
   const userId = data.user?.id;
   if (!userId) return { ok: false, error: "ثبت‌نام ناموفق بود — دوباره تلاش کنید" };
 
+  if (!data.session) {
+    return {
+      ok: false,
+      error: "تنظیمات Supabase نیاز به تایید ایمیل دارد — در Authentication → Providers → Email گزینهٔ «Confirm email» را خاموش کنید، سپس دوباره وارد شوید (نیازی به ثبت‌نام مجدد نیست)",
+    };
+  }
+
+  // SECURITY: no `password` field here — the stylists table doesn't store one
+  // (dropped in the earlier security pass). Real credentials live only in
+  // Supabase Auth via the signUp() call above.
   const { error: stylistError } = await supabase.from("stylists").insert({
     id: stylistId,
     name,
     gender,
     phone,
-    password,
     active: true,
     reminder_hours_before: 3,
   });

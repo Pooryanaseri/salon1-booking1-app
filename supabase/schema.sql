@@ -288,7 +288,7 @@ create table if not exists public.loyalty_settings (
   points_per_tier   integer not null default 100,
   discount_per_tier integer not null default 5,
   max_discount      integer not null default 30,
-  referral_points   integer not null default 50
+  referral_points   integer not null default 300
 );
 insert into public.loyalty_settings (id) values (1) on conflict (id) do nothing;
 
@@ -555,7 +555,7 @@ begin
   select * into ls from public.loyalty_settings where id = 1;
   select * into c from public.customers where phone = p_phone;
   if c is null then
-    return json_build_object('found', false, 'points', 0, 'discount_percent', 0, 'history', '[]'::json);
+    return json_build_object('found', false, 'points', 0, 'discount_percent', 0, 'history', '[]'::json, 'referrals', '[]'::json);
   end if;
   tier := floor(c.loyalty_points::numeric / greatest(ls.points_per_tier, 1));
   disc := least(tier * ls.discount_per_tier, ls.max_discount);
@@ -566,15 +566,53 @@ begin
     'total_visits', c.total_visits,
     'referral_code', c.referral_code,
     'discount_percent', disc,
+    'max_discount', ls.max_discount,
+    'at_cap', disc >= ls.max_discount,
     'points_to_next_tier', greatest(ls.points_per_tier - (c.loyalty_points % greatest(ls.points_per_tier, 1)), 0),
     'history', coalesce((
       select json_agg(json_build_object('delta', l.delta, 'reason', l.reason, 'at', l.created_at) order by l.created_at desc)
         from (select * from public.loyalty_ledger where customer_phone = p_phone
                order by created_at desc limit 30) l
+    ), '[]'::json),
+    -- People this customer referred — their own "downline" for the referral program.
+    'referrals', coalesce((
+      select json_agg(json_build_object('name', r.name, 'phone', r.phone, 'total_visits', r.total_visits, 'joined_at', r.created_at) order by r.created_at desc)
+        from public.customers r where r.referred_by = p_phone
     ), '[]'::json)
   );
 end $fn$;
 grant execute on function public.customer_loyalty(text) to anon, authenticated;
+
+-- Staff-triggered: a customer has reached the discount cap and is redeeming
+-- it in person. Resets their points to zero (they start climbing the tiers
+-- again from scratch) and logs the redemption as a negative ledger entry so
+-- the full history stays honest — never a silent reset with no record.
+create or replace function public.redeem_loyalty_reward(p_phone text)
+returns json language plpgsql security definer set search_path = public as $fn$
+declare c record; ls record; tier int; disc int;
+begin
+  if not (public.is_manager() or public.my_role() = 'stylist') then
+    return json_build_object('ok', false, 'error', 'اجازهٔ این کار را ندارید');
+  end if;
+  select * into ls from public.loyalty_settings where id = 1;
+  select * into c from public.customers where phone = p_phone;
+  if c is null then return json_build_object('ok', false, 'error', 'مشتری پیدا نشد'); end if;
+
+  tier := floor(c.loyalty_points::numeric / greatest(ls.points_per_tier, 1));
+  disc := least(tier * ls.discount_per_tier, ls.max_discount);
+  if disc < ls.max_discount then
+    return json_build_object('ok', false, 'error', 'مشتری هنوز به سقف تخفیف نرسیده');
+  end if;
+  if c.loyalty_points <= 0 then
+    return json_build_object('ok', false, 'error', 'امتیازی برای استفاده نیست');
+  end if;
+
+  insert into public.loyalty_ledger (customer_phone, delta, reason) values (p_phone, -c.loyalty_points, 'redeemed');
+  update public.customers set loyalty_points = 0 where phone = p_phone;
+
+  return json_build_object('ok', true, 'redeemed_discount_percent', disc);
+end $fn$;
+grant execute on function public.redeem_loyalty_reward(text) to authenticated;
 
 -- Phase 3: who hasn't booked in more than X days?
 create or replace function public.inactive_customers(p_days int default 60)
