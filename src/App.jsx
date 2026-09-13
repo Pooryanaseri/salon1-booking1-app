@@ -12,7 +12,7 @@ import {
   Award, Layers, ReceiptText, Bell,
   Send, Loader2, AlertTriangle, Gift, CreditCard,
   Crown, RefreshCw, Link2, ChevronDown, ChevronUp, Medal, Star,
-  Target, Info
+  Target, Info, CalendarPlus, LayoutDashboard
 } from "lucide-react";
 
 /* ============================================================
@@ -72,6 +72,12 @@ function gregorianToJalali(gy, gm, gd) {
     jd = 1 + ((days - 186) % 30);
   }
   return { jy, jm, jd };
+}
+// Just the Jalali day-of-month number for a JS Date — every date-strip/grid in
+// this app is meant to show the Persian calendar day, never the raw Gregorian
+// one (which is what date.getDate() gives you).
+function jalaliDayNum(date) {
+  return gregorianToJalali(date.getFullYear(), date.getMonth() + 1, date.getDate()).jd;
 }
 
 const MONTHS_FA = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور", "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"];
@@ -264,11 +270,52 @@ const TOKENS_CSS = `
 }
 .salon-app .fade-in { animation: salonFadeIn 260ms var(--ease-standard); }
 @keyframes salonFadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.salon-app .sheet-up { animation: salonSheetUp 320ms cubic-bezier(.2,.9,.3,1); }
+@keyframes salonSheetUp { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: translateY(0); } }
+.salon-app .backdrop-in { animation: salonBackdropIn 200ms var(--ease-standard); }
+@keyframes salonBackdropIn { from { opacity: 0; } to { opacity: 1; } }
 .salon-app .scrollbar-none::-webkit-scrollbar { display: none; }
 .salon-app .switch { width: 40px; height: 24px; border-radius: var(--radius-full); position: relative; transition: background var(--duration-fast) var(--ease-standard); flex-shrink: 0; }
 .salon-app .salon-spin { animation: salonSpin 900ms linear infinite; }
 @keyframes salonSpin { to { transform: rotate(360deg); } }
 .salon-app .switch-knob { width: 18px; height: 18px; border-radius: 50%; background: white; position: absolute; top: 3px; transition: transform var(--duration-fast) var(--ease-standard); }
+
+/* ---- Mobile-native shell: bottom tab bar + bottom sheets ---- */
+.salon-app .safe-top { padding-top: env(safe-area-inset-top, 0px); }
+.salon-app .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.salon-app .bottom-nav {
+  position: fixed; bottom: 0; inset-inline: 0; z-index: 80;
+  display: flex; justify-content: space-around;
+  background: color-mix(in oklch, var(--color-surface) 92%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--color-border);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -8px 24px -12px oklch(20% 0.02 60 / 0.18);
+}
+.salon-app .bottom-nav-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 6px 4px; border-radius: var(--radius-md); min-height: 52px;
+  color: var(--color-muted); position: relative;
+  transition: color var(--duration-base) var(--ease-standard);
+}
+.salon-app .bottom-nav-item.active { color: var(--color-accent-700); }
+.salon-app .bottom-nav-icon-wrap {
+  width: 34px; height: 26px; border-radius: var(--radius-full);
+  display: flex; align-items: center; justify-content: center;
+  transition: background var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-standard);
+}
+.salon-app .bottom-nav-item.active .bottom-nav-icon-wrap {
+  background: color-mix(in oklch, var(--color-accent-500) 16%, transparent);
+}
+.salon-app .bottom-nav-item:active .bottom-nav-icon-wrap { transform: scale(0.88); }
+.salon-app .header-blur {
+  background: color-mix(in oklch, var(--color-surface) 88%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.salon-app .sheet-handle {
+  width: 36px; height: 4px; border-radius: var(--radius-full);
+  background: var(--color-border); margin: 0 auto 10px;
+}
 `;
 
 /* ============================================================
@@ -607,7 +654,7 @@ function Toast({ message, onDone }) {
     <div
       className="fade-in tap"
       style={{
-        position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
+        position: "fixed", bottom: "calc(78px + env(safe-area-inset-bottom, 0px))", left: "50%", transform: "translateX(-50%)",
         background: "var(--color-heading)", color: "var(--color-bg)",
         padding: "10px 18px", borderRadius: "var(--radius-md)", fontSize: 14,
         display: "flex", alignItems: "center", gap: 8, zIndex: 100, boxShadow: "0 8px 24px rgba(0,0,0,.25)",
@@ -623,14 +670,22 @@ function Toast({ message, onDone }) {
 function Modal({ title, onClose, children, danger, wide }) {
   return (
     <div
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 90 }}
+      className="backdrop-in"
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 90 }}
       onClick={onClose}
     >
       <div
-        className="card fade-in"
-        style={{ width: "100%", maxWidth: wide ? 520 : 480, margin: "0 auto 0", borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: 20, maxHeight: "88vh", overflowY: "auto" }}
+        className="card sheet-up safe-bottom"
+        style={{
+          width: "100%", maxWidth: wide ? 520 : 480, margin: "0 auto 0",
+          borderBottomLeftRadius: 0, borderBottomRightRadius: 0,
+          borderTopLeftRadius: "var(--radius-xl)", borderTopRightRadius: "var(--radius-xl)",
+          padding: "10px 20px 20px", maxHeight: "88vh", overflowY: "auto",
+          boxShadow: "0 -16px 40px -12px oklch(20% 0.02 60 / 0.28)",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
+        <div className="sheet-handle" />
         <div className="flex items-center justify-between mb-4">
           <h3 style={{ fontSize: 17, color: danger ? "var(--color-danger)" : undefined }}>{title}</h3>
           <button className="tap ghost-btn" style={{ width: 36, height: 36, padding: 0 }} onClick={onClose}>
@@ -782,7 +837,7 @@ function DateStrip({ days, selectedDate, onSelect, isClosedFn, reasonFn, accentC
             {closed ? (
               <div style={{ fontSize: compact ? 9 : 9.5, fontWeight: 700, marginTop: 5 }}>{reason === "notApproved" ? "به‌زودی" : "تعطیل"}</div>
             ) : (
-              <div className="tabular" style={{ fontSize: compact ? 14 : 16, fontWeight: 800, marginTop: 3 }}>{toFa(d.getDate())}</div>
+              <div className="tabular" style={{ fontSize: compact ? 14 : 16, fontWeight: 800, marginTop: 3 }}>{toFa(jalaliDayNum(d))}</div>
             )}
             {isToday && !active && !closed && (
               <div style={{ width: 4, height: 4, borderRadius: "50%", background: accentColor, margin: "4px auto 0" }} />
@@ -1133,62 +1188,44 @@ export default function App() {
   }
 
   const tabs = [
-    { id: "book", label: "نوبت‌دهی" },
-    { id: "track", label: "پیگیری نوبت" },
-    { id: "panel", label: "پنل مدیریت" },
+    { id: "book", label: "نوبت‌دهی", Icon: CalendarPlus },
+    { id: "track", label: "پیگیری نوبت", Icon: Search },
+    { id: "panel", label: "پنل مدیریت", Icon: LayoutDashboard },
   ];
 
   return (
-    <div className="salon-app" data-theme={theme} style={{ minHeight: 640, paddingBottom: 24 }}>
+    <div className="salon-app" data-theme={theme} style={{ minHeight: 640, paddingBottom: "calc(76px + env(safe-area-inset-bottom, 0px))" }}>
       <style>{TOKENS_CSS}</style>
 
-      {/* Header */}
-      <header style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
-        <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 16px" }}>
+      {/* Header — slim, sticky, blurred; tab switching now lives in the bottom nav */}
+      <header className="header-blur safe-top" style={{ position: "sticky", top: 0, zIndex: 70, borderBottom: "1px solid var(--color-border)" }}>
+        <div style={{ maxWidth: 480, margin: "0 auto", padding: "12px 16px" }}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <div
                 style={{
-                  width: 36, height: 36, borderRadius: "var(--radius-md)",
-                  background: "var(--color-accent-500)", display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 34, height: 34, borderRadius: "var(--radius-md)",
+                  background: "var(--grad-brand)", display: "flex", alignItems: "center", justifyContent: "center",
+                  boxShadow: "var(--shadow-glow-accent)",
                 }}
               >
-                <Sparkles size={18} color="oklch(16% 0.02 70)" />
+                <Sparkles size={17} color="white" />
               </div>
               <div>
-                <h1 style={{ fontSize: 15, lineHeight: 1.2 }}>{SALON_NAME}</h1>
-                <p className="muted" style={{ fontSize: 11 }}>
+                <h1 style={{ fontSize: 14.5, lineHeight: 1.2 }}>{SALON_NAME}</h1>
+                <p className="muted" style={{ fontSize: 10.5 }}>
                   رزرو آنلاین نوبت · {tab === "book" && activeSection ? GENDER_TYPE_LABEL[activeSection] : GENDER_TYPE_LABEL[SALON_GENDER_TYPE]}
                 </p>
               </div>
             </div>
             <button
               className="tap ghost-btn"
-              style={{ width: 40, height: 40, padding: 0 }}
+              style={{ width: 38, height: 38, padding: 0 }}
               onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
               aria-label="تغییر پوسته"
             >
-              {theme === "light" ? <Moon size={17} style={{ margin: "auto" }} /> : <Sun size={17} style={{ margin: "auto" }} />}
+              {theme === "light" ? <Moon size={16} style={{ margin: "auto" }} /> : <Sun size={16} style={{ margin: "auto" }} />}
             </button>
-          </div>
-
-          {/* Tabs */}
-          <div className="flex gap-1 mt-3" style={{ background: "var(--color-bg)", padding: 4, borderRadius: "var(--radius-md)" }}>
-            {tabs.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => { setTab(t.id); setActiveSection(null); }}
-                className="tap"
-                style={{
-                  flex: 1, padding: "8px 4px", borderRadius: "var(--radius-sm)", fontSize: 13, fontWeight: 700,
-                  background: tab === t.id ? "var(--color-surface)" : "transparent",
-                  color: tab === t.id ? "var(--color-heading)" : "var(--color-muted)",
-                  boxShadow: tab === t.id ? "0 1px 3px rgba(0,0,0,.08)" : "none",
-                }}
-              >
-                {t.label}
-              </button>
-            ))}
           </div>
         </div>
       </header>
@@ -1263,6 +1300,26 @@ export default function App() {
           />
         )}
       </main>
+
+      <nav className="bottom-nav" role="tablist" aria-label="ناوبری اصلی">
+        {tabs.map((t) => {
+          const active = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={active}
+              onClick={() => { setTab(t.id); setActiveSection(null); }}
+              className={`tap bottom-nav-item${active ? " active" : ""}`}
+            >
+              <span className="bottom-nav-icon-wrap">
+                <t.Icon size={19} strokeWidth={active ? 2.4 : 2} />
+              </span>
+              <span style={{ fontSize: 10.5, fontWeight: active ? 800 : 600 }}>{t.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       <Toast message={toast} onDone={() => setToast("")} />
     </div>
@@ -3634,7 +3691,7 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
                     }}
                   >
                     <div style={{ fontSize: 9, fontWeight: 700, opacity: 0.8 }}>{WEEKDAYS_FA_SHORT[d.getDay()]}</div>
-                    <div className="tabular" style={{ fontSize: 12.5, fontWeight: 800, marginTop: 1 }}>{toFa(d.getDate())}</div>
+                    <div className="tabular" style={{ fontSize: 12.5, fontWeight: 800, marginTop: 1 }}>{toFa(jalaliDayNum(d))}</div>
                     {locked && <Lock size={9} style={{ margin: "2px auto 0" }} />}
                   </button>
                 );
@@ -5130,7 +5187,7 @@ function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, 
               <div key={d.dKey}>
                 <div className="flex items-center justify-between mb-1">
                   <span className="flex items-center gap-1.5" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)" }}>
-                    {WEEKDAYS_FA_FULL[d.date.getDay()]} {toFa(d.date.getDate())} {MONTHS_FA[gregorianToJalali(d.date.getFullYear(), d.date.getMonth() + 1, d.date.getDate()).jm - 1]}
+                    {WEEKDAYS_FA_FULL[d.date.getDay()]} {toFa(jalaliDayNum(d.date))} {MONTHS_FA[gregorianToJalali(d.date.getFullYear(), d.date.getMonth() + 1, d.date.getDate()).jm - 1]}
                     {d.lowFill && <AlertTriangle size={12} color="var(--color-warning)" />}
                   </span>
                   <span className="tabular muted" style={{ fontSize: 11 }}>
