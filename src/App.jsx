@@ -162,6 +162,16 @@ const TOKENS_CSS = `
   --grad-female: linear-gradient(135deg, oklch(70% 0.16 10), oklch(58% 0.19 350));
   --grad-male: linear-gradient(135deg, oklch(60% 0.12 230), oklch(46% 0.13 250));
 
+  /* Per-tab identity colors — each of the 3 top-level tabs gets its own hue
+     instead of one flat accent + gray-for-everything-else scheme. */
+  --color-tab-book: var(--color-accent-500);
+  --color-tab-dash: oklch(58% 0.15 200);
+  --color-tab-panel: oklch(52% 0.19 300);
+  --grad-tab-book: var(--grad-brand);
+  --grad-tab-dash: linear-gradient(135deg, oklch(66% 0.13 195), oklch(52% 0.15 215));
+  --grad-tab-panel: linear-gradient(135deg, oklch(60% 0.17 295), oklch(46% 0.20 310));
+  --color-tab-services: oklch(58% 0.18 20);
+
   --shadow-sm: 0 1px 2px oklch(20% 0.02 60 / 0.06), 0 1px 1px oklch(20% 0.02 60 / 0.04);
   --shadow-md: 0 6px 16px -4px oklch(20% 0.02 60 / 0.14), 0 2px 6px -2px oklch(20% 0.02 60 / 0.08);
   --shadow-lg: 0 16px 32px -8px oklch(20% 0.02 60 / 0.20), 0 4px 12px -4px oklch(20% 0.02 60 / 0.10);
@@ -319,6 +329,53 @@ const TOKENS_CSS = `
   width: 36px; height: 4px; border-radius: var(--radius-full);
   background: var(--color-border); margin: 0 auto 10px;
 }
+
+/* ----------------------------------------------------------------------
+   Layout utilities — this file has NO Tailwind installed and generates NO
+   separate CSS file (everything ships as this one injected <style> tag).
+   Every className like "flex items-center gap-2 mb-3" used throughout the
+   app assumes Tailwind-equivalent rules exist; without them these classes
+   were pure no-ops, so this block is what actually makes 186+ flex/grid
+   layouts across the whole app render as intended. Values match the sizes
+   actually used in the codebase (checked programmatically), not a generic
+   Tailwind scale.
+   ---------------------------------------------------------------------- */
+.salon-app .flex { display: flex; }
+.salon-app .grid { display: grid; }
+.salon-app .flex-1 { flex: 1 1 0%; }
+.salon-app .flex-col { flex-direction: column; }
+.salon-app .flex-wrap { flex-wrap: wrap; }
+.salon-app .items-center { align-items: center; }
+.salon-app .items-end { align-items: flex-end; }
+.salon-app .items-start { align-items: flex-start; }
+.salon-app .justify-between { justify-content: space-between; }
+.salon-app .justify-center { justify-content: center; }
+.salon-app .w-full { width: 100%; }
+.salon-app .mx-auto { margin-left: auto; margin-right: auto; }
+
+.salon-app .gap-0\\.5 { gap: 2px; }
+.salon-app .gap-1 { gap: 4px; }
+.salon-app .gap-1\\.5 { gap: 6px; }
+.salon-app .gap-2 { gap: 8px; }
+.salon-app .gap-2\\.5 { gap: 10px; }
+.salon-app .gap-3 { gap: 12px; }
+.salon-app .gap-4 { gap: 16px; }
+.salon-app .gap-x-3 { column-gap: 12px; }
+.salon-app .gap-y-1\\.5 { row-gap: 6px; }
+
+.salon-app .mb-1 { margin-bottom: 4px; }
+.salon-app .mb-2 { margin-bottom: 8px; }
+.salon-app .mb-2\\.5 { margin-bottom: 10px; }
+.salon-app .mb-3 { margin-bottom: 12px; }
+.salon-app .mb-4 { margin-bottom: 16px; }
+.salon-app .mb-6 { margin-bottom: 24px; }
+
+.salon-app .mt-1 { margin-top: 4px; }
+.salon-app .mt-1\\.5 { margin-top: 6px; }
+.salon-app .mt-2 { margin-top: 8px; }
+.salon-app .mt-3 { margin-top: 12px; }
+.salon-app .mt-4 { margin-top: 16px; }
+.salon-app .mt-5 { margin-top: 20px; }
 `;
 
 /* ============================================================
@@ -709,6 +766,33 @@ function Row({ label, value, bold, strike }) {
       <span style={{ fontWeight: bold ? 800 : 600, color: "var(--color-heading)", fontSize: bold ? 15 : 13.5, textDecoration: strike ? "line-through" : "none", opacity: strike ? 0.6 : 1 }}>
         {value}
       </span>
+    </div>
+  );
+}
+
+// A consistent, colorful page header for panel tabs — icon badge + title +
+// one-line description. Each tab passes its own color so the whole panel
+// doesn't read as one flat gray surface; the color also visually matches
+// that tab's icon in the sub-nav below, so the two reinforce each other.
+function PanelSectionHeader({ Icon, title, subtitle, color }) {
+  return (
+    <div
+      className="flex items-center gap-3 mb-4"
+      style={{ padding: "14px 16px", borderRadius: "var(--radius-lg)", background: `linear-gradient(135deg, color-mix(in oklch, ${color} 12%, var(--color-surface)), var(--color-surface))`, border: `1px solid color-mix(in oklch, ${color} 18%, var(--color-border))` }}
+    >
+      <div
+        style={{
+          width: 40, height: 40, borderRadius: "var(--radius-md)", flexShrink: 0,
+          background: color, display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: `0 4px 14px -4px color-mix(in oklch, ${color} 60%, transparent)`,
+        }}
+      >
+        <Icon size={19} color="white" />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <h2 style={{ fontSize: 16.5, color: "var(--color-heading)" }}>{title}</h2>
+        {subtitle && <p className="muted" style={{ fontSize: 11.5, marginTop: 2, lineHeight: 1.6 }}>{subtitle}</p>}
+      </div>
     </div>
   );
 }
@@ -1189,9 +1273,9 @@ export default function App() {
   }
 
   const tabs = [
-    { id: "book", label: "نوبت‌دهی", Icon: CalendarPlus },
-    { id: "track", label: "داشبورد من", Icon: LayoutDashboard },
-    { id: "panel", label: "پنل مدیریت", Icon: ShieldCheck },
+    { id: "book", label: "نوبت‌دهی", Icon: CalendarPlus, color: "var(--color-tab-book)", grad: "var(--grad-tab-book)" },
+    { id: "track", label: "داشبورد من", Icon: LayoutDashboard, color: "var(--color-tab-dash)", grad: "var(--grad-tab-dash)" },
+    { id: "panel", label: "پنل مدیریت", Icon: ShieldCheck, color: "var(--color-tab-panel)", grad: "var(--grad-tab-panel)" },
   ];
 
   return (
@@ -1229,8 +1313,8 @@ export default function App() {
             </button>
           </div>
 
-          {/* Tabs */}
-          <div className="flex gap-1 mt-3" role="tablist" aria-label="ناوبری اصلی" style={{ background: "var(--color-bg)", padding: 4, borderRadius: "var(--radius-md)" }}>
+          {/* Tabs — each has its own color identity, active or not */}
+          <div className="flex gap-1.5 mt-3" role="tablist" aria-label="ناوبری اصلی">
             {tabs.map((t) => {
               const active = tab === t.id;
               return (
@@ -1241,13 +1325,14 @@ export default function App() {
                   onClick={() => { setTab(t.id); setActiveSection(null); }}
                   className="tap flex items-center justify-center gap-1.5"
                   style={{
-                    flex: 1, padding: "8px 4px", borderRadius: "var(--radius-sm)", fontSize: 12.5, fontWeight: active ? 800 : 600,
-                    background: active ? "var(--color-surface)" : "transparent",
-                    color: active ? "var(--color-heading)" : "var(--color-muted)",
-                    boxShadow: active ? "0 1px 3px rgba(0,0,0,.08)" : "none",
+                    flex: 1, padding: "9px 4px", borderRadius: "var(--radius-md)", fontSize: 12.5, fontWeight: active ? 800 : 700,
+                    background: active ? t.grad : `color-mix(in oklch, ${t.color} 12%, var(--color-surface))`,
+                    color: active ? "white" : t.color,
+                    boxShadow: active ? `0 4px 14px -4px color-mix(in oklch, ${t.color} 60%, transparent)` : "none",
+                    border: active ? "none" : `1px solid color-mix(in oklch, ${t.color} 22%, transparent)`,
                   }}
                 >
-                  <t.Icon size={14} strokeWidth={active ? 2.4 : 2} />
+                  <t.Icon size={14} strokeWidth={active ? 2.4 : 2.2} />
                   {t.label}
                 </button>
               );
@@ -2283,107 +2368,33 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
 // This is the only place a customer can see their own referral code, which
 // is the whole point of having one: without this, applyReferral() has no
 // codes for anyone to actually enter.
-function CustomerLoyaltySummary({ phone }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [copied, setCopied] = useState(false);
+const DASH_SEGMENTS = [
+  { id: "bookings", label: "نوبت‌ها", Icon: CalendarCheck, color: "var(--color-tab-book)" },
+  { id: "points", label: "امتیازات", Icon: Award, color: "var(--color-success)" },
+  { id: "referrals", label: "معرفی‌ها", Icon: UserPlus, color: "var(--color-tab-panel)" },
+];
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      const res = await fetchCustomerLoyalty(phone);
-      if (!cancelled) { setData(res); setLoading(false); }
-    })();
-    return () => { cancelled = true; };
-  }, [phone]);
-
-  if (!SUPABASE_ENABLED || loading || !data?.found) return null;
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="card fade-in" style={{ padding: 14, background: "linear-gradient(135deg, color-mix(in oklch, var(--color-accent-500) 10%, var(--color-surface)), var(--color-surface))" }}>
-        <p className="flex items-center gap-1.5" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-accent-700)", marginBottom: 8 }}>
-          <Gift size={13} /> باشگاه مشتریان شما
-        </p>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="tabular" style={{ fontSize: 18, fontWeight: 800, color: "var(--color-heading)" }}>{toFa(data.points)} امتیاز</div>
-            {data.discount_percent > 0 && (
-              <div className="muted" style={{ fontSize: 11 }}>{toFa(data.discount_percent)}٪ تخفیف فعلی شما</div>
-            )}
-          </div>
-          <div style={{ textAlign: "left" }}>
-            <div className="muted" style={{ fontSize: 10.5 }}>کد معرفی شما</div>
-            <button
-              className="tap flex items-center gap-1"
-              style={{ fontSize: 14, fontWeight: 800, color: "var(--color-accent-700)", fontFamily: "monospace" }}
-              onClick={() => { navigator.clipboard?.writeText(data.referral_code); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-            >
-              <span dir="ltr">{data.referral_code}</span>
-              <Copy size={12} />
-            </button>
-            {copied && <div style={{ fontSize: 9.5, color: "var(--color-success)" }}>کپی شد</div>}
-          </div>
-        </div>
-        {data.at_cap ? (
-          <div className="flex items-center gap-1.5" style={{ marginTop: 8, padding: "7px 10px", borderRadius: "var(--radius-sm)", background: "color-mix(in oklch, var(--color-success) 14%, transparent)" }}>
-            <Crown size={13} color="var(--color-success)" />
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--color-success)" }}>
-              به سقف تخفیف ({toFa(data.max_discount)}٪) رسیدید! دفعهٔ بعد از آرایشگر بخواید اعمالش کنه — بعدش امتیازتون صفر و از نو شروع می‌شه.
-            </span>
-          </div>
-        ) : (
-          <p className="muted" style={{ fontSize: 10, marginTop: 6, lineHeight: 1.6 }}>
-            این کد را به دوستانتان بدهید — با اولین نوبتشان، هر دوی شما امتیاز جایزه می‌گیرید.
-          </p>
-        )}
-      </div>
-
-      {/* Points ledger */}
-      {data.history?.length > 0 && (
-        <div className="card fade-in" style={{ padding: 14 }}>
-          <p className="flex items-center gap-1.5" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)", marginBottom: 8 }}>
-            <History size={13} color="var(--color-accent-700)" /> جدول امتیازات شما
-          </p>
-          <div className="flex flex-col gap-1.5" style={{ maxHeight: 220, overflowY: "auto" }}>
-            {data.history.map((h, i) => (
-              <div key={i} className="flex items-center justify-between" style={{ fontSize: 12, padding: "6px 8px", borderRadius: "var(--radius-sm)", background: "var(--color-surface-raised)" }}>
-                <span className="muted">{LOYALTY_REASON_FA[h.reason] || h.reason || "—"}</span>
-                <span className="tabular" style={{ fontWeight: 700, color: h.delta >= 0 ? "var(--color-success)" : "var(--color-danger)" }}>
-                  {h.delta >= 0 ? "+" : ""}{toFa(h.delta)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Referral downline */}
-      {data.referrals?.length > 0 && (
-        <div className="card fade-in" style={{ padding: 14 }}>
-          <p className="flex items-center gap-1.5" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)", marginBottom: 8 }}>
-            <UserPlus size={13} color="var(--color-accent-700)" /> افرادی که با کد شما معرفی شدند ({toFa(data.referrals.length)} نفر)
-          </p>
-          <div className="flex flex-col gap-1.5">
-            {data.referrals.map((r, i) => (
-              <div key={i} className="flex items-center justify-between" style={{ fontSize: 12, padding: "6px 8px", borderRadius: "var(--radius-sm)", background: "var(--color-surface-raised)" }}>
-                <span style={{ fontWeight: 700, color: "var(--color-heading)" }}>{r.name || "بدون نام"}</span>
-                <span className="muted tabular">{toFa(r.total_visits || 0)} ویزیت</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+// Small deterministic color picker for referral-member avatars — same person
+// always gets the same color, and the palette stays varied (not all one hue).
+const AVATAR_PALETTE = [
+  "var(--color-tab-book)", "var(--color-tab-dash)", "var(--color-tab-panel)",
+  "var(--color-success)", "var(--color-warning)", "var(--color-female-500)",
+];
+function avatarColorFor(key) {
+  let h = 0;
+  for (const ch of String(key)) h = (h * 31 + ch.charCodeAt(0)) % AVATAR_PALETTE.length;
+  return AVATAR_PALETTE[h];
 }
-
 
 function TrackView({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, updateBooking, notify }) {
   const [phone, setPhone] = useState("");
   const [searched, setSearched] = useState(false);
   const [actionFor, setActionFor] = useState(null); // { id, type: "cancel" | "reschedule" }
+  const [segment, setSegment] = useState("bookings");
+
+  const [loyalty, setLoyalty] = useState(null);
+  const [loyaltyLoading, setLoyaltyLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const phoneValid = /^09\d{9}$/.test(phone);
   const matches = useMemo(() => {
@@ -2394,6 +2405,19 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
   }, [bookings, phone, phoneValid]);
 
   const actionBooking = actionFor ? bookings.find((b) => b.id === actionFor.id) : null;
+
+  useEffect(() => {
+    if (!searched || !phoneValid || !SUPABASE_ENABLED) { setLoyalty(null); return; }
+    let cancelled = false;
+    (async () => {
+      setLoyaltyLoading(true);
+      const res = await fetchCustomerLoyalty(phone);
+      if (!cancelled) { setLoyalty(res); setLoyaltyLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [searched, phone, phoneValid]);
+
+  const hasAnything = matches.length > 0 || loyalty?.found;
 
   return (
     <div className="fade-in">
@@ -2410,66 +2434,238 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
           className="tabular"
           style={{ flex: 1, padding: "11px 14px", fontSize: 14, textAlign: "left" }}
         />
-        <button disabled={!phoneValid} onClick={() => setSearched(true)} className="tap accent-btn" style={{ padding: "0 20px", fontSize: 13 }}>
+        <button
+          disabled={!phoneValid}
+          onClick={() => { setSearched(true); setSegment("bookings"); }}
+          className="tap"
+          style={{ padding: "0 20px", fontSize: 13, fontWeight: 700, borderRadius: "var(--radius-md)", background: "var(--grad-tab-dash)", color: "white", boxShadow: "0 4px 14px -4px color-mix(in oklch, var(--color-tab-dash) 60%, transparent)" }}
+        >
           <Search size={16} style={{ display: "inline", marginLeft: 4 }} /> پیگیری
         </button>
       </div>
 
-      {searched && matches.length === 0 && (
+      {searched && !hasAnything && (
         <div className="card fade-in mt-4" style={{ padding: 20, textAlign: "center" }}>
           <p className="muted" style={{ fontSize: 13 }}>نوبتی با این شماره پیدا نشد</p>
         </div>
       )}
 
-      {searched && matches.length > 0 && (
-        <div className="flex flex-col gap-3 mt-4">
-          <CustomerLoyaltySummary phone={phone} />
-          {matches.map((b) => {
-            const service = services.find((s) => s.id === b.service_id);
-            if (!service) return null;
-            const hasDiscount = b.discount_type !== "none" && b.discount_value > 0;
-            const changeable = ["pending", "confirmed", "rescheduled"].includes(b.status);
-            return (
-              <div key={b.id} className="card fade-in" style={{ padding: 16 }}>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 style={{ fontSize: 15 }}>{service.name}</h3>
-                  <Badge status={b.status} />
+      {searched && hasAnything && (
+        <div className="fade-in mt-4">
+          {/* Hero welcome card — one clear, well-organized summary instead of
+              scattered stats */}
+          <div className="card card-glass mb-3" style={{ padding: 18, background: "var(--grad-tab-dash)" }}>
+            <div style={{ position: "absolute", top: -30, left: -20, width: 130, height: 130, borderRadius: "50%", background: "oklch(100% 0 0 / 0.10)", pointerEvents: "none" }} />
+            <p className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 700, opacity: 0.9, position: "relative" }}>
+              <LayoutDashboard size={15} />
+              {loyalty?.name ? `سلام ${loyalty.name} عزیز 👋` : "داشبورد شما"}
+            </p>
+            {loyalty?.found ? (
+              <>
+                <div className="flex items-end gap-2 mt-3" style={{ position: "relative" }}>
+                  <div className="tabular" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em" }}>{toFa(loyalty.points)}</div>
+                  <div style={{ fontSize: 12.5, opacity: 0.85, marginBottom: 5 }}>امتیاز باشگاه</div>
                 </div>
-                <Row label="تاریخ" value={jalaliLabel(parseDateKey(b.date), { short: true })} />
-                <Row label="ساعت" value={formatClock(b.start_min)} />
-                {b.staff_name && <Row label="آرایشگر" value={b.staff_name} />}
-                <div style={{ borderTop: "1px dashed var(--color-border)", margin: "10px 0" }} />
-                {b.final_price == null ? (
-                  <Row label="مبلغ" value="قیمت در سالن اعلام می‌شود" bold />
-                ) : (
-                  <>
-                    {hasDiscount && <Row label="قیمت اصلی" value={formatToman(b.original_price)} strike />}
-                    {hasDiscount && <Row label="تخفیف" value={"- " + formatToman(b.original_price - b.final_price)} />}
-                    <Row label="مبلغ نهایی" value={formatToman(b.final_price)} bold />
-                  </>
-                )}
-
-                {changeable ? (
-                  <div className="flex gap-2 mt-4">
-                    <button className="tap ghost-btn flex-1" style={{ padding: 11, fontSize: 13, fontWeight: 700 }} onClick={() => setActionFor({ id: b.id, type: "reschedule" })}>
-                      تغییر زمان
-                    </button>
-                    <button
-                      className="tap flex-1"
-                      style={{ padding: 11, fontSize: 13, fontWeight: 700, borderRadius: "var(--radius-md)", border: "1px solid var(--color-danger)", background: "transparent", color: "var(--color-danger)" }}
-                      onClick={() => setActionFor({ id: b.id, type: "cancel" })}
-                    >
-                      لغو نوبت
-                    </button>
+                <div className="flex items-center gap-2 mt-2" style={{ position: "relative", flexWrap: "wrap" }}>
+                  {loyalty.discount_percent > 0 && (
+                    <span className="badge" style={{ background: "oklch(100% 0 0 / 0.22)", color: "white" }}>
+                      <Percent size={11} /> {toFa(loyalty.discount_percent)}٪ تخفیف فعال
+                    </span>
+                  )}
+                  <span className="badge" style={{ background: "oklch(100% 0 0 / 0.22)", color: "white" }}>
+                    <CalendarCheck size={11} /> {toFa(matches.length)} نوبت
+                  </span>
+                  <span className="badge" style={{ background: "oklch(100% 0 0 / 0.22)", color: "white" }}>
+                    <UserPlus size={11} /> {toFa(loyalty.referrals?.length || 0)} معرفی
+                  </span>
+                </div>
+                {loyalty.at_cap && (
+                  <div className="flex items-center gap-1.5" style={{ marginTop: 10, padding: "8px 10px", borderRadius: "var(--radius-sm)", background: "oklch(100% 0 0 / 0.18)", position: "relative" }}>
+                    <Crown size={13} />
+                    <span style={{ fontSize: 11, fontWeight: 700 }}>
+                      به سقف تخفیف ({toFa(loyalty.max_discount)}٪) رسیدید! دفعهٔ بعد از آرایشگر بخواید اعمالش کنه.
+                    </span>
                   </div>
-                ) : (
-                  <p className="muted" style={{ fontSize: 11.5, marginTop: 14, textAlign: "center" }}>
-                    این نوبت دیگر قابل تغییر یا لغو نیست
-                  </p>
                 )}
-              </div>
-            );
-          })}
+                <div className="flex items-center justify-between mt-3" style={{ position: "relative", paddingTop: 10, borderTop: "1px dashed oklch(100% 0 0 / 0.3)" }}>
+                  <span style={{ fontSize: 11, opacity: 0.85 }}>کد معرفی شما</span>
+                  <button
+                    className="tap flex items-center gap-1"
+                    style={{ fontSize: 14, fontWeight: 800, fontFamily: "monospace" }}
+                    onClick={() => { navigator.clipboard?.writeText(loyalty.referral_code); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+                  >
+                    <span dir="ltr">{loyalty.referral_code}</span>
+                    <Copy size={12} />
+                    {copied && <span style={{ fontSize: 9.5, opacity: 0.85 }}>· کپی شد</span>}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p style={{ fontSize: 12, marginTop: 8, opacity: 0.9, position: "relative" }}>
+                {loyaltyLoading ? "در حال بارگذاری..." : `${toFa(matches.length)} نوبت برای این شماره ثبت شده`}
+              </p>
+            )}
+          </div>
+
+          {/* Segment switcher */}
+          <div className="flex gap-2 mb-3">
+            {DASH_SEGMENTS.map((seg) => {
+              const active = segment === seg.id;
+              const count = seg.id === "bookings" ? matches.length : seg.id === "points" ? (loyalty?.history?.length || 0) : (loyalty?.referrals?.length || 0);
+              return (
+                <button
+                  key={seg.id}
+                  onClick={() => setSegment(seg.id)}
+                  className="tap flex-1 flex flex-col items-center gap-1"
+                  style={{
+                    padding: "10px 4px", borderRadius: "var(--radius-md)", fontSize: 11.5, fontWeight: active ? 800 : 700,
+                    background: active ? seg.color : `color-mix(in oklch, ${seg.color} 10%, var(--color-surface))`,
+                    color: active ? "white" : seg.color,
+                    border: active ? "none" : `1px solid color-mix(in oklch, ${seg.color} 22%, transparent)`,
+                    boxShadow: active ? `0 4px 12px -4px color-mix(in oklch, ${seg.color} 55%, transparent)` : "none",
+                  }}
+                >
+                  <seg.Icon size={16} />
+                  <span className="flex items-center gap-1">
+                    {seg.label}
+                    {count > 0 && <span className="tabular" style={{ opacity: 0.85 }}>({toFa(count)})</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Segment: bookings */}
+          {segment === "bookings" && (
+            <div className="flex flex-col gap-3">
+              {matches.length === 0 ? (
+                <div className="card" style={{ padding: 20, textAlign: "center" }}>
+                  <p className="muted" style={{ fontSize: 12.5 }}>هنوز نوبتی ثبت نشده</p>
+                </div>
+              ) : matches.map((b) => {
+                const service = services.find((s) => s.id === b.service_id);
+                if (!service) return null;
+                const hasDiscount = b.discount_type !== "none" && b.discount_value > 0;
+                const changeable = ["pending", "confirmed", "rescheduled"].includes(b.status);
+                return (
+                  <div key={b.id} className="card fade-in" style={{ padding: 16 }}>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 style={{ fontSize: 15 }}>{service.name}</h3>
+                      <Badge status={b.status} />
+                    </div>
+                    <Row label="تاریخ" value={jalaliLabel(parseDateKey(b.date), { short: true })} />
+                    <Row label="ساعت" value={formatClock(b.start_min)} />
+                    {b.staff_name && <Row label="آرایشگر" value={b.staff_name} />}
+                    <div style={{ borderTop: "1px dashed var(--color-border)", margin: "10px 0" }} />
+                    {b.final_price == null ? (
+                      <Row label="مبلغ" value="قیمت در سالن اعلام می‌شود" bold />
+                    ) : (
+                      <>
+                        {hasDiscount && <Row label="قیمت اصلی" value={formatToman(b.original_price)} strike />}
+                        {hasDiscount && <Row label="تخفیف" value={"- " + formatToman(b.original_price - b.final_price)} />}
+                        <Row label="مبلغ نهایی" value={formatToman(b.final_price)} bold />
+                      </>
+                    )}
+
+                    {changeable ? (
+                      <div className="flex gap-2 mt-4">
+                        <button className="tap ghost-btn flex-1" style={{ padding: 11, fontSize: 13, fontWeight: 700 }} onClick={() => setActionFor({ id: b.id, type: "reschedule" })}>
+                          تغییر زمان
+                        </button>
+                        <button
+                          className="tap flex-1"
+                          style={{ padding: 11, fontSize: 13, fontWeight: 700, borderRadius: "var(--radius-md)", border: "1px solid var(--color-danger)", background: "transparent", color: "var(--color-danger)" }}
+                          onClick={() => setActionFor({ id: b.id, type: "cancel" })}
+                        >
+                          لغو نوبت
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="muted" style={{ fontSize: 11.5, marginTop: 14, textAlign: "center" }}>
+                        این نوبت دیگر قابل تغییر یا لغو نیست
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Segment: points history */}
+          {segment === "points" && (
+            <div className="card fade-in" style={{ padding: 16 }}>
+              {!loyalty?.history?.length ? (
+                <p className="muted" style={{ fontSize: 12.5, textAlign: "center", padding: "10px 0" }}>هنوز تراکنشی ثبت نشده</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {loyalty.history.map((h, i) => {
+                    const positive = h.delta >= 0;
+                    return (
+                      <div key={i} className="flex items-center gap-3" style={{ padding: "9px 10px", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
+                        <div
+                          style={{
+                            width: 32, height: 32, borderRadius: "var(--radius-md)", flexShrink: 0,
+                            background: `color-mix(in oklch, ${positive ? "var(--color-success)" : "var(--color-danger)"} 16%, transparent)`,
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                          }}
+                        >
+                          {positive ? <TrendingUp size={15} color="var(--color-success)" /> : <TrendingDown size={15} color="var(--color-danger)" />}
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>{LOYALTY_REASON_FA[h.reason] || h.reason || "—"}</div>
+                          <div className="muted tabular" style={{ fontSize: 10.5 }}>{jalaliLabel(new Date(h.at), { short: true })}</div>
+                        </div>
+                        <span className="tabular" style={{ fontSize: 13.5, fontWeight: 800, color: positive ? "var(--color-success)" : "var(--color-danger)" }}>
+                          {positive ? "+" : ""}{toFa(h.delta)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Segment: referral network — full name front and center for every member */}
+          {segment === "referrals" && (
+            <div className="card fade-in" style={{ padding: 16 }}>
+              {!loyalty?.referrals?.length ? (
+                <div style={{ textAlign: "center", padding: "10px 0" }}>
+                  <p className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>هنوز کسی را معرفی نکرده‌اید</p>
+                  <p className="muted" style={{ fontSize: 11, lineHeight: 1.8 }}>کد معرفی بالای صفحه را با دوستانتان در میان بگذارید</p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2.5">
+                  {loyalty.referrals.map((r, i) => {
+                    const fullName = r.name?.trim() || "بدون نام ثبت‌شده";
+                    const initial = r.name?.trim()?.[0] || "?";
+                    const avColor = avatarColorFor(r.phone || i);
+                    return (
+                      <div key={r.phone || i} className="flex items-center gap-3" style={{ padding: "10px 12px", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
+                        <div
+                          className="tabular"
+                          style={{
+                            width: 38, height: 38, borderRadius: "50%", flexShrink: 0,
+                            background: `color-mix(in oklch, ${avColor} 20%, transparent)`, color: avColor,
+                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800,
+                          }}
+                        >
+                          {initial}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>{fullName}</div>
+                          <div className="muted tabular" style={{ fontSize: 10.5, marginTop: 1 }}>
+                            {toFa(r.total_visits || 0)} ویزیت
+                            {r.joined_at && ` · عضو از ${jalaliLabel(new Date(r.joined_at), { short: true })}`}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -2503,6 +2699,7 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
   );
 }
 
+
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
    ============================================================ */
@@ -2515,53 +2712,67 @@ function PanelView({ bookings, services, setServices, stylists, addStylist, upda
   // person (their own bookings/revenue/hours). Only staff management is owner-only,
   // since letting a stylist add/remove colleagues doesn't make sense.
   const subTabs = [
-    { id: "dashboard", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList },
-    { id: "accounting", label: "حسابداری", Icon: Wallet },
-    { id: "services", label: "خدمات", Icon: Settings },
-    ...(currentStylist ? [] : [{ id: "staff", label: "آرایشگرها", Icon: Users }]),
-    { id: "schedule", label: currentStylist ? "ساعات کاری من" : "ساعات کاری", Icon: CalendarIcon },
+    { id: "dashboard", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList, color: "var(--color-tab-book)" },
+    { id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" },
+    { id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" },
+    ...(currentStylist ? [] : [{ id: "staff", label: "آرایشگرها", Icon: Users, color: "var(--color-info)" }]),
+    { id: "schedule", label: currentStylist ? "ساعات کاری من" : "ساعات کاری", Icon: CalendarIcon, color: "var(--color-tab-dash)" },
     // NEW — پنل ارسال پیامک: owner/manager only, same rule as staff management.
-    ...(currentStylist ? [] : [{ id: "sms", label: "پیامک", Icon: MessageSquareText }]),
+    ...(currentStylist ? [] : [{ id: "sms", label: "پیامک", Icon: MessageSquareText, color: "var(--color-tab-panel)" }]),
     // باشگاه مشتریان: owner/manager AND stylist (discount settings should be
     // adjustable by either, per explicit request — stylists interact with
     // customers directly about redeeming rewards).
-    { id: "loyalty", label: "باشگاه مشتریان", Icon: Gift },
-    { id: "ai", label: "تحلیل هوشمند", Icon: Brain },
-    ...(currentStylist ? [] : [{ id: "bi", label: "هوش تجاری", Icon: BarChart3 }]),
+    { id: "loyalty", label: "باشگاه مشتریان", Icon: Gift, color: "var(--color-success)" },
+    { id: "ai", label: "تحلیل هوشمند", Icon: Brain, color: "var(--color-tab-dash)" },
+    ...(currentStylist ? [] : [{ id: "bi", label: "هوش تجاری", Icon: BarChart3, color: "var(--color-tab-panel)" }]),
   ];
 
   return (
     <div className="fade-in">
-      <div className="flex items-center justify-between mb-2">
-        <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>
-          {currentStylist ? (
-            <>پنل شخصی <span style={{ color: "var(--color-accent-700)" }}>{currentStylist.name}</span></>
-          ) : (
-            "پنل مدیر سالن"
-          )}
-        </p>
-        <button className="muted" style={{ fontSize: 12, flexShrink: 0 }} onClick={onLogout}>خروج</button>
-      </div>
       <div
-        className="flex mb-3"
-        style={{ background: "var(--color-surface-raised)", padding: 4, borderRadius: "var(--radius-md)", flexWrap: "wrap", gap: 4 }}
+        className="flex items-center justify-between mb-3"
+        style={{ padding: "12px 14px", borderRadius: "var(--radius-lg)", background: "var(--grad-tab-panel)" }}
       >
-        {subTabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setSubTab(t.id)}
-            className="tap flex items-center gap-1"
-            style={{
-              padding: "6px 9px", borderRadius: "var(--radius-sm)", fontSize: 11.5, fontWeight: 700,
-              background: subTab === t.id ? "var(--color-surface)" : "transparent",
-              color: subTab === t.id ? "var(--color-heading)" : "var(--color-muted)",
-              boxShadow: subTab === t.id ? "0 1px 3px rgba(0,0,0,.08)" : "none",
-              whiteSpace: "nowrap",
-            }}
-          >
-            <t.Icon size={13} /> {t.label}
-          </button>
-        ))}
+        <p className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 800, color: "white" }}>
+          <ShieldCheck size={16} />
+          {currentStylist ? <>پنل شخصی {currentStylist.name}</> : "پنل مدیر سالن"}
+        </p>
+        <button
+          className="tap flex items-center gap-1"
+          style={{ fontSize: 11.5, fontWeight: 700, color: "white", background: "oklch(100% 0 0 / 0.18)", padding: "6px 11px", borderRadius: "var(--radius-full)" }}
+          onClick={onLogout}
+        >
+          خروج
+        </button>
+      </div>
+
+      {/* Sub-nav — a grid, not a scrolling strip, so every tab is visible at
+          once with nothing hidden off-screen. Each tab keeps its own color
+          identity (solid fill when active, soft tint when inactive). */}
+      <div className="grid gap-2 mb-4" style={{ gridTemplateColumns: "repeat(3, 1fr)" }} role="tablist" aria-label="بخش‌های پنل">
+        {subTabs.map((t) => {
+          const active = subTab === t.id;
+          return (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={active}
+              onClick={() => setSubTab(t.id)}
+              className="tap flex flex-col items-center justify-center gap-1"
+              style={{
+                padding: "10px 4px", borderRadius: "var(--radius-md)", fontSize: 10.5, fontWeight: active ? 800 : 700, textAlign: "center",
+                background: active ? t.color : `color-mix(in oklch, ${t.color} 11%, var(--color-surface))`,
+                color: active ? "white" : t.color,
+                border: active ? "none" : `1px solid color-mix(in oklch, ${t.color} 22%, transparent)`,
+                boxShadow: active ? `0 3px 10px -3px color-mix(in oklch, ${t.color} 55%, transparent)` : "none",
+                lineHeight: 1.3,
+              }}
+            >
+              <t.Icon size={17} />
+              {t.label}
+            </button>
+          );
+        })}
       </div>
 
       {subTab === "dashboard" && (
@@ -2611,7 +2822,13 @@ function PanelView({ bookings, services, setServices, stylists, addStylist, upda
           onConsumePresetSegment={() => setPendingSmsSegment(null)}
         />
       )}
-      {subTab === "loyalty" && <LoyaltyTab notify={notify} currentStylist={currentStylist} />}
+      {subTab === "loyalty" && (
+        <LoyaltyTab
+          notify={notify}
+          currentStylist={currentStylist}
+          onNavigateToSmsSegment={(segment) => { setPendingSmsSegment(segment); setSubTab("sms"); }}
+        />
+      )}
       {subTab === "ai" && <AIAnalysisTab bookings={bookings} />}
       {subTab === "bi" && !currentStylist && (
         <BITab
@@ -2622,7 +2839,6 @@ function PanelView({ bookings, services, setServices, stylists, addStylist, upda
           staffWorkingHours={staffWorkingHours}
           timeOff={timeOff}
           approvedDates={approvedDates}
-          onNavigateToSmsSegment={(segment) => { setPendingSmsSegment(segment); setSubTab("sms"); }}
         />
       )}
     </div>
@@ -2651,6 +2867,7 @@ function StaffTab({ stylists, addStylist, updateStylist, removeStylist, notify }
 
   return (
     <div>
+      <PanelSectionHeader Icon={Users} title="آرایشگرها" subtitle="افزودن، ویرایش، و مدیریت وضعیت فعال بودن هر آرایشگر" color="var(--color-info)" />
       <div className="flex items-center justify-between mb-3">
         <div className="flex gap-1" style={{ background: "var(--color-surface-raised)", padding: 3, borderRadius: "var(--radius-md)" }}>
           {[{ v: "all", l: "همه" }, { v: "female", l: "زنانه" }, { v: "male", l: "مردانه" }].map((f) => (
@@ -2832,6 +3049,12 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
 
   return (
     <div>
+      <PanelSectionHeader
+        Icon={LayoutList}
+        title={defaultStaffId ? "نوبت‌های من" : "نوبت‌های امروز"}
+        subtitle="مدیریت وضعیت نوبت‌ها بر اساس روز — تایید، تکمیل، یا لغو"
+        color="var(--color-tab-book)"
+      />
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-1">
           <button className="tap ghost-btn" style={{ width: 32, height: 32, padding: 0 }} onClick={() => shiftDay(-1)} aria-label="روز قبل">
@@ -3346,6 +3569,7 @@ function ServicesTab({ services, setServices, notify }) {
 
   return (
     <div>
+      <PanelSectionHeader Icon={Settings} title="خدمات" subtitle="افزودن، قیمت‌گذاری، و مدیریت خدمات هر بخش" color="var(--color-tab-services)" />
       <div className="flex items-center justify-between mb-3">
         <div className="flex gap-1" style={{ background: "var(--color-surface-raised)", padding: 3, borderRadius: "var(--radius-md)" }}>
           {[{ v: "all", l: "همه" }, { v: "female", l: "زنانه" }, { v: "male", l: "مردانه" }].map((f) => (
@@ -3643,6 +3867,12 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
 
   return (
     <div>
+      <PanelSectionHeader
+        Icon={CalendarIcon}
+        title={currentStylistId ? "ساعات کاری من" : "ساعات کاری"}
+        subtitle="ساعات کاری سالن، مرخصی‌ها، و تایید روزهای باز برای رزرو"
+        color="var(--color-tab-dash)"
+      />
       {currentStylistId && currentStylist && (
         <div className="card mb-6" style={{ padding: 14 }}>
           <p className="flex items-center gap-1.5" style={{ fontSize: 13, fontWeight: 700, color: "var(--color-heading)" }}>
@@ -4031,27 +4261,27 @@ function AccountingTab({ bookings, services, stylists = [], expenses, addExpense
       </div>
 
       {/* Completion-rate gauge */}
-      <div className="card mb-4" style={{ padding: 14, display: "flex", alignItems: "center", gap: 14, background: "linear-gradient(135deg, color-mix(in oklch, var(--color-success) 7%, var(--color-surface)), var(--color-surface))" }}>
-        <div
-          style={{
-            width: 56, height: 56, borderRadius: "50%", flexShrink: 0,
-            background: completionRate == null
-              ? "color-mix(in oklch, var(--color-success) 14%, var(--color-surface))"
-              : `conic-gradient(var(--color-success) ${Math.round(completionRate * 360)}deg, color-mix(in oklch, var(--color-success) 14%, var(--color-surface)) 0deg)`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}
-        >
-          <div style={{ width: 42, height: 42, borderRadius: "50%", background: "var(--color-surface)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <span className="tabular" style={{ fontSize: 12, fontWeight: 800, color: "var(--color-success)" }}>
-              {completionRate == null ? "—" : `${toFa(Math.round(completionRate * 100))}٪`}
-            </span>
+      <div className="card mb-4" style={{ padding: 14, background: "linear-gradient(135deg, color-mix(in oklch, var(--color-success) 7%, var(--color-surface)), var(--color-surface))" }}>
+        <p className="flex items-center gap-2 mb-3" style={{ fontSize: 15, fontWeight: 800, color: "var(--color-success)" }}>
+          <CheckCircle2 size={16} /> نرخ تکمیل نوبت‌ها
+        </p>
+        <div className="flex items-center gap-3">
+          <div
+            style={{
+              width: 56, height: 56, borderRadius: "50%", flexShrink: 0,
+              background: completionRate == null
+                ? "color-mix(in oklch, var(--color-success) 14%, var(--color-surface))"
+                : `conic-gradient(var(--color-success) ${Math.round(completionRate * 360)}deg, color-mix(in oklch, var(--color-success) 14%, var(--color-surface)) 0deg)`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            <div style={{ width: 42, height: 42, borderRadius: "50%", background: "var(--color-surface)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="tabular" style={{ fontSize: 12, fontWeight: 800, color: "var(--color-success)" }}>
+                {completionRate == null ? "—" : `${toFa(Math.round(completionRate * 100))}٪`}
+              </span>
+            </div>
           </div>
-        </div>
-        <div>
-          <p className="flex items-center gap-2" style={{ fontSize: 15, fontWeight: 800, color: "var(--color-success)" }}>
-            <CheckCircle2 size={16} /> نرخ تکمیل نوبت‌ها
-          </p>
-          <p className="muted" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.6 }}>
+          <p className="muted" style={{ fontSize: 11, lineHeight: 1.6 }}>
             {completed.length + cancelled.length > 0
               ? `${toFa(completed.length)} تکمیل‌شده از ${toFa(completed.length + cancelled.length)} نوبت قطعی‌شده`
               : "هنوز نوبت قطعی‌شده‌ای در این بازه نیست"}
@@ -4587,6 +4817,7 @@ const RFM_SEGMENT_META = {
 function RfmSegmentsCard({ onSendToSegment }) {
   const [segments, setSegments] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [openSegment, setOpenSegment] = useState(null); // segment key currently drilled into
 
   async function load() {
     setLoading(true);
@@ -4603,6 +4834,12 @@ function RfmSegmentsCard({ onSendToSegment }) {
       key, meta: RFM_SEGMENT_META[key], count: map.get(key) || 0, pct: ((map.get(key) || 0) / total) * 100,
     }));
   }, [segments]);
+
+  // Members of the currently open segment, most valuable (highest revenue) first.
+  const openMembers = useMemo(() => {
+    if (!openSegment) return [];
+    return segments.filter((s) => s.segment === openSegment).sort((a, b) => (b.monetary || 0) - (a.monetary || 0));
+  }, [segments, openSegment]);
 
   return (
     <div className="card mb-4" style={{ padding: 14 }}>
@@ -4622,7 +4859,12 @@ function RfmSegmentsCard({ onSendToSegment }) {
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           {bySegment.map(({ key, meta, count, pct }) => (
-            <div key={key} style={{ padding: "12px 10px 10px", borderRadius: "var(--radius-md)", background: `color-mix(in oklch, ${meta.color} 7%, var(--color-surface-raised))`, position: "relative", overflow: "hidden" }}>
+            <button
+              key={key}
+              onClick={() => count > 0 && setOpenSegment(key)}
+              className="tap"
+              style={{ padding: "12px 10px 10px", borderRadius: "var(--radius-md)", background: `color-mix(in oklch, ${meta.color} 7%, var(--color-surface-raised))`, position: "relative", overflow: "hidden", textAlign: "right", cursor: count > 0 ? "pointer" : "default" }}
+            >
               <div style={{ position: "absolute", top: 0, insetInlineStart: 0, insetInlineEnd: 0, height: 3, background: `color-mix(in oklch, ${meta.color} 80%, transparent)` }} />
               <div
                 style={{
@@ -4637,23 +4879,48 @@ function RfmSegmentsCard({ onSendToSegment }) {
               <div className="tabular" style={{ fontSize: 16, fontWeight: 800, color: meta.color, marginTop: 4 }}>{toFa(count)} نفر</div>
               <div className="muted tabular" style={{ fontSize: 10.5 }}>{toFa(Math.round(pct))}٪ از کل</div>
               {count > 0 && (
-                <button
-                  className="tap flex items-center gap-1"
-                  style={{ marginTop: 6, fontSize: 10.5, fontWeight: 700, color: meta.color, padding: "4px 0" }}
-                  onClick={() => onSendToSegment(key)}
-                >
-                  <Send size={10} /> ارسال پیامک به این دسته
-                </button>
+                <span className="flex items-center gap-1" style={{ marginTop: 6, fontSize: 10.5, fontWeight: 700, color: meta.color }}>
+                  <Users size={10} /> مشاهدهٔ اعضا
+                </span>
               )}
-            </div>
+            </button>
           ))}
         </div>
+      )}
+
+      {openSegment && (
+        <Modal title={`${RFM_SEGMENT_META[openSegment].emoji} ${RFM_SEGMENT_META[openSegment].label} (${toFa(openMembers.length)} نفر)`} onClose={() => setOpenSegment(null)}>
+          <div className="flex flex-col gap-2" style={{ maxHeight: "60vh", overflowY: "auto" }}>
+            {openMembers.map((m, i) => (
+              <div key={m.phone} className="flex items-center gap-2" style={{ padding: "8px 10px", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
+                <span className="tabular" style={{ width: 20, height: 20, borderRadius: "50%", background: `color-mix(in oklch, ${RFM_SEGMENT_META[openSegment].color} 16%, transparent)`, color: RFM_SEGMENT_META[openSegment].color, fontSize: 10, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {toFa(i + 1)}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 12.5, color: "var(--color-heading)" }}>{m.name || "بدون نام"}</div>
+                  <div className="muted tabular" style={{ fontSize: 10.5 }} dir="ltr">{toFa(m.phone)}</div>
+                </div>
+                <div style={{ textAlign: "left" }}>
+                  <div className="tabular" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)" }}>{formatToman(m.monetary || 0)}</div>
+                  <div className="muted tabular" style={{ fontSize: 10 }}>{toFa(m.frequency || 0)} ویزیت · {toFa(m.recency_days ?? 0)} روز پیش</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button
+            className="tap accent-btn w-full mt-3"
+            style={{ padding: 10, fontSize: 12.5 }}
+            onClick={() => { onSendToSegment(openSegment); setOpenSegment(null); }}
+          >
+            <Send size={13} style={{ display: "inline", marginLeft: 6 }} /> ارسال پیامک به این دسته
+          </button>
+        </Modal>
       )}
     </div>
   );
 }
 
-function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, onNavigateToSmsSegment }) {
+function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates }) {
   const [range, setRange] = useState("30"); // default 30 days
   const [branchFilter, setBranchFilter] = useState("all");
   const [staffFilter, setStaffFilter] = useState("all");
@@ -5002,8 +5269,6 @@ function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, 
       )}
 
       {!drill && <CampaignReturnRateCard />}
-
-      {!drill && <RfmSegmentsCard onSendToSegment={onNavigateToSmsSegment} />}
 
       {!drill && (
         <div className="card mb-4" style={{ padding: 14 }}>
@@ -5446,7 +5711,7 @@ function LoyaltyCustomerModal({ customer, settings, onClose, notify, onRedeemed 
   );
 }
 
-function LoyaltyTab({ notify, currentStylist }) {
+function LoyaltyTab({ notify, currentStylist, onNavigateToSmsSegment }) {
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -5491,15 +5756,19 @@ function LoyaltyTab({ notify, currentStylist }) {
 
   if (!SUPABASE_ENABLED) {
     return (
-      <div className="fade-in card" style={{ padding: 20, textAlign: "center" }}>
-        <Gift size={22} color="var(--color-muted)" style={{ margin: "0 auto 8px" }} />
-        <p className="muted" style={{ fontSize: 13 }}>باشگاه مشتریان به دیتابیس Supabase نیاز دارد و در حالت دمو در دسترس نیست.</p>
+      <div>
+        <PanelSectionHeader Icon={Gift} title="باشگاه مشتریان" subtitle="امتیاز، تخفیف پلکانی، و برنامهٔ معرفی دوستان" color="var(--color-success)" />
+        <div className="fade-in card" style={{ padding: 20, textAlign: "center" }}>
+          <Gift size={22} color="var(--color-muted)" style={{ margin: "0 auto 8px" }} />
+          <p className="muted" style={{ fontSize: 13 }}>باشگاه مشتریان به دیتابیس Supabase نیاز دارد و در حالت دمو در دسترس نیست.</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="fade-in">
+      <PanelSectionHeader Icon={Gift} title="باشگاه مشتریان" subtitle="امتیاز، تخفیف پلکانی، و برنامهٔ معرفی دوستان" color="var(--color-success)" />
       {/* Program settings */}
       <div className="card mb-4" style={{ padding: 14 }}>
         <p className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)", marginBottom: 10 }}>
@@ -5542,6 +5811,13 @@ function LoyaltyTab({ notify, currentStylist }) {
           </>
         )}
       </div>
+
+      {/* Customer segmentation (RFM) — moved here from «هوش تجاری» per request.
+          Owner/manager only: get_customer_rfm_segments() itself is restricted
+          to managers at the database level (is_manager() in the RPC), so this
+          stays gated the same way even though the rest of this tab is now
+          open to stylists. */}
+      {!currentStylist && <RfmSegmentsCard onSendToSegment={onNavigateToSmsSegment} />}
 
       {/* Customer list */}
       <div className="card" style={{ padding: 14 }}>
@@ -5865,6 +6141,7 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
   /* ----------------------------------------------------------------- render */
   return (
     <div className="fade-in flex flex-col gap-3">
+      <PanelSectionHeader Icon={MessageSquareText} title="پیامک" subtitle="کمپین‌های هوشمند، ارسال دستی، و الگوهای پیامک" color="var(--color-tab-panel)" />
       {/* ---- one-click smart campaigns (RFM segments) ---- */}
       <div className="card" style={{ padding: 14 }}>
         <div className="flex items-center justify-between mb-3">
