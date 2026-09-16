@@ -107,7 +107,14 @@ create table if not exists public.appointments (
   end_min               integer not null check (end_min between 0 and 1560),
   buffer_minutes        integer not null default 0,
   status                text not null default 'confirmed'
-                        check (status in ('pending','confirmed','cancelled','rescheduled','completed','no_show')),
+                        check (status in ('pending','confirmed','cancelled','rescheduled','completed','no_show','reschedule_proposed')),
+  -- When staff proposes moving a booking, the CURRENT date/start_min/end_min
+  -- stay as the source of truth (nothing actually moves yet) and the
+  -- proposed new time goes here instead, until the customer confirms,
+  -- rejects, or picks a different time themselves.
+  pending_date          date,
+  pending_start_min     integer check (pending_start_min is null or pending_start_min between 0 and 1440),
+  pending_end_min       integer check (pending_end_min is null or pending_end_min between 0 and 1560),
   tracking_code         text not null,
   original_price        bigint not null default 0,
   discount_type         text not null default 'none',
@@ -144,7 +151,15 @@ create table if not exists public.time_offs (
   date       date not null,
   reason     text not null default '',
   staff_id   text references public.stylists (id) on delete cascade,
-  created_at timestamptz not null default now()
+  -- NULL/NULL = whole day off (original behavior). Both set = only that
+  -- time window is closed; the rest of the day stays bookable as normal.
+  start_min  integer check (start_min is null or start_min between 0 and 1439),
+  end_min    integer check (end_min is null or end_min between 1 and 1440),
+  created_at timestamptz not null default now(),
+  constraint time_offs_partial_range_valid check (
+    (start_min is null and end_min is null) or
+    (start_min is not null and end_min is not null and end_min > start_min)
+  )
 );
 create index if not exists time_offs_date_idx on public.time_offs (date);
 
@@ -654,6 +669,9 @@ returns table (
   segment text, segment_fa text
 )
 language sql stable security definer set search_path = public as $fn$
+  -- Open to any authenticated staff member (owner, manager, or stylist) —
+  -- previously manager-only, but a stylist deciding who to follow up with
+  -- needs this exactly as much as the owner does.
   with scored as (
     select
       raw.*,
@@ -667,25 +685,26 @@ language sql stable security definer set search_path = public as $fn$
            else 1 end as f_score,
       ntile(4) over (order by raw.monetary asc) as m_score
     from public.customer_rfm_raw raw
-    where public.is_manager()
+    where public.is_staff()
   )
+  -- Four segments instead of six: each maps to one clear action, and the
+  -- two "not quite champions, not quite gone" middle categories the old
+  -- version split apart (نیازمند توجه / در خطر ریزش, and پتانسیل وفاداری as
+  -- a catch-all) get merged into whichever real category they're closest to
+  -- in practice, since the follow-up message for both is the same anyway.
   select
     phone, name, sms_opt_out, recency_days, frequency, monetary, r_score, f_score, m_score,
     case
       when r_score >= 3 and f_score >= 3 then 'champions'
-      when r_score = 2 and f_score >= 3  then 'need_attention'
-      when r_score = 1 and f_score >= 3  then 'at_risk'
-      when r_score >= 3 and f_score < 3  then 'new_or_promising'
-      when r_score = 1 and f_score < 3   then 'hibernating'
-      else 'promising'
+      when r_score <= 2 and f_score >= 3 then 'at_risk'
+      when r_score >= 3 and f_score < 3  then 'new'
+      else 'inactive'
     end as segment,
     case
-      when r_score >= 3 and f_score >= 3 then 'قهرمانان (وفادارترین‌ها)'
-      when r_score = 2 and f_score >= 3  then 'نیازمند توجه'
-      when r_score = 1 and f_score >= 3  then 'در خطر ریزش'
-      when r_score >= 3 and f_score < 3  then 'مشتریان جدید و امیدبخش'
-      when r_score = 1 and f_score < 3   then 'خواب‌رفته'
-      else 'پتانسیل وفاداری'
+      when r_score >= 3 and f_score >= 3 then 'مشتریان وفادار'
+      when r_score <= 2 and f_score >= 3 then 'در خطر ریزش'
+      when r_score >= 3 and f_score < 3  then 'مشتریان جدید'
+      else 'غیرفعال'
     end as segment_fa
   from scored;
 $fn$;

@@ -514,6 +514,7 @@ const FALLBACK_SMS_TEMPLATES = {
   reminder: "{{name}} عزیز، یادآوری نوبت شما در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما هستیم.",
   cancellation: "{{name}} عزیز، نوبت شما ({{service}} — {{date}} ساعت {{time}}) لغو شد.\nبرای رزرو مجدد به {{salon}} مراجعه کنید.",
   reschedule: "{{name}} عزیز، زمان نوبت شما تغییر کرد.\nزمان جدید: {{date}} ساعت {{time}}\nخدمت: {{service}}\nکد پیگیری: {{code}}",
+  reschedule_proposed: "{{name}} عزیز، آرایشگر پیشنهاد داده نوبت شما به {{date}} ساعت {{time}} جابه‌جا بشه.\nبرای تایید یا رد این پیشنهاد، در تب «داشبورد من» شماره‌تون را وارد کنید.",
   campaign: "{{name}} عزیز، جای شما در {{salon}} خالیه!\nبه‌مناسبت بازگشتتون {{discount}}٪ تخفیف روی همه خدمات براتون فعال کردیم.\nهمین حالا رزرو کنید.",
   loyalty: "{{name}} عزیز، امتیاز شما در باشگاه مشتریان {{salon}}: {{points}}\nتخفیف فعال شما: {{discount}}٪",
   custom: "",
@@ -524,6 +525,7 @@ const SMS_KIND_LABEL = {
   reminder: "یادآوری نوبت",
   cancellation: "لغو نوبت",
   reschedule: "تغییر زمان",
+  reschedule_proposed: "پیشنهاد تغییر زمان",
   campaign: "کمپین جذب مجدد",
   loyalty: "باشگاه مشتریان",
   custom: "پیام آزاد",
@@ -534,8 +536,9 @@ const SMS_KIND_LABEL = {
 // informational only in the BI tab.
 const RFM_SMART_DRAFTS = {
   champions: "سلام {{name}} جونم! مرسی که همیشه همراه مایی ❤️ یه هدیه کوچیک برای نوبت بعدیت داری: ۱۰٪ تخفیف روی تمام خدمات سالن. منتظر دیدنتیم!",
-  need_attention: "سلام {{name}} جان، چطوری؟ {{days}} روزه ندیدیمت و دلمون تنگ شده! وقتشه یه حال اساسی به موهات/پوستت بدی ✨ برای رزرو نوبت این هفته در خدمتتیم.",
-  at_risk: "سلام {{name}} قشنگم، کجایی کم پیدایی؟ سالن بدون تو یه چیزی کم داره! برات ۲۵٪ تخفیف ویژه بازگشت در نظر گرفتیم که زودتر بیای ببینیمت 🎁",
+  at_risk: "سلام {{name}} جان، {{days}} روزه ندیدیمت و دلمون برات تنگ شده! برای اینکه زودتر برگردی، ۲۰٪ تخفیف ویژه برات در نظر گرفتیم 🎁 منتظرتیم.",
+  new: "سلام {{name}} عزیز، خیلی خوشحالیم که اومدی پیشمون! امیدواریم از خدمات راضی بوده باشی. برای نوبت بعدیت هم همیشه در خدمتتیم 🌸",
+  inactive: "سلام {{name}} عزیز، مدتیه ندیدیمت! هر وقت دلت خواست دوباره سر بزنی، با روی باز منتظرتیم 💛",
 };
 
 const SMS_STATUS_META = {
@@ -609,6 +612,9 @@ function makeSeedBooking(overrides) {
     end_min: 10 * 60 + 45,
     buffer_minutes: 0, // snapshot of the service's touch-up/cleanup time at booking time
     status: "confirmed",
+    pending_date: null,
+    pending_start_min: null,
+    pending_end_min: null,
     tracking_code: randomTrackingCode(),
     original_price: 0,
     discount_type: "none",
@@ -664,6 +670,7 @@ const STATUS_META = {
   confirmed: { label: "تایید شده", bg: "var(--color-accent-500)", fg: "oklch(16% 0.02 70)", Icon: CheckCircle2, strike: false },
   cancelled: { label: "لغو شده", bg: "var(--color-muted)", fg: "white", Icon: XCircle, strike: true },
   rescheduled: { label: "تغییر زمان", bg: "var(--color-accent-700)", fg: "white", Icon: RotateCcw, strike: false },
+  reschedule_proposed: { label: "پیشنهاد تغییر زمان", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: Clock, strike: false },
   completed: { label: "انجام شده", bg: "var(--color-success)", fg: "white", Icon: Check, strike: false },
   no_show: { label: "عدم حضور", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: X, strike: false },
 };
@@ -1211,6 +1218,11 @@ export default function App() {
         await cancelScheduledReminders(id);
         await sendBookingSms(after, "reschedule");
         await queueReminder(after);
+      } else if (patch.status === "reschedule_proposed") {
+        // The actual date/start_min haven't moved yet — only the pending_*
+        // fields carry the proposed new time, so swap those in just for
+        // building this one message (bookingSmsVars reads .date/.start_min).
+        await sendBookingSms({ ...after, date: after.pending_date, start_min: after.pending_start_min }, "reschedule_proposed");
       } else if (patch.status === "confirmed") {
         await sendBookingSms(after, "confirmation");
         await queueReminder(after);
@@ -1770,8 +1782,11 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
     const list = (stId && staffWorkingHours[stId]) || workingHours;
     return list.find((w) => w.day_of_week === schemaDayOf(date));
   }
+  // Only a WHOLE-day record (no start/end time) closes the day entirely — a
+  // partial-hour closure (e.g. "closed 14:00–16:00 for a break") leaves the
+  // rest of the day bookable as normal, so it must NOT trip this check.
   function isTimeOffForId(stId, date) {
-    return timeOff.some((t) => (!t.staff_id || t.staff_id === stId) && t.date === dateKey(date));
+    return timeOff.some((t) => (!t.staff_id || t.staff_id === stId) && t.date === dateKey(date) && t.start_min == null);
   }
   function isApproved(date) {
     return approvedDates.includes(dateKey(date));
@@ -1785,9 +1800,18 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
   }
   function dayBookingsForId(stId, date) {
     const dKey = dateKey(date);
-    return bookings.filter(
-      (b) => b.date === dKey && b.staff_id === stId && (b.status === "confirmed" || b.status === "pending" || b.status === "rescheduled")
+    // A booking awaiting customer confirmation of a proposed reschedule still
+    // occupies its ORIGINAL slot until resolved — include it in the occupied set.
+    const realBookings = bookings.filter(
+      (b) => b.date === dKey && b.staff_id === stId && (b.status === "confirmed" || b.status === "pending" || b.status === "rescheduled" || b.status === "reschedule_proposed")
     );
+    // Partial-hour closures block time exactly like a booking would — reuse
+    // the same overlap-checking mechanics (fitsWithoutOverlap/isOccupied)
+    // by representing each one as a phantom "booking" with no buffer.
+    const partialClosures = timeOff
+      .filter((t) => (!t.staff_id || t.staff_id === stId) && t.date === dKey && t.start_min != null)
+      .map((t) => ({ start_min: t.start_min, end_min: t.end_min, buffer_minutes: 0 }));
+    return [...realBookings, ...partialClosures];
   }
   // The same 15-min-grid + gap-closing-candidate logic used everywhere else,
   // scoped to one specific stylist's own calendar.
@@ -2546,6 +2570,7 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
                 const service = services.find((s) => s.id === b.service_id);
                 if (!service) return null;
                 const hasDiscount = b.discount_type !== "none" && b.discount_value > 0;
+                const isProposed = b.status === "reschedule_proposed";
                 const changeable = ["pending", "confirmed", "rescheduled"].includes(b.status);
                 return (
                   <div key={b.id} className="card fade-in" style={{ padding: 16 }}>
@@ -2567,7 +2592,49 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
                       </>
                     )}
 
-                    {changeable ? (
+                    {isProposed ? (
+                      <div className="fade-in" style={{ marginTop: 14, padding: 12, borderRadius: "var(--radius-md)", background: "color-mix(in oklch, var(--color-warning) 12%, transparent)" }}>
+                        <p className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-warning)" }}>
+                          <Clock size={14} /> آرایشگر پیشنهاد زمان جدید داده
+                        </p>
+                        <div className="flex items-center gap-2 mt-2" style={{ fontSize: 13 }}>
+                          <span className="muted tabular" style={{ textDecoration: "line-through" }}>
+                            {jalaliLabel(parseDateKey(b.date), { short: true })} - {formatClock(b.start_min)}
+                          </span>
+                          <ChevronLeft size={13} color="var(--color-muted)" />
+                          <span className="tabular" style={{ fontWeight: 800, color: "var(--color-heading)" }}>
+                            {jalaliLabel(parseDateKey(b.pending_date), { short: true })} - {formatClock(b.pending_start_min)}
+                          </span>
+                        </div>
+                        <div className="flex gap-2 mt-3">
+                          <button
+                            className="tap accent-btn flex-1"
+                            style={{ padding: 10, fontSize: 12.5 }}
+                            onClick={() => updateBooking(
+                              b.id,
+                              { date: b.pending_date, start_min: b.pending_start_min, end_min: b.pending_end_min, status: "rescheduled", pending_date: null, pending_start_min: null, pending_end_min: null },
+                              "زمان جدید تایید شد"
+                            )}
+                          >
+                            تایید تغییر
+                          </button>
+                          <button
+                            className="tap ghost-btn flex-1"
+                            style={{ padding: 10, fontSize: 12.5 }}
+                            onClick={() => setActionFor({ id: b.id, type: "reschedule" })}
+                          >
+                            انتخاب زمان دیگر
+                          </button>
+                        </div>
+                        <button
+                          className="tap w-full mt-2"
+                          style={{ padding: 9, fontSize: 12, fontWeight: 700, borderRadius: "var(--radius-md)", border: "1px solid var(--color-danger)", background: "transparent", color: "var(--color-danger)" }}
+                          onClick={() => setActionFor({ id: b.id, type: "cancel" })}
+                        >
+                          لغو نوبت
+                        </button>
+                      </div>
+                    ) : changeable ? (
                       <div className="flex gap-2 mt-4">
                         <button className="tap ghost-btn flex-1" style={{ padding: 11, fontSize: 13, fontWeight: 700 }} onClick={() => setActionFor({ id: b.id, type: "reschedule" })}>
                           تغییر زمان
@@ -2690,7 +2757,11 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
           onClose={() => setActionFor(null)}
           onConfirm={(newStart, newDate) => {
             const svc = services.find((s) => s.id === actionBooking.service_id);
-            updateBooking(actionBooking.id, { start_min: newStart, end_min: newStart + svc.duration_minutes, date: newDate, status: "rescheduled" }, "نوبت شما جابه‌جا شد");
+            updateBooking(
+              actionBooking.id,
+              { start_min: newStart, end_min: newStart + svc.duration_minutes, date: newDate, status: "rescheduled", pending_date: null, pending_start_min: null, pending_end_min: null },
+              "نوبت شما جابه‌جا شد"
+            );
             setActionFor(null);
           }}
         />
@@ -3240,6 +3311,11 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
                       {service?.name}{b.staff_name ? ` · ${b.staff_name}` : ""}
                     </div>
                     <div className="mt-1.5"><Badge status={b.status} /></div>
+                    {b.status === "reschedule_proposed" && (
+                      <div className="flex items-center gap-1 tabular" style={{ fontSize: 10.5, marginTop: 3, color: "var(--color-warning)" }}>
+                        <Clock size={11} /> پیشنهاد: {jalaliLabel(parseDateKey(b.pending_date), { short: true })} - {formatClock(b.pending_start_min)} — در انتظار پاسخ مشتری
+                      </div>
+                    )}
                     <div className="muted tabular" style={{ fontSize: 10.5, marginTop: 4 }}>
                       {prevB ? <>قبلی: {formatClock(prevB.start_min)} · {prevB.customer_name}</> : "اولین نوبت این روز"}
                       {" — "}
@@ -3287,7 +3363,11 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
           onClose={() => setAction(null)}
           onConfirm={(newStart, newDate) => {
             const svc = services.find((s) => s.id === action.booking.service_id);
-            updateBooking(action.booking.id, { start_min: newStart, end_min: newStart + svc.duration_minutes, date: newDate, status: "rescheduled" }, "نوبت جابه‌جا شد؛ پیامک برای مشتری ارسال شد");
+            updateBooking(
+              action.booking.id,
+              { pending_date: newDate, pending_start_min: newStart, pending_end_min: newStart + svc.duration_minutes, status: "reschedule_proposed" },
+              "پیشنهاد زمان جدید ثبت شد؛ برای تایید نهایی منتظر پاسخ مشتری بمانید"
+            );
             setAction(null);
           }}
         />
@@ -3396,8 +3476,10 @@ function RescheduleModal({ booking, services, bookings, workingHours, staffWorki
     if (effectiveWorkingHours) return effectiveWorkingHours.find((w) => w.day_of_week === schemaDayOf(d));
     return { start_time: "09:00", end_time: "21:00", is_closed: d.getDay() === 5 };
   }
+  // Only a whole-day record (no start/end time) closes the day entirely —
+  // a partial-hour closure leaves the rest of the day bookable as normal.
   function isTimeOff(d) {
-    return effectiveTimeOff.some((t) => t.date === dateKey(d));
+    return effectiveTimeOff.some((t) => t.date === dateKey(d) && t.start_min == null);
   }
   // Staff can move a booking into any open working day at their own discretion; a customer
   // rescheduling their own appointment is still bound by whatever the salon has released.
@@ -3415,10 +3497,18 @@ function RescheduleModal({ booking, services, bookings, workingHours, staffWorki
 
   const dayBookings = useMemo(() => {
     const dKey = dateKey(date);
-    const sameDay = bookings.filter((b) => b.date === dKey && b.id !== booking.id && (b.status === "confirmed" || b.status === "pending" || b.status === "rescheduled"));
-    if (booking.staff_id) return sameDay.filter((b) => b.staff_id === booking.staff_id);
-    return sameDay.filter((b) => b.customer_gender === booking.customer_gender);
-  }, [date, bookings, booking.id, booking.staff_id, booking.customer_gender]);
+    const sameDay = bookings.filter((b) => b.date === dKey && b.id !== booking.id && (b.status === "confirmed" || b.status === "pending" || b.status === "rescheduled" || b.status === "reschedule_proposed"));
+    const scoped = booking.staff_id
+      ? sameDay.filter((b) => b.staff_id === booking.staff_id)
+      : sameDay.filter((b) => b.customer_gender === booking.customer_gender);
+    // Partial-hour closures block time exactly like a booking would — reuse
+    // the same overlap-checking mechanics by representing each one as a
+    // phantom "booking" with no buffer.
+    const partialClosures = effectiveTimeOff
+      .filter((t) => t.date === dKey && t.start_min != null)
+      .map((t) => ({ start_min: t.start_min, end_min: t.end_min, buffer_minutes: 0 }));
+    return [...scoped, ...partialClosures];
+  }, [date, bookings, booking.id, booking.staff_id, booking.customer_gender, effectiveTimeOff]);
 
   const wh = whFor(date);
   const whClosed = !!unavailableReason(date);
@@ -3461,14 +3551,16 @@ function RescheduleModal({ booking, services, bookings, workingHours, staffWorki
             </>
           ) : (
             <>
-              نوبت <b>{booking.customer_name}</b> از <span className="tabular">{formatClock(booking.start_min)}</span> به{" "}
-              <b className="tabular">{jalaliLabel(date, { short: true })} ساعت {formatClock(slot)}</b> منتقل شود؟ پیامک اطلاع‌رسانی برای مشتری ارسال می‌شود.
+              پیشنهاد جابه‌جایی نوبت <b>{booking.customer_name}</b> از <span className="tabular">{formatClock(booking.start_min)}</span> به{" "}
+              <b className="tabular">{jalaliLabel(date, { short: true })} ساعت {formatClock(slot)}</b> برای مشتری ارسال شود؟ نوبت واقعاً تغییر نمی‌کند تا وقتی مشتری تایید کند.
             </>
           )}
         </p>
         <div className="flex gap-2">
           <button className="tap ghost-btn flex-1" style={{ padding: 12, fontWeight: 700 }} onClick={() => setConfirming(false)}>بازگشت</button>
-          <button className="tap accent-btn flex-1" style={{ padding: 12 }} onClick={() => onConfirm(slot, dateKey(date))}>بله، ثبت شود</button>
+          <button className="tap accent-btn flex-1" style={{ padding: 12 }} onClick={() => onConfirm(slot, dateKey(date))}>
+            {variant === "customer" ? "بله، ثبت شود" : "بله، پیشنهاد ارسال شود"}
+          </button>
         </div>
       </Modal>
     );
@@ -3810,6 +3902,9 @@ function ServiceEditModal({ service, onClose, onSave }) {
 function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, currentStylistId, currentStylist, updateStylist, timeOff, setTimeOff, approvedDates, setApprovedDates, notify }) {
   const [newOffDate, setNewOffDate] = useState("");
   const [newOffReason, setNewOffReason] = useState("");
+  const [newOffAllDay, setNewOffAllDay] = useState(true);
+  const [newOffStart, setNewOffStart] = useState("13:00");
+  const [newOffEnd, setNewOffEnd] = useState("14:00");
 
   const myHours = currentStylistId ? (staffWorkingHours[currentStylistId] || workingHours) : workingHours;
   const myTimeOff = currentStylistId ? timeOff.filter((t) => t.staff_id === currentStylistId) : timeOff.filter((t) => !t.staff_id);
@@ -3824,11 +3919,16 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
       setWorkingHours((prev) => prev.map((w) => (w.day_of_week === day ? { ...w, ...patch } : w)));
     }
   }
+  const newOffRangeValid = newOffAllDay || hhmmToMin(newOffEnd) > hhmmToMin(newOffStart);
   function addTimeOff() {
-    if (!newOffDate) return;
-    setTimeOff((prev) => [...prev, { id: uid(), date: newOffDate, reason: newOffReason.trim(), staff_id: currentStylistId || null }]);
-    setNewOffDate(""); setNewOffReason("");
-    notify("تعطیلی موقت اضافه شد");
+    if (!newOffDate || !newOffRangeValid) return;
+    setTimeOff((prev) => [...prev, {
+      id: uid(), date: newOffDate, reason: newOffReason.trim(), staff_id: currentStylistId || null,
+      start_min: newOffAllDay ? null : hhmmToMin(newOffStart),
+      end_min: newOffAllDay ? null : hhmmToMin(newOffEnd),
+    }]);
+    setNewOffDate(""); setNewOffReason(""); setNewOffAllDay(true);
+    notify(newOffAllDay ? "تعطیلی تمام‌روز اضافه شد" : "تعطیلی ساعتی اضافه شد");
   }
   function removeTimeOff(id) {
     setTimeOff((prev) => prev.filter((t) => t.id !== id));
@@ -3836,7 +3936,7 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
 
   function isDayLocked(d) {
     const wh = workingHours.find((w) => w.day_of_week === schemaDayOf(d));
-    return !wh || wh.is_closed || timeOff.some((t) => t.date === dateKey(d) && !t.staff_id);
+    return !wh || wh.is_closed || timeOff.some((t) => t.date === dateKey(d) && !t.staff_id && t.start_min == null);
   }
   function toggleApproved(d) {
     if (isDayLocked(d)) return;
@@ -3998,12 +4098,41 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
             ))}
           </select>
         </div>
+
+        <div className="flex gap-1 mt-2" style={{ background: "var(--color-surface-raised)", padding: 3, borderRadius: "var(--radius-md)" }}>
+          <button
+            onClick={() => setNewOffAllDay(true)}
+            className="tap flex-1"
+            style={{ padding: "7px 4px", borderRadius: "var(--radius-sm)", fontSize: 12, fontWeight: 700, background: newOffAllDay ? "var(--color-surface)" : "transparent", color: newOffAllDay ? "var(--color-heading)" : "var(--color-muted)", boxShadow: newOffAllDay ? "0 1px 3px rgba(0,0,0,.08)" : "none" }}
+          >
+            تمام روز
+          </button>
+          <button
+            onClick={() => setNewOffAllDay(false)}
+            className="tap flex-1"
+            style={{ padding: "7px 4px", borderRadius: "var(--radius-sm)", fontSize: 12, fontWeight: 700, background: !newOffAllDay ? "var(--color-surface)" : "transparent", color: !newOffAllDay ? "var(--color-heading)" : "var(--color-muted)", boxShadow: !newOffAllDay ? "0 1px 3px rgba(0,0,0,.08)" : "none" }}
+          >
+            بازهٔ ساعتی (مثلاً استراحت ناهار)
+          </button>
+        </div>
+
+        {!newOffAllDay && (
+          <div className="flex items-center gap-1.5 tabular mt-2" dir="ltr">
+            <input type="time" value={newOffStart} onChange={(e) => setNewOffStart(e.target.value)} style={{ flex: 1, padding: "9px 10px", fontSize: 12.5 }} />
+            <span className="muted" style={{ fontSize: 12 }}>تا</span>
+            <input type="time" value={newOffEnd} onChange={(e) => setNewOffEnd(e.target.value)} style={{ flex: 1, padding: "9px 10px", fontSize: 12.5 }} />
+          </div>
+        )}
+        {!newOffAllDay && !newOffRangeValid && (
+          <p style={{ fontSize: 11, color: "var(--color-danger)", marginTop: 4 }}>ساعت پایان باید بعد از ساعت شروع باشد</p>
+        )}
+
         <input
           value={newOffReason} onChange={(e) => setNewOffReason(e.target.value)} placeholder="دلیل (اختیاری)"
           style={{ width: "100%", padding: "9px 10px", fontSize: 12.5, marginTop: 8 }}
         />
-        <button disabled={!newOffDate} className="tap accent-btn w-full mt-2 flex items-center justify-center gap-1.5" style={{ padding: 10, fontSize: 13 }} onClick={addTimeOff}>
-          <CalendarX size={14} /> ثبت تعطیلی
+        <button disabled={!newOffDate || !newOffRangeValid} className="tap accent-btn w-full mt-2 flex items-center justify-center gap-1.5" style={{ padding: 10, fontSize: 13 }} onClick={addTimeOff}>
+          <CalendarX size={14} /> {newOffAllDay ? "ثبت تعطیلی تمام‌روز" : "ثبت تعطیلی ساعتی"}
         </button>
       </div>
 
@@ -4014,11 +4143,19 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
           .sort((a, b) => a.date.localeCompare(b.date))
           .map((t) => {
             const [y, m, d] = t.date.split("-").map(Number);
+            const isPartial = t.start_min != null;
             return (
               <div key={t.id} className="card" style={{ padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
-                <CalendarX size={15} color="var(--color-danger)" style={{ flexShrink: 0 }} />
+                {isPartial ? <Clock size={15} color="var(--color-warning)" style={{ flexShrink: 0 }} /> : <CalendarX size={15} color="var(--color-danger)" style={{ flexShrink: 0 }} />}
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--color-heading)" }}>{jalaliLabel(new Date(y, m - 1, d), { short: true })}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "var(--color-heading)" }}>{jalaliLabel(new Date(y, m - 1, d), { short: true })}</span>
+                    {isPartial && (
+                      <span className="tabular" dir="ltr" style={{ fontSize: 11, fontWeight: 700, color: "var(--color-warning)", background: "color-mix(in oklch, var(--color-warning) 14%, transparent)", padding: "2px 7px", borderRadius: "var(--radius-full)" }}>
+                        {formatClock(t.start_min)} - {formatClock(t.end_min)}
+                      </span>
+                    )}
+                  </div>
                   {t.reason && <div className="muted" style={{ fontSize: 11.5 }}>{t.reason}</div>}
                 </div>
                 <button className="tap ghost-btn" style={{ width: 30, height: 30, padding: 0 }} onClick={() => removeTimeOff(t.id)}>
@@ -4804,12 +4941,10 @@ function CampaignReturnRateCard() {
 }
 
 const RFM_SEGMENT_META = {
-  champions: { label: "قهرمانان (وفادارترین‌ها)", emoji: "👑", color: "var(--color-accent-500)" },
-  need_attention: { label: "نیازمند توجه", emoji: "⚠️", color: "var(--color-warning)" },
+  champions: { label: "مشتریان وفادار", emoji: "👑", color: "var(--color-accent-500)" },
   at_risk: { label: "در خطر ریزش", emoji: "🚨", color: "var(--color-danger)" },
-  new_or_promising: { label: "مشتریان جدید و امیدبخش", emoji: "🌱", color: "var(--color-success)" },
-  hibernating: { label: "خواب‌رفته", emoji: "💤", color: "var(--color-muted)" },
-  promising: { label: "پتانسیل وفاداری", emoji: "🔷", color: "var(--color-info)" },
+  new: { label: "مشتریان جدید", emoji: "🌱", color: "var(--color-success)" },
+  inactive: { label: "غیرفعال", emoji: "💤", color: "var(--color-muted)" },
 };
 
 // Reads the get_customer_rfm_segments() RPC directly — a separate data source from
@@ -5622,7 +5757,6 @@ const AUDIENCES = [
   { id: "tomorrow", label: "نوبت‌های فردا",    Icon: CalendarClock },
   { id: "week",     label: "۷ روز آینده",      Icon: CalendarIcon },
   { id: "all",      label: "همهٔ مشتری‌ها",     Icon: Users },
-  { id: "inactive", label: "جذب مجدد",         Icon: Repeat2 },
   { id: "manual",   label: "شمارهٔ دستی",      Icon: UserPlus },
 ];
 
@@ -5812,12 +5946,11 @@ function LoyaltyTab({ notify, currentStylist, onNavigateToSmsSegment }) {
         )}
       </div>
 
-      {/* Customer segmentation (RFM) — moved here from «هوش تجاری» per request.
-          Owner/manager only: get_customer_rfm_segments() itself is restricted
-          to managers at the database level (is_manager() in the RPC), so this
-          stays gated the same way even though the rest of this tab is now
-          open to stylists. */}
-      {!currentStylist && <RfmSegmentsCard onSendToSegment={onNavigateToSmsSegment} />}
+      {/* Customer segmentation (RFM) — moved here from «هوش تجاری» earlier.
+          Simplified to 4 targeted segments (from 6) and opened to stylists —
+          get_customer_rfm_segments() itself now allows any active staff
+          member, not just managers. */}
+      <RfmSegmentsCard onSendToSegment={onNavigateToSmsSegment} />
 
       {/* Customer list */}
       <div className="card" style={{ padding: 14 }}>
@@ -5879,7 +6012,14 @@ function LoyaltyTab({ notify, currentStylist, onNavigateToSmsSegment }) {
   );
 }
 
+const SMS_SEGMENTS = [
+  { id: "quick", label: "ارسال سریع", Icon: Zap, color: "var(--color-success)" },
+  { id: "manual", label: "پیام دستی", Icon: MessageSquareText, color: "var(--color-tab-panel)" },
+  { id: "log", label: "تاریخچه", Icon: History, color: "var(--color-info)" },
+];
+
 function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegment, onConsumePresetSegment }) {
+  const [segment, setSegment] = useState("quick");
   const [audience, setAudience] = useState("today");
   const [templateId, setTemplateId] = useState("");
   const [body, setBody] = useState("");
@@ -5888,15 +6028,10 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
   const [sending, setSending] = useState(false);
   const [log, setLog] = useState([]);
   const [logLoading, setLogLoading] = useState(false);
-
-  // ---- win-back campaign controls (phase 3) --------------------------------
-  const [inactiveDays, setInactiveDays] = useState(60);
-  const [discount, setDiscount] = useState(15);
-  const [inactiveList, setInactiveList] = useState([]);
-  const [inactiveLoading, setInactiveLoading] = useState(false);
+  const [discount, setDiscount] = useState(15); // only used if the {{discount}} token is inserted
   const [allCustomers, setAllCustomers] = useState([]);
 
-  // ---- smart RFM campaign cards (phase 5) ----------------------------------
+  // ---- smart RFM campaign cards ----
   const [rfmSegments, setRfmSegments] = useState([]);
   const [rfmLoading, setRfmLoading] = useState(false);
   const [sendingSegment, setSendingSegment] = useState(null); // which segment is mid-send
@@ -5910,11 +6045,11 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
     })();
   }, []);
 
-  // Arrived here via the BI tab's "ارسال پیامک به این دسته" button — highlight
-  // that card so it's obvious which one was preselected, then clear the pending
-  // flag up in PanelView (this component's own highlight state persists locally).
+  // Arrived here via the Loyalty tab's "ارسال پیامک به این دسته" button — jump
+  // straight to Quick Send and highlight that card.
   useEffect(() => {
     if (!presetSegment) return;
+    setSegment("quick");
     setHighlightSegment(presetSegment);
     onConsumePresetSegment?.();
   }, [presetSegment]);
@@ -5969,14 +6104,6 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templates.length]);
 
-  // Switching to the win-back audience swaps in the campaign template.
-  useEffect(() => {
-    if (audience !== "inactive") return;
-    const t = templates.find((x) => x.kind === "campaign");
-    if (t) { setTemplateId(t.id); setBody(t.body || ""); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audience]);
-
   async function refreshLog() {
     setLogLoading(true);
     setLog(await fetchSmsLog(40));
@@ -5988,16 +6115,6 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
     if (audience !== "all") return;
     (async () => setAllCustomers(await fetchCustomers()))();
   }, [audience]);
-
-  async function loadInactive() {
-    setInactiveLoading(true);
-    const rows = await fetchInactiveCustomers(inactiveDays);
-    setInactiveLoading(false);
-    if (!rows.length && !SUPABASE_ENABLED) {
-      notify("در حالت دمو لیست جذب مجدد از سرور خوانده نمی‌شود");
-    }
-    setInactiveList(rows);
-  }
 
   /* -------------------------------------------------- recipient resolution */
   const recipients = useMemo(() => {
@@ -6054,18 +6171,6 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
       }));
     }
 
-    if (audience === "inactive") {
-      return inactiveList.map((c) => ({
-        phone: c.phone,
-        vars: {
-          name: c.name || "مشتری",
-          days: toFa(c.days_since ?? inactiveDays),
-          discount: String(discount),
-          points: "0", service: "", date: "", time: "", stylist: "", code: "",
-        },
-      }));
-    }
-
     // manual
     return [...new Set(
       manualNumbers.split(/[\s,،;\n]+/).map((x) => x.trim()).filter((x) => /^09\d{9}$/.test(x))
@@ -6073,11 +6178,12 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
       phone,
       vars: { name: "مشتری", discount: String(discount), points: "0", service: "", date: "", time: "", stylist: "", code: "" },
     }));
-  }, [audience, bookings, services, manualNumbers, inactiveList, allCustomers, discount, inactiveDays]);
+  }, [audience, bookings, services, manualNumbers, allCustomers, discount]);
 
   const preview = recipients.length ? renderTemplate(body, recipients[0].vars) : renderTemplate(body, {});
   const parts = smsParts(preview);
   const totalParts = parts * recipients.length;
+  const usesDiscountToken = body.includes("{{discount}}");
 
   function insertToken(token) {
     const el = bodyRef.current;
@@ -6097,32 +6203,11 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
     if (!body.trim()) { notify("متن پیام خالی است"); return; }
 
     setSending(true);
-    const kind = audience === "inactive" ? "campaign" : "custom";
-    let campaignId = null;
-
-    // Win-back campaign: persist the campaign + its targets first, so the BI tab
-    // can measure نرخ بازگشت against a real cohort.
-    if (audience === "inactive") {
-      campaignId = "cmp-" + Date.now().toString(36);
-      const validUntil = new Date();
-      validUntil.setDate(validUntil.getDate() + 30);
-      await createCampaign({
-        id: campaignId,
-        name: `جذب مجدد ${toFa(inactiveDays)} روزه — ${toFa(discount)}٪`,
-        inactive_days: inactiveDays,
-        discount_percent: discount,
-        template_id: templateId.startsWith("fallback-") ? null : templateId,
-        valid_until: validUntil.toISOString().slice(0, 10),
-        targeted_count: recipients.length,
-      });
-      await addCampaignTargets(campaignId, recipients.map((r) => r.phone));
-    }
-
     const messages = recipients.map((r) => ({
       to: r.phone,
       body: renderTemplate(body, r.vars),
-      kind,
-      campaign_id: campaignId,
+      kind: "custom",
+      campaign_id: null,
     }));
 
     const res = await sendBulkSms(messages);
@@ -6141,293 +6226,297 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
   /* ----------------------------------------------------------------- render */
   return (
     <div className="fade-in flex flex-col gap-3">
-      <PanelSectionHeader Icon={MessageSquareText} title="پیامک" subtitle="کمپین‌های هوشمند، ارسال دستی، و الگوهای پیامک" color="var(--color-tab-panel)" />
-      {/* ---- one-click smart campaigns (RFM segments) ---- */}
-      <div className="card" style={{ padding: 14 }}>
-        <div className="flex items-center justify-between mb-3">
-          <p className="flex items-center gap-1.5" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)" }}>
-            <Zap size={13} color="var(--color-accent-700)" /> کمپین‌های هوشمند پیشنهادی
-          </p>
-          <button className="tap ghost-btn" style={{ width: 26, height: 26, padding: 0 }} onClick={async () => { setRfmLoading(true); setRfmSegments(await fetchRfmSegments()); setRfmLoading(false); }} disabled={rfmLoading}>
-            <RefreshCw size={12} style={{ margin: "auto", animation: rfmLoading ? "salonSpin 1s linear infinite" : "none" }} />
-          </button>
-        </div>
-        {!SUPABASE_ENABLED ? (
-          <p className="muted" style={{ fontSize: 11.5 }}>کمپین‌های هوشمند به دیتابیس Supabase نیاز دارند.</p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {Object.keys(RFM_SMART_DRAFTS).map((key) => {
-              const meta = RFM_SEGMENT_META[key];
-              const count = rfmSegments.filter((c) => c.segment === key).length;
-              const isHighlighted = highlightSegment === key;
-              const isSendingThis = sendingSegment === key;
-              return (
-                <div
-                  key={key}
-                  style={{
-                    padding: 12, borderRadius: "var(--radius-md)",
-                    background: `color-mix(in oklch, ${meta.color} 7%, var(--color-surface-raised))`,
-                    border: isHighlighted ? `2px solid ${meta.color}` : "2px solid transparent",
-                  }}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>
-                      <span style={{ fontSize: 16 }}>{meta.emoji}</span> {meta.label}
-                    </span>
-                    <span className="muted tabular" style={{ fontSize: 11 }}>{toFa(count)} نفر</span>
-                  </div>
-                  <p className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.8 }}>
-                    {RFM_SMART_DRAFTS[key].replace(/\{\{name\}\}/g, "مریم").replace(/\{\{days\}\}/g, "۴۵")}
-                  </p>
-                  <button
-                    disabled={count === 0 || sendingSegment != null}
-                    className="tap accent-btn w-full mt-2 flex items-center justify-center gap-1.5"
-                    style={{ padding: 8, fontSize: 12 }}
-                    onClick={() => sendSmartCampaign(key)}
-                  >
-                    {isSendingThis ? <Loader2 size={13} style={{ animation: "salonSpin 1s linear infinite" }} /> : <Send size={13} />}
-                    تایید و ارسال سریع
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      <PanelSectionHeader Icon={MessageSquareText} title="پیامک" subtitle="کمپین‌های هوشمند، ارسال دستی، و تاریخچهٔ پیامک‌ها" color="var(--color-tab-panel)" />
 
-      {/* ---- audience ---- */}
-      <div className="card" style={{ padding: 14 }}>
-        <p className="muted flex items-center gap-1 mb-3" style={{ fontSize: 12 }}>
-          <Users size={13} /> مخاطبان
-        </p>
-        <div className="flex gap-1" style={{ flexWrap: "wrap" }}>
-          {AUDIENCES.map((a) => {
-            const on = audience === a.id;
-            return (
-              <button
-                key={a.id}
-                onClick={() => setAudience(a.id)}
-                className="tap flex items-center gap-1"
-                style={{
-                  padding: "7px 10px", borderRadius: "var(--radius-md)", fontSize: 11.5, fontWeight: 700,
-                  border: `1px solid ${on ? "var(--color-accent-500)" : "var(--color-border)"}`,
-                  background: on ? "var(--color-accent-100)" : "var(--color-surface)",
-                  color: on ? "var(--color-accent-700)" : "var(--color-body)",
-                }}
-              >
-                <a.Icon size={12} /> {a.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {audience === "manual" && (
-          <textarea
-            dir="ltr"
-            value={manualNumbers}
-            onChange={(e) => setManualNumbers(e.target.value)}
-            placeholder="09121234567, 09351112233"
-            className="tabular fade-in"
-            style={{ width: "100%", padding: 11, fontSize: 13, marginTop: 12, minHeight: 74, resize: "vertical" }}
-          />
-        )}
-
-        {audience === "inactive" && (
-          <div className="fade-in flex flex-col gap-3" style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--color-border)" }}>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="muted" style={{ fontSize: 12 }}>بیش از این تعداد روز بدون رزرو</label>
-                <span className="tabular" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-accent-700)" }}>
-                  {toFa(inactiveDays)} روز
-                </span>
-              </div>
-              <input
-                type="range" min="14" max="365" step="1" value={inactiveDays}
-                onChange={(e) => setInactiveDays(Number(e.target.value))}
-                style={{ width: "100%", accentColor: "var(--color-accent-500)" }}
-              />
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="muted" style={{ fontSize: 12 }}>تخفیف اختصاصی کمپین</label>
-                <span className="tabular" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-accent-700)" }}>
-                  {toFa(discount)}٪
-                </span>
-              </div>
-              <input
-                type="range" min="5" max="50" step="5" value={discount}
-                onChange={(e) => setDiscount(Number(e.target.value))}
-                style={{ width: "100%", accentColor: "var(--color-accent-500)" }}
-              />
-            </div>
+      {/* Segment switcher — three clear, organized sections instead of one long scroll */}
+      <div className="flex gap-2">
+        {SMS_SEGMENTS.map((seg) => {
+          const active = segment === seg.id;
+          return (
             <button
-              onClick={loadInactive}
-              disabled={inactiveLoading}
-              className="tap ghost-btn flex items-center justify-center gap-1.5"
-              style={{ padding: 10, fontSize: 12.5, fontWeight: 700 }}
-            >
-              {inactiveLoading ? <Loader2 size={13} className="salon-spin" /> : <Search size={13} />}
-              ساختن لیست خودکار
-            </button>
-          </div>
-        )}
-
-        <div className="flex items-center justify-between" style={{ marginTop: 12 }}>
-          <p style={{ fontSize: 12.5, fontWeight: 700 }}>
-            <span className="tabular" style={{ color: recipients.length ? "var(--color-accent-700)" : "var(--color-muted)" }}>
-              {toFa(recipients.length)}
-            </span>{" "}
-            گیرنده
-          </p>
-          {recipients.length > 0 && (
-            <button className="muted" style={{ fontSize: 11.5 }} onClick={() => setShowRecipients((v) => !v)}>
-              {showRecipients ? "بستن لیست" : "نمایش لیست"}
-            </button>
-          )}
-        </div>
-
-        {showRecipients && (
-          <div className="fade-in surface-raised" style={{ marginTop: 8, borderRadius: "var(--radius-md)", padding: 10, maxHeight: 150, overflowY: "auto" }}>
-            {recipients.map((r) => (
-              <div key={r.phone} className="flex items-center justify-between" style={{ padding: "3px 0", fontSize: 11.5 }}>
-                <span>{r.vars.name}</span>
-                <span className="tabular muted" dir="ltr">{toFa(r.phone)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ---- template + body ---- */}
-      <div className="card" style={{ padding: 14 }}>
-        <p className="muted flex items-center gap-1 mb-3" style={{ fontSize: 12 }}>
-          <MessageSquareText size={13} /> قالب پیام
-        </p>
-
-        <select
-          value={templateId}
-          onChange={(e) => {
-            const t = templates.find((x) => x.id === e.target.value);
-            setTemplateId(e.target.value);
-            if (t) setBody(t.body || "");
-          }}
-          style={{ width: "100%", padding: "10px 12px", fontSize: 13 }}
-        >
-          {templates.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.title || SMS_KIND_LABEL[t.kind] || t.kind}
-            </option>
-          ))}
-        </select>
-
-        <textarea
-          ref={bodyRef}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          placeholder="متن پیامک…"
-          style={{ width: "100%", padding: 11, fontSize: 13, marginTop: 10, minHeight: 110, resize: "vertical", lineHeight: 1.7 }}
-        />
-
-        <div className="flex gap-1 mt-2" style={{ flexWrap: "wrap" }}>
-          {SMS_PLACEHOLDERS.map((ph) => (
-            <button
-              key={ph.token}
-              onClick={() => insertToken(ph.token)}
-              className="tap"
-              title={ph.label}
+              key={seg.id}
+              onClick={() => setSegment(seg.id)}
+              className="tap flex-1 flex flex-col items-center gap-1"
               style={{
-                padding: "4px 8px", borderRadius: "var(--radius-full)", fontSize: 10.5, fontWeight: 700,
-                border: "1px solid var(--color-border)", background: "var(--color-surface-raised)",
-                color: "var(--color-muted)", minHeight: 0,
+                padding: "10px 4px", borderRadius: "var(--radius-md)", fontSize: 11.5, fontWeight: active ? 800 : 700,
+                background: active ? seg.color : `color-mix(in oklch, ${seg.color} 11%, var(--color-surface))`,
+                color: active ? "white" : seg.color,
+                border: active ? "none" : `1px solid color-mix(in oklch, ${seg.color} 22%, transparent)`,
+                boxShadow: active ? `0 3px 10px -3px color-mix(in oklch, ${seg.color} 55%, transparent)` : "none",
               }}
             >
-              {ph.label}
+              <seg.Icon size={16} />
+              {seg.label}
             </button>
-          ))}
-        </div>
+          );
+        })}
       </div>
 
-      {/* ---- preview + send ---- */}
-      <div className="card" style={{ padding: 14 }}>
-        <div className="flex items-center justify-between mb-2">
-          <p className="muted flex items-center gap-1" style={{ fontSize: 12 }}>
-            <Eye size={13} /> پیش‌نمایش
-          </p>
-          <span className="badge tabular" style={{ background: "var(--color-surface-raised)", color: "var(--color-muted)" }}>
-            {toFa(parts)} پیامک × {toFa(recipients.length)} = {toFa(totalParts)}
-          </span>
-        </div>
-
-        <div
-          className="surface-raised"
-          style={{
-            borderRadius: "var(--radius-md)", padding: 12, fontSize: 12.5, lineHeight: 1.85,
-            whiteSpace: "pre-wrap", minHeight: 60, color: "var(--color-body)",
-          }}
-        >
-          {preview || <span className="muted">متنی وارد نشده</span>}
-        </div>
-
-        <button
-          onClick={handleSend}
-          disabled={sending || !recipients.length || !body.trim()}
-          className="tap accent-btn w-full mt-4 flex items-center justify-center gap-1.5"
-          style={{ padding: 13, fontSize: 13.5 }}
-        >
-          {sending ? <Loader2 size={15} className="salon-spin" /> : (audience === "inactive" ? <Gift size={15} /> : <Send size={15} />)}
-          {audience === "inactive"
-            ? `ساخت کمپین و ارسال به ${toFa(recipients.length)} مشتری`
-            : `ارسال دسته‌جمعی به ${toFa(recipients.length)} نفر`}
-        </button>
-
-        {!SUPABASE_ENABLED && (
-          <p className="muted flex items-center gap-1 mt-3" style={{ fontSize: 11 }}>
-            <AlertTriangle size={12} /> دیتابیس متصل نیست — ارسال واقعی انجام نمی‌شود
-          </p>
-        )}
-      </div>
-
-      {/* ---- send log ---- */}
-      <div className="card" style={{ padding: 14 }}>
-        <div className="flex items-center justify-between mb-3">
-          <p className="muted flex items-center gap-1" style={{ fontSize: 12 }}>
-            <History size={13} /> تاریخچهٔ ارسال
-          </p>
-          <button className="muted" style={{ fontSize: 11.5 }} onClick={refreshLog} disabled={logLoading}>
-            {logLoading ? "…" : "به‌روزرسانی"}
-          </button>
-        </div>
-
-        {!log.length ? (
-          <p className="muted" style={{ fontSize: 12, textAlign: "center", padding: "14px 0" }}>
-            هنوز پیامکی ارسال نشده
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {log.map((m) => {
-              const meta = SMS_STATUS_META[m.status] || SMS_STATUS_META.queued;
-              return (
-                <div key={m.id} style={{ borderBottom: "1px dashed var(--color-border)", paddingBottom: 7 }}>
-                  <div className="flex items-center justify-between">
-                    <span className="tabular" dir="ltr" style={{ fontSize: 12, fontWeight: 700 }}>{toFa(m.to_phone)}</span>
-                    <span className="badge" style={{ background: meta.color, color: "white" }}>{meta.label}</span>
-                  </div>
-                  <p className="muted" style={{ fontSize: 11, marginTop: 3, whiteSpace: "pre-wrap" }}>
-                    {String(m.body || "").slice(0, 90)}{String(m.body || "").length > 90 ? "…" : ""}
-                  </p>
-                  <div className="flex items-center gap-1 muted" style={{ fontSize: 10.5, marginTop: 3 }}>
-                    <span>{SMS_KIND_LABEL[m.kind] || m.kind}</span>
-                    {m.scheduled_for && m.status === "queued" && (
-                      <span>· زمان ارسال: {jalaliLabel(new Date(m.scheduled_for), { short: true })} {formatClock(new Date(m.scheduled_for).getHours() * 60 + new Date(m.scheduled_for).getMinutes())}</span>
-                    )}
-                    {m.error && <span style={{ color: "var(--color-danger)" }}>· {m.error}</span>}
-                  </div>
-                </div>
-              );
-            })}
+      {/* ================= Quick Send: one-click RFM campaigns ================= */}
+      {segment === "quick" && (
+        <div className="card fade-in" style={{ padding: 14 }}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>
+              <Zap size={14} color="var(--color-success)" /> کمپین‌های آمادهٔ ارسال
+            </p>
+            <button className="tap ghost-btn" style={{ width: 26, height: 26, padding: 0 }} onClick={async () => { setRfmLoading(true); setRfmSegments(await fetchRfmSegments()); setRfmLoading(false); }} disabled={rfmLoading}>
+              <RefreshCw size={12} style={{ margin: "auto", animation: rfmLoading ? "salonSpin 1s linear infinite" : "none" }} />
+            </button>
           </div>
-        )}
-      </div>
+          {!SUPABASE_ENABLED ? (
+            <p className="muted" style={{ fontSize: 11.5 }}>کمپین‌های هوشمند به دیتابیس Supabase نیاز دارند.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {Object.keys(RFM_SMART_DRAFTS).map((key) => {
+                const meta = RFM_SEGMENT_META[key];
+                const count = rfmSegments.filter((c) => c.segment === key).length;
+                const isHighlighted = highlightSegment === key;
+                const isSendingThis = sendingSegment === key;
+                return (
+                  <div
+                    key={key}
+                    style={{
+                      padding: 12, borderRadius: "var(--radius-md)",
+                      background: `color-mix(in oklch, ${meta.color} 7%, var(--color-surface-raised))`,
+                      border: isHighlighted ? `2px solid ${meta.color}` : "2px solid transparent",
+                    }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>
+                        <span style={{ fontSize: 16 }}>{meta.emoji}</span> {meta.label}
+                      </span>
+                      <span className="muted tabular" style={{ fontSize: 11 }}>{toFa(count)} نفر</span>
+                    </div>
+                    <p className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.8 }}>
+                      {RFM_SMART_DRAFTS[key].replace(/\{\{name\}\}/g, "مریم").replace(/\{\{days\}\}/g, "۴۵")}
+                    </p>
+                    <button
+                      disabled={count === 0 || sendingSegment != null}
+                      className="tap accent-btn w-full mt-2 flex items-center justify-center gap-1.5"
+                      style={{ padding: 8, fontSize: 12 }}
+                      onClick={() => sendSmartCampaign(key)}
+                    >
+                      {isSendingThis ? <Loader2 size={13} style={{ animation: "salonSpin 1s linear infinite" }} /> : <Send size={13} />}
+                      تایید و ارسال سریع
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ================= Manual: audience + template + body + preview + send ================= */}
+      {segment === "manual" && (
+        <div className="flex flex-col gap-3 fade-in">
+          <div className="card" style={{ padding: 14 }}>
+            <p className="muted flex items-center gap-1 mb-3" style={{ fontSize: 12 }}>
+              <Users size={13} /> مخاطبان
+            </p>
+            <div className="flex gap-1" style={{ flexWrap: "wrap" }}>
+              {AUDIENCES.map((a) => {
+                const on = audience === a.id;
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => setAudience(a.id)}
+                    className="tap flex items-center gap-1"
+                    style={{
+                      padding: "7px 10px", borderRadius: "var(--radius-md)", fontSize: 11.5, fontWeight: 700,
+                      border: `1px solid ${on ? "var(--color-accent-500)" : "var(--color-border)"}`,
+                      background: on ? "var(--color-accent-100)" : "var(--color-surface)",
+                      color: on ? "var(--color-accent-700)" : "var(--color-body)",
+                    }}
+                  >
+                    <a.Icon size={12} /> {a.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {audience === "manual" && (
+              <textarea
+                dir="ltr"
+                value={manualNumbers}
+                onChange={(e) => setManualNumbers(e.target.value)}
+                placeholder="09121234567, 09351112233"
+                className="tabular fade-in"
+                style={{ width: "100%", padding: 11, fontSize: 13, marginTop: 12, minHeight: 74, resize: "vertical" }}
+              />
+            )}
+
+            <div className="flex items-center justify-between" style={{ marginTop: 12 }}>
+              <p style={{ fontSize: 12.5, fontWeight: 700 }}>
+                <span className="tabular" style={{ color: recipients.length ? "var(--color-accent-700)" : "var(--color-muted)" }}>
+                  {toFa(recipients.length)}
+                </span>{" "}
+                گیرنده
+              </p>
+              {recipients.length > 0 && (
+                <button className="muted" style={{ fontSize: 11.5 }} onClick={() => setShowRecipients((v) => !v)}>
+                  {showRecipients ? "بستن لیست" : "نمایش لیست"}
+                </button>
+              )}
+            </div>
+
+            {showRecipients && (
+              <div className="fade-in surface-raised" style={{ marginTop: 8, borderRadius: "var(--radius-md)", padding: 10, maxHeight: 150, overflowY: "auto" }}>
+                {recipients.map((r) => (
+                  <div key={r.phone} className="flex items-center justify-between" style={{ padding: "3px 0", fontSize: 11.5 }}>
+                    <span>{r.vars.name}</span>
+                    <span className="tabular muted" dir="ltr">{toFa(r.phone)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="card" style={{ padding: 14 }}>
+            <p className="muted flex items-center gap-1 mb-3" style={{ fontSize: 12 }}>
+              <MessageSquareText size={13} /> قالب پیام
+            </p>
+
+            <select
+              value={templateId}
+              onChange={(e) => {
+                const t = templates.find((x) => x.id === e.target.value);
+                setTemplateId(e.target.value);
+                if (t) setBody(t.body || "");
+              }}
+              style={{ width: "100%", padding: "10px 12px", fontSize: 13 }}
+            >
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.title || SMS_KIND_LABEL[t.kind] || t.kind}
+                </option>
+              ))}
+            </select>
+
+            <textarea
+              ref={bodyRef}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="متن پیامک…"
+              style={{ width: "100%", padding: 11, fontSize: 13, marginTop: 10, minHeight: 110, resize: "vertical", lineHeight: 1.7 }}
+            />
+
+            <div className="flex gap-1 mt-2" style={{ flexWrap: "wrap" }}>
+              {SMS_PLACEHOLDERS.map((ph) => (
+                <button
+                  key={ph.token}
+                  onClick={() => insertToken(ph.token)}
+                  className="tap"
+                  title={ph.label}
+                  style={{
+                    padding: "4px 8px", borderRadius: "var(--radius-full)", fontSize: 10.5, fontWeight: 700,
+                    border: "1px solid var(--color-border)", background: "var(--color-surface-raised)",
+                    color: "var(--color-muted)", minHeight: 0,
+                  }}
+                >
+                  {ph.label}
+                </button>
+              ))}
+            </div>
+
+            {usesDiscountToken && (
+              <div className="fade-in flex items-center justify-between" style={{ marginTop: 10, padding: "8px 10px", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
+                <label className="muted" style={{ fontSize: 11.5 }}>درصد تخفیفی که {"{{discount}}"} در پیام نشان می‌دهد</label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number" min="0" max="100" value={discount}
+                    onChange={(e) => setDiscount(Number(e.target.value))}
+                    className="tabular" style={{ width: 52, padding: "5px 6px", fontSize: 12, textAlign: "center" }}
+                  />
+                  <span className="muted" style={{ fontSize: 11 }}>٪</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="card" style={{ padding: 14 }}>
+            <div className="flex items-center justify-between mb-2">
+              <p className="muted flex items-center gap-1" style={{ fontSize: 12 }}>
+                <Eye size={13} /> پیش‌نمایش
+              </p>
+              <span className="badge tabular" style={{ background: "var(--color-surface-raised)", color: "var(--color-muted)" }}>
+                {toFa(parts)} پیامک × {toFa(recipients.length)} = {toFa(totalParts)}
+              </span>
+            </div>
+
+            <div
+              className="surface-raised"
+              style={{
+                borderRadius: "var(--radius-md)", padding: 12, fontSize: 12.5, lineHeight: 1.85,
+                whiteSpace: "pre-wrap", minHeight: 60, color: "var(--color-body)",
+              }}
+            >
+              {preview || <span className="muted">متنی وارد نشده</span>}
+            </div>
+
+            <button
+              onClick={handleSend}
+              disabled={sending || !recipients.length || !body.trim()}
+              className="tap accent-btn w-full mt-4 flex items-center justify-center gap-1.5"
+              style={{ padding: 13, fontSize: 13.5 }}
+            >
+              {sending ? <Loader2 size={15} className="salon-spin" /> : <Send size={15} />}
+              ارسال دسته‌جمعی به {toFa(recipients.length)} نفر
+            </button>
+
+            {!SUPABASE_ENABLED && (
+              <p className="muted flex items-center gap-1 mt-3" style={{ fontSize: 11 }}>
+                <AlertTriangle size={12} /> دیتابیس متصل نیست — ارسال واقعی انجام نمی‌شود
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ================= Log ================= */}
+      {segment === "log" && (
+        <div className="card fade-in" style={{ padding: 14 }}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="muted flex items-center gap-1" style={{ fontSize: 12 }}>
+              <History size={13} /> تاریخچهٔ ارسال
+            </p>
+            <button className="muted" style={{ fontSize: 11.5 }} onClick={refreshLog} disabled={logLoading}>
+              {logLoading ? "…" : "به‌روزرسانی"}
+            </button>
+          </div>
+
+          {!log.length ? (
+            <p className="muted" style={{ fontSize: 12, textAlign: "center", padding: "14px 0" }}>
+              هنوز پیامکی ارسال نشده
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {log.map((m) => {
+                const meta = SMS_STATUS_META[m.status] || SMS_STATUS_META.queued;
+                return (
+                  <div key={m.id} style={{ borderBottom: "1px dashed var(--color-border)", paddingBottom: 7 }}>
+                    <div className="flex items-center justify-between">
+                      <span className="tabular" dir="ltr" style={{ fontSize: 12, fontWeight: 700 }}>{toFa(m.to_phone)}</span>
+                      <span className="badge" style={{ background: meta.color, color: "white" }}>{meta.label}</span>
+                    </div>
+                    <p className="muted" style={{ fontSize: 11, marginTop: 3, whiteSpace: "pre-wrap" }}>
+                      {String(m.body || "").slice(0, 90)}{String(m.body || "").length > 90 ? "…" : ""}
+                    </p>
+                    <div className="flex items-center gap-1 muted" style={{ fontSize: 10.5, marginTop: 3 }}>
+                      <span>{SMS_KIND_LABEL[m.kind] || m.kind}</span>
+                      {m.scheduled_for && m.status === "queued" && (
+                        <span>· زمان ارسال: {jalaliLabel(new Date(m.scheduled_for), { short: true })} {formatClock(new Date(m.scheduled_for).getHours() * 60 + new Date(m.scheduled_for).getMinutes())}</span>
+                      )}
+                      {m.error && <span style={{ color: "var(--color-danger)" }}>· {m.error}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
+

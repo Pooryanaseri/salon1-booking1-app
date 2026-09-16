@@ -80,6 +80,11 @@ const map = {
       staff_id: r.staff_id, staff_name: r.staff_name || "",
       date: isoToKey(r.date), start_min: r.start_min, end_min: r.end_min,
       buffer_minutes: r.buffer_minutes ?? 0, status: r.status,
+      // A staff-proposed reschedule awaiting customer response — null/null/null
+      // once there's no pending proposal (the normal case).
+      pending_date: r.pending_date ? isoToKey(r.pending_date) : null,
+      pending_start_min: r.pending_start_min ?? null,
+      pending_end_min: r.pending_end_min ?? null,
       tracking_code: r.tracking_code,
       original_price: Number(r.original_price || 0),
       discount_type: r.discount_type, discount_value: Number(r.discount_value || 0),
@@ -94,6 +99,7 @@ const map = {
     toRow: (b) => {
       const row = { ...b };
       if ("date" in row) row.date = keyToISO(row.date);
+      if ("pending_date" in row) row.pending_date = row.pending_date ? keyToISO(row.pending_date) : null;
       if ("created_at" in row) delete row.created_at; // let Postgres own it
       delete row.points_awarded;                      // trigger-owned
       return row;
@@ -101,8 +107,8 @@ const map = {
   },
 
   time_offs: {
-    fromRow: (r) => ({ id: r.id, date: isoToKey(r.date), reason: r.reason || "", staff_id: r.staff_id }),
-    toRow: (t) => ({ id: t.id, date: keyToISO(t.date), reason: t.reason ?? "", staff_id: t.staff_id ?? null }),
+    fromRow: (r) => ({ id: r.id, date: isoToKey(r.date), reason: r.reason || "", staff_id: r.staff_id, start_min: r.start_min ?? null, end_min: r.end_min ?? null }),
+    toRow: (t) => ({ id: t.id, date: keyToISO(t.date), reason: t.reason ?? "", staff_id: t.staff_id ?? null, start_min: t.start_min ?? null, end_min: t.end_min ?? null }),
   },
 
   expenses: {
