@@ -397,8 +397,18 @@ export async function applyReferral(newPhone, code) {
   if (!SUPABASE_ENABLED || !code) return { ok: false, error: "دمو یا کد خالی" };
   const { data, error } = await supabase.rpc("apply_referral", { p_new_phone: newPhone, p_code: code });
   if (error) { fail("apply_referral", error); return { ok: false, error: error.message }; }
-  invalidateCache("customers"); // points/visit counts on both sides just changed
+  invalidateCache("customers");
   return data || { ok: false };
+}
+
+// Anti-fraud check at checkout: does this customer have a referrer on file?
+// If so, staff must verify them as genuinely new before the referral reward
+// is awarded (see sync_customer_from_appointment / referral_verified).
+export async function fetchCustomerReferredBy(phone) {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase.from("customers").select("referred_by").eq("phone", phone).maybeSingle();
+  if (error) { fail("fetchCustomerReferredBy", error); return null; }
+  return data?.referred_by || null;
 }
 
 export async function fetchCampaigns() {
@@ -503,3 +513,38 @@ export async function updateLoyaltySettings(patch) {
   invalidateCache("loyalty_settings");
   return fail("loyalty_settings.update", error);
 }
+
+// Customer segmentation thresholds (manager-only to change; see RLS on
+// customer_segment_settings) — same shape as the loyalty_settings pair above.
+export async function fetchSegmentSettings() {
+  if (!SUPABASE_ENABLED) return null;
+  const key = "segment_settings";
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase.from("customer_segment_settings").select("*").eq("id", 1).maybeSingle();
+  if (error) { fail("segment_settings.fetch", error); return null; }
+  return setCache(key, data);
+}
+
+export async function updateSegmentSettings(payload) {
+  if (!SUPABASE_ENABLED) return;
+  const { error } = await supabase.from("customer_segment_settings").update(payload).eq("id", 1);
+  invalidateCache("segment_settings");
+  // Changing the thresholds changes who falls into which segment, so any
+  // already-cached get_customer_rfm_segments() result is now stale too.
+  invalidateCache("rfm_segments");
+  return fail("segment_settings.update", error);
+}
+
+// Live "what would this look like" preview against a hypothetical set of
+// thresholds — never cached, since it's driven by in-progress form input
+// that changes on every keystroke.
+export async function previewSegmentDistribution({ recency, visits, inactive }) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.rpc("preview_customer_segment_distribution", {
+    p_recency: recency, p_visits: visits, p_inactive: inactive,
+  });
+  if (error) { fail("preview_customer_segment_distribution", error); return []; }
+  return data || [];
+}
+

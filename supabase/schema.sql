@@ -125,6 +125,10 @@ create table if not exists public.appointments (
   sms_sent_reminder     boolean not null default false,
   campaign_id           text,
   points_awarded        integer not null default 0,
+  -- Staff-only, set at checkout time: "I've verified this is a genuinely
+  -- new customer" — required (alongside status='completed') before the
+  -- referrer's points get awarded. See sync_customer_from_appointment().
+  referral_verified     boolean not null default false,
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now()
 );
@@ -307,6 +311,19 @@ create table if not exists public.loyalty_settings (
 );
 insert into public.loyalty_settings (id) values (1) on conflict (id) do nothing;
 
+-- Customer segmentation thresholds — same singleton shape as loyalty_settings
+-- above. RLS policies are added later, in the RBAC section, since they need
+-- is_staff()/is_manager() which aren't defined yet at this point in the file.
+create table if not exists public.customer_segment_settings (
+  id                   int primary key default 1 check (id = 1),
+  loyal_recency_days   int not null default 60  check (loyal_recency_days between 1 and 365),
+  loyal_min_visits     int not null default 4   check (loyal_min_visits between 1 and 100),
+  inactive_after_days  int not null default 120 check (inactive_after_days > loyal_recency_days),
+  updated_at           timestamptz not null default now(),
+  updated_by           uuid references auth.users(id)
+);
+insert into public.customer_segment_settings (id) values (1) on conflict (id) do nothing;
+
 -- ---------------------------------------------------------------------------
 -- 12. TRIGGERS — keep customers / loyalty in sync with no extra client calls
 -- ---------------------------------------------------------------------------
@@ -323,16 +340,20 @@ create trigger appointments_touch before update on public.appointments
 
 create or replace function public.sync_customer_from_appointment() returns trigger
 language plpgsql security definer set search_path = public as $fn$
-declare pts int;
+declare pts int; ref_phone text; ref_pts int;
 begin
   if new.customer_phone !~ '^09[0-9]{9}$' then
     return new;
   end if;
 
+  -- name is immutable per phone once set: the FIRST non-empty name wins and
+  -- later bookings never overwrite it (previously the newest booking's name
+  -- always won, which let a referred phone's identity be re-labeled after
+  -- the fact — a loose end an anti-fraud review flagged).
   insert into public.customers (phone, name, gender, last_booking_at)
   values (new.customer_phone, new.customer_name, new.customer_gender, now())
   on conflict (phone) do update
-    set name            = coalesce(nullif(excluded.name, ''), public.customers.name),
+    set name            = coalesce(nullif(public.customers.name, ''), excluded.name),
         last_booking_at = now();
 
   -- Phase 3: a booking from a targeted customer counts as a win-back return
@@ -367,6 +388,28 @@ begin
      where phone = new.customer_phone;
 
     new.points_awarded := pts;
+  end if;
+
+  -- Anti-fraud: both the referrer's AND the new customer's own referral
+  -- bonus are earned only when the visit is BOTH completed AND staff has
+  -- verified at checkout (referral_verified) that this is a genuinely new
+  -- customer — not the moment the referral code is entered, which was
+  -- farmable with fake phone numbers and no real appointment ever
+  -- happening. Idempotent via the ledger existence check (guards both
+  -- inserts together, since they're always written in the same pass), so
+  -- this is safe even if the row is saved more than once after completion.
+  if new.status = 'completed' and new.referral_verified = true then
+    select referred_by into ref_phone from public.customers where phone = new.customer_phone;
+    if ref_phone is not null and ref_phone <> new.customer_phone
+       and not exists (select 1 from public.loyalty_ledger where reason = 'referral' and appointment_id = new.id) then
+      select referral_points into ref_pts from public.loyalty_settings where id = 1;
+      ref_pts := coalesce(ref_pts, 50);
+      insert into public.loyalty_ledger (customer_phone, delta, reason, appointment_id) values
+        (ref_phone, ref_pts, 'referral', new.id),
+        (new.customer_phone, ref_pts, 'referral', new.id);
+      update public.customers set loyalty_points = loyalty_points + ref_pts
+       where phone in (ref_phone, new.customer_phone);
+    end if;
   end if;
 
   return new;
@@ -416,6 +459,20 @@ begin
   end loop;
 end $$;
 
+-- customer_segment_settings: deliberately its own dedicated policies, not
+-- either generic loop below — read is staff-only (not public, unlike
+-- loyalty_settings which customers legitimately need for their own
+-- discount display), and write is manager-only, not the generic
+-- manager-full-CRUD every other settings table gets.
+alter table public.customer_segment_settings enable row level security;
+drop policy if exists p_segment_settings_read on public.customer_segment_settings;
+create policy p_segment_settings_read on public.customer_segment_settings
+  for select using (public.is_staff() or public.is_manager());
+drop policy if exists p_segment_settings_write on public.customer_segment_settings;
+create policy p_segment_settings_write on public.customer_segment_settings
+  for update using (public.is_manager()) with check (public.is_manager());
+grant select, update on public.customer_segment_settings to authenticated;
+
 -- Public read: the booking flow must work for unauthenticated visitors.
 do $$
 declare t text;
@@ -462,7 +519,8 @@ begin
        or new.final_price is distinct from old.final_price
        or new.original_price is distinct from old.original_price
        or new.discount_type is distinct from old.discount_type
-       or new.discount_value is distinct from old.discount_value then
+       or new.discount_value is distinct from old.discount_value
+       or new.referral_verified is distinct from old.referral_verified then
       raise exception 'این تغییر برای مشتری مجاز نیست — فقط لغو یا جابه‌جایی زمان مجاز است';
     end if;
     -- Reached only once the change above has passed validation — a genuine
@@ -647,75 +705,117 @@ grant execute on function public.inactive_customers(int) to authenticated;
 -- Phase 5: RFM segmentation. recency/frequency read straight off the customers
 -- table (already trigger-maintained), monetary is summed fresh from completed
 -- appointments since it's never stored anywhere.
+-- Recency/frequency computed strictly from `completed` appointments — a
+-- booking that was cancelled or no-showed was never a real visit, so it
+-- must not count toward either measure (previously recency came from
+-- customers.last_booking_at, which updates on ANY booking regardless of
+-- outcome).
 create or replace view public.customer_rfm_raw as
 select
   c.phone,
   c.name,
   c.sms_opt_out,
-  coalesce(extract(day from (now() - c.last_booking_at))::int, 999) as recency_days,
-  c.total_visits as frequency,
-  coalesce((
-    select sum(a.final_price)
-      from public.appointments a
-     where a.customer_phone = c.phone and a.status = 'completed' and a.final_price is not null
-  ), 0) as monetary
-from public.customers c;
+  coalesce(extract(day from (now() - max(a.date)))::int, 9999) as recency_days,
+  count(a.id) as frequency,
+  coalesce(sum(a.final_price), 0) as monetary
+from public.customers c
+left join public.appointments a
+  on a.customer_phone = c.phone and a.status = 'completed'
+group by c.phone, c.name, c.sms_opt_out;
+
+-- Direct-threshold classification against the manager-configurable
+-- customer_segment_settings singleton (see that table for the shape) —
+-- replaces the old fixed 1–4 R/F-score grid entirely. Return signature
+-- drops r_score/f_score/m_score (meaningless under direct thresholds;
+-- nothing in the frontend read them) — DROP is required first since
+-- CREATE OR REPLACE cannot change a function's return columns.
+drop function if exists public.get_customer_rfm_segments();
 
 create or replace function public.get_customer_rfm_segments()
 returns table (
   phone text, name text, sms_opt_out boolean,
   recency_days int, frequency int, monetary bigint,
-  r_score int, f_score int, m_score int,
   segment text, segment_fa text
 )
 language sql stable security definer set search_path = public as $fn$
   -- Open to any authenticated staff member (owner, manager, or stylist) —
-  -- previously manager-only, but a stylist deciding who to follow up with
-  -- needs this exactly as much as the owner does.
-  with scored as (
-    select
-      raw.*,
-      case when raw.recency_days <= 30  then 4
-           when raw.recency_days <= 60  then 3
-           when raw.recency_days <= 120 then 2
-           else 1 end as r_score,
-      case when raw.frequency >= 8 then 4
-           when raw.frequency >= 4 then 3
-           when raw.frequency >= 2 then 2
-           else 1 end as f_score,
-      ntile(4) over (order by raw.monetary asc) as m_score
-    from public.customer_rfm_raw raw
-    where public.is_staff()
+  -- a stylist deciding who to follow up with needs this exactly as much as
+  -- the owner does. The THRESHOLDS themselves are manager-only to change
+  -- (see customer_segment_settings RLS).
+  with settings as (
+    select * from public.customer_segment_settings where id = 1
   )
-  -- Four segments instead of six: each maps to one clear action, and the
-  -- two "not quite champions, not quite gone" middle categories the old
-  -- version split apart (نیازمند توجه / در خطر ریزش, and پتانسیل وفاداری as
-  -- a catch-all) get merged into whichever real category they're closest to
-  -- in practice, since the follow-up message for both is the same anyway.
   select
-    phone, name, sms_opt_out, recency_days, frequency, monetary, r_score, f_score, m_score,
+    raw.phone, raw.name, raw.sms_opt_out, raw.recency_days, raw.frequency, raw.monetary,
     case
-      when r_score >= 3 and f_score >= 3 then 'champions'
-      when r_score <= 2 and f_score >= 3 then 'at_risk'
-      when r_score >= 3 and f_score < 3  then 'new'
+      when raw.recency_days <= s.loyal_recency_days and raw.frequency >= s.loyal_min_visits then 'champions'
+      when raw.recency_days >  s.loyal_recency_days and raw.frequency >= s.loyal_min_visits then 'at_risk'
+      when raw.recency_days <= s.loyal_recency_days and raw.frequency <  s.loyal_min_visits then 'new'
       else 'inactive'
     end as segment,
     case
-      when r_score >= 3 and f_score >= 3 then 'مشتریان وفادار'
-      when r_score <= 2 and f_score >= 3 then 'در خطر ریزش'
-      when r_score >= 3 and f_score < 3  then 'مشتریان جدید'
+      when raw.recency_days <= s.loyal_recency_days and raw.frequency >= s.loyal_min_visits then 'مشتریان وفادار'
+      when raw.recency_days >  s.loyal_recency_days and raw.frequency >= s.loyal_min_visits then 'در خطر ریزش'
+      when raw.recency_days <= s.loyal_recency_days and raw.frequency <  s.loyal_min_visits then 'مشتریان جدید'
       else 'غیرفعال'
     end as segment_fa
-  from scored;
+  from public.customer_rfm_raw raw, settings s
+  where public.is_staff();
 $fn$;
 grant execute on function public.get_customer_rfm_segments() to authenticated;
+
+-- Preview a hypothetical set of thresholds (not yet saved) against live
+-- customer data, without writing anything — lets a manager see the effect
+-- of a change before committing to it.
+create or replace function public.preview_customer_segment_distribution(
+  p_recency int, p_visits int, p_inactive int
+)
+returns table (segment text, segment_fa text, customer_count bigint, pct numeric)
+language sql stable security definer set search_path = public as $fn$
+  -- p_inactive is accepted for parameter symmetry with the 3-field settings
+  -- form (and to leave room for a future "hibernating beyond N days"
+  -- split), but the current 4-way classification is fully determined by
+  -- the recency/visits crossover alone, matching get_customer_rfm_segments()
+  -- exactly — it isn't referenced further in this query.
+  with classified as (
+    select
+      case
+        when raw.recency_days <= p_recency and raw.frequency >= p_visits then 'champions'
+        when raw.recency_days >  p_recency and raw.frequency >= p_visits then 'at_risk'
+        when raw.recency_days <= p_recency and raw.frequency <  p_visits then 'new'
+        else 'inactive'
+      end as segment
+    from public.customer_rfm_raw raw
+    where public.is_manager()
+  ),
+  totals as (select count(*) as n from classified),
+  counted as (
+    select segment, count(*) as customer_count
+    from classified
+    group by segment
+  )
+  select
+    seg.key as segment,
+    case seg.key
+      when 'champions' then 'مشتریان وفادار'
+      when 'at_risk'   then 'در خطر ریزش'
+      when 'new'       then 'مشتریان جدید'
+      else                  'غیرفعال'
+    end as segment_fa,
+    coalesce(counted.customer_count, 0) as customer_count,
+    case when (select n from totals) = 0 then 0
+         else round(coalesce(counted.customer_count, 0)::numeric / (select n from totals) * 100, 1)
+    end as pct
+  from (values ('champions'), ('at_risk'), ('new'), ('inactive')) as seg(key)
+  left join counted on counted.segment = seg.key;
+$fn$;
+grant execute on function public.preview_customer_segment_distribution(int, int, int) to authenticated;
 
 -- Phase 4: referral redemption — award both sides.
 create or replace function public.apply_referral(p_new_phone text, p_code text)
 returns json language plpgsql security definer set search_path = public as $fn$
-declare referrer record; ls record; recent_count int;
+declare referrer record;
 begin
-  select * into ls from public.loyalty_settings where id = 1;
   select * into referrer from public.customers where referral_code = upper(p_code);
   if referrer is null then return json_build_object('ok', false, 'error', 'کد معرف پیدا نشد'); end if;
   if referrer.phone = p_new_phone then return json_build_object('ok', false, 'error', 'کد معرف خودتان قابل استفاده نیست'); end if;
@@ -724,27 +824,22 @@ begin
   end if;
   -- The referred phone must belong to a real customer (created by the
   -- appointment trigger the first time they actually book) — otherwise
-  -- this is callable with arbitrarily made-up numbers to farm points for a
-  -- chosen referrer, with no appointment ever having happened.
+  -- this is callable with arbitrarily made-up numbers to set up a fake
+  -- relationship with no appointment ever having happened.
   if not exists (select 1 from public.customers where phone = p_new_phone) then
     return json_build_object('ok', false, 'error', 'ابتدا باید یک نوبت برای این شماره ثبت شده باشد');
   end if;
-  -- Rate limit: cap how many referral rewards one referrer can earn per day,
-  -- so even a determined attacker generating real-looking numbers is bounded.
-  select count(*) into recent_count from public.loyalty_ledger
-   where customer_phone = referrer.phone and reason = 'referral' and created_at > now() - interval '24 hours';
-  if recent_count >= 5 then
-    return json_build_object('ok', false, 'error', 'سقف پاداش معرفی امروز برای این کد پر شده — فردا دوباره امتحان کنید');
-  end if;
 
+  -- Anti-fraud: this only records the referred_by relationship now. No
+  -- points are awarded here — the referrer's reward is earned later, only
+  -- once this customer's visit is completed AND staff has verified at
+  -- checkout that they're a genuinely new customer (see
+  -- sync_customer_from_appointment()). Awarding points at this step was
+  -- the actual exploit: apply a code against any real-looking phone number
+  -- and farm the referrer's points with no visit ever happening.
   update public.customers set referred_by = referrer.phone where phone = p_new_phone;
-  insert into public.loyalty_ledger (customer_phone, delta, reason) values
-    (referrer.phone, ls.referral_points, 'referral'),
-    (p_new_phone,    ls.referral_points, 'referral');
-  update public.customers set loyalty_points = loyalty_points + ls.referral_points
-   where phone in (referrer.phone, p_new_phone);
 
-  return json_build_object('ok', true, 'points', ls.referral_points);
+  return json_build_object('ok', true);
 end $fn$;
 grant execute on function public.apply_referral(text, text) to anon, authenticated;
 

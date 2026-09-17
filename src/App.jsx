@@ -4,7 +4,7 @@ import {
   Clock, Phone, Check, X, Calendar as CalendarIcon,
   Sun, Moon, MoreVertical, Search, ArrowRight, Percent, Banknote,
   CheckCircle2, XCircle, RotateCcw, MessageSquareText, User,
-  Copy, Lock, Plus, Trash2, Pencil, CalendarX, Settings, LayoutList,
+  Copy, Lock, Plus, Trash2, Pencil, CalendarX, Settings, LayoutList, SlidersHorizontal,
   Brain, TrendingUp, TrendingDown, BarChart3, Wand2, Hourglass,
   ChevronLeft, ChevronRight, History, CalendarClock,
   Wallet, Coins, CalendarCheck,
@@ -27,7 +27,8 @@ import {
   insertOne, updateOne, deleteOne,
   fetchSmsTemplates, fetchSmsLog, fetchCustomers, fetchInactiveCustomers,
   fetchCampaigns, fetchCustomerLoyalty, fetchLoyaltySettings, updateLoyaltySettings, redeemLoyaltyReward,
-  fetchRfmSegments, applyReferral,
+  fetchRfmSegments, applyReferral, fetchCustomerReferredBy,
+  fetchSegmentSettings, updateSegmentSettings, previewSegmentDistribution,
   createCampaign, addCampaignTargets,
 } from "./lib/api";
 import {
@@ -1761,6 +1762,9 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [phone, setPhone] = useState("");
   const [lookedUp, setLookedUp] = useState(false);
+  const [lookingUp, setLookingUp] = useState(false);
+  const [knownCustomer, setKnownCustomer] = useState(false);
+  const [knownCustomerName, setKnownCustomerName] = useState("");
   const [name, setName] = useState("");
   const [referralCode, setReferralCode] = useState("");
   const [result, setResult] = useState(null);
@@ -1903,16 +1907,38 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
     setAssignedStaffId(best.id);
   }
 
-  function lookupPhone() {
+  // Real customer lookup — this used to just compare against a single
+  // hardcoded demo phone number (KNOWN_CUSTOMER), meaning every actual
+  // returning customer was always treated as brand new. Now it queries the
+  // real customer_loyalty() RPC, same source of truth the "داشبورد من" tab
+  // already uses, so a real returning customer is correctly recognized and
+  // doesn't need to re-type their name on every booking.
+  async function lookupPhone() {
     setLookedUp(true);
-    if (phone === KNOWN_CUSTOMER.phone) {
+    setLookingUp(true);
+    if (SUPABASE_ENABLED) {
+      const res = await fetchCustomerLoyalty(phone);
+      if (res?.found && res.name?.trim()) {
+        setKnownCustomer(true);
+        setKnownCustomerName(res.name.trim());
+        setName(res.name.trim());
+      } else {
+        setKnownCustomer(false);
+        setKnownCustomerName("");
+        setName("");
+      }
+    } else if (phone === KNOWN_CUSTOMER.phone) {
+      setKnownCustomer(true);
+      setKnownCustomerName(KNOWN_CUSTOMER.name);
       setName(KNOWN_CUSTOMER.name);
     } else {
+      setKnownCustomer(false);
+      setKnownCustomerName("");
       setName("");
     }
+    setLookingUp(false);
   }
 
-  const knownCustomer = lookedUp && phone === KNOWN_CUSTOMER.phone;
   const phoneValid = /^09\d{9}$/.test(phone);
   const discount = service ? discountAmountFor(service) : 0;
   const finalPrice = service ? finalPriceFor(service) : 0;
@@ -1922,7 +1948,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
     const finalStaffId = staffId || assignedStaffId || null;
     const finalStaff = stylists.find((s) => s.id === finalStaffId) || null;
     const booking = makeSeedBooking({
-      customer_name: name || "مشتری",
+      customer_name: name.trim(),
       customer_phone: phone,
       customer_gender: gender,
       service_id: service.id,
@@ -1946,7 +1972,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
       !knownCustomer && referralCode.trim()
         ? async () => {
             const res = await applyReferral(phone, referralCode.trim());
-            if (res.ok) notify(`کد معرفی اعمال شد — ${toFa(res.points)} امتیاز جایزه گرفتید`);
+            if (res.ok) notify("کد معرفی ثبت شد — بعد از اولین نوبت شما، پاداش معرف فعال می‌شود");
           }
         : null
     );
@@ -2266,20 +2292,20 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
               dir="ltr"
               inputMode="numeric"
               value={phone}
-              onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 11)); setLookedUp(false); }}
+              onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 11)); setLookedUp(false); setKnownCustomer(false); setKnownCustomerName(""); }}
               placeholder="09xxxxxxxxx"
               className="tabular"
               style={{ flex: 1, padding: "11px 14px", fontSize: 14, textAlign: "left" }}
             />
-            <button disabled={!phoneValid} onClick={lookupPhone} className="tap ghost-btn" style={{ padding: "0 16px", fontSize: 13, fontWeight: 700 }}>
-              بررسی
+            <button disabled={!phoneValid || lookingUp} onClick={lookupPhone} className="tap ghost-btn" style={{ padding: "0 16px", fontSize: 13, fontWeight: 700 }}>
+              {lookingUp ? "..." : "بررسی"}
             </button>
           </div>
 
           {lookedUp && knownCustomer && (
             <div className="card fade-in mt-3" style={{ padding: 12, display: "flex", alignItems: "center", gap: 10 }}>
               <User size={18} color="var(--color-accent-500)" />
-              <p style={{ fontSize: 13 }}>خوش برگشتید، <b style={{ color: "var(--color-heading)" }}>{KNOWN_CUSTOMER.name}</b> عزیز</p>
+              <p style={{ fontSize: 13 }}>خوش برگشتید، <b style={{ color: "var(--color-heading)" }}>{knownCustomerName}</b> عزیز</p>
             </div>
           )}
 
@@ -2324,7 +2350,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             {effectiveStaff && <Row label="آرایشگر" value={effectiveStaff.name} />}
             <Row label="تاریخ" value={jalaliLabel(selectedDate, { short: true })} />
             <Row label="ساعت" value={formatClock(selectedSlot)} />
-            <Row label="مشتری" value={knownCustomer ? KNOWN_CUSTOMER.name : name} />
+            <Row label="مشتری" value={knownCustomer ? knownCustomerName : name} />
             <Row label="شماره تماس" value={<span dir="ltr">{toFa(phone)}</span>} />
             <div style={{ borderTop: "1px dashed var(--color-border)", margin: "10px 0" }} />
             {!hasPrice(service) && <Row label="مبلغ" value={priceLabel(service)} bold />}
@@ -3078,6 +3104,7 @@ function StylistEditModal({ stylist, onClose, onSave }) {
 function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHours, timeOff, updateBooking, waitlist, removeWaitlistEntry }) {
   const [menuFor, setMenuFor] = useState(null);
   const [action, setAction] = useState(null);
+  const [verifyAction, setVerifyAction] = useState(null); // { booking } — pending referral-verification prompt
   const [genderFilter, setGenderFilter] = useState("all");
   const [staffFilter, setStaffFilter] = useState(defaultStaffId || "all");
   const [view, setView] = useState("list"); // "list" | "timeline"
@@ -3089,6 +3116,20 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
 
   function shiftDay(delta) {
     setViewDate((d) => { const n = new Date(d); n.setDate(n.getDate() + delta); return n; });
+  }
+
+  // "انجام شد" — most bookings have no referrer involved and complete
+  // immediately as before. Only when this customer was referred does staff
+  // need to confirm (in ReferralVerifyModal) that they're genuinely new
+  // before the referrer's reward can be awarded.
+  async function handleComplete(b) {
+    setMenuFor(null);
+    const referredBy = await fetchCustomerReferredBy(b.customer_phone);
+    if (referredBy) {
+      setVerifyAction({ booking: b });
+    } else {
+      updateBooking(b.id, { status: "completed" }, "وضعیت به «انجام شده» تغییر کرد");
+    }
   }
 
   const dayBookings = bookings
@@ -3334,7 +3375,7 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
                     <MenuItem positive label="تایید نوبت" onClick={() => { updateBooking(b.id, { status: "confirmed" }, "نوبت تایید شد؛ پیامک برای مشتری ارسال شد"); setMenuFor(null); }} />
                   )}
                   <MenuItem label="تغییر زمان" onClick={() => { setAction({ type: "reschedule", booking: b }); setMenuFor(null); }} />
-                  <MenuItem label="انجام شد" onClick={() => { updateBooking(b.id, { status: "completed" }, "وضعیت به «انجام شده» تغییر کرد"); setMenuFor(null); }} />
+                  <MenuItem label="انجام شد" onClick={() => handleComplete(b)} />
                   <MenuItem label="عدم حضور" onClick={() => { updateBooking(b.id, { status: "no_show" }, "وضعیت به «عدم حضور» تغییر کرد"); setMenuFor(null); }} />
                   <MenuItem danger label="لغو نوبت" onClick={() => { setAction({ type: "cancel", booking: b }); setMenuFor(null); }} />
                 </div>
@@ -3369,6 +3410,20 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
               "پیشنهاد زمان جدید ثبت شد؛ برای تایید نهایی منتظر پاسخ مشتری بمانید"
             );
             setAction(null);
+          }}
+        />
+      )}
+      {verifyAction && (
+        <ReferralVerifyModal
+          booking={verifyAction.booking}
+          onClose={() => setVerifyAction(null)}
+          onConfirm={(verified) => {
+            updateBooking(
+              verifyAction.booking.id,
+              { status: "completed", referral_verified: verified },
+              verified ? "وضعیت به «انجام شده» تغییر کرد؛ امتیاز معرف و مشتری ثبت شد" : "وضعیت به «انجام شده» تغییر کرد؛ بدون امتیاز معرفی"
+            );
+            setVerifyAction(null);
           }}
         />
       )}
@@ -3411,6 +3466,34 @@ function MenuItem({ label, onClick, danger, positive }) {
     <button onClick={onClick} className="tap w-full" style={{ padding: "9px 12px", textAlign: "right", fontSize: 13, borderRadius: "var(--radius-sm)", color: danger ? "var(--color-danger)" : positive ? "var(--color-success)" : "var(--color-body)" }}>
       {label}
     </button>
+  );
+}
+
+// Shown when marking a booking "انجام شد" (completed) if the customer has a
+// referrer on file. The referrer's reward is only awarded once staff
+// explicitly confirms here that this is a genuinely new customer — closing
+// the fraud path where a fake "new customer" booking could farm referral
+// points with no real visit involved.
+function ReferralVerifyModal({ booking, onClose, onConfirm }) {
+  const [checked, setChecked] = useState(false);
+  return (
+    <Modal title="تایید مشتری معرفی‌شده" onClose={onClose}>
+      <p style={{ fontSize: 13, lineHeight: 1.8, marginBottom: 14 }}>
+        <b>{booking.customer_name}</b> با یک کد معرفی ثبت‌نام کرده. امتیاز معرف و امتیاز خودِ {booking.customer_name} هر دو فقط با تایید شما ثبت می‌شوند.
+      </p>
+      <label className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 700, cursor: "pointer", padding: "10px 12px", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
+        <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} style={{ width: 18, height: 18 }} />
+        تایید می‌کنم این فرد مشتری کاملاً جدید است
+      </label>
+      <div className="flex gap-2 mt-4">
+        <button className="tap ghost-btn flex-1" style={{ padding: 11 }} onClick={() => onConfirm(false)}>
+          بدون تایید ثبت شود
+        </button>
+        <button disabled={!checked} className="tap accent-btn flex-1" style={{ padding: 11 }} onClick={() => onConfirm(true)}>
+          تایید و ثبت
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -4949,6 +5032,127 @@ const RFM_SEGMENT_META = {
 
 // Reads the get_customer_rfm_segments() RPC directly — a separate data source from
 // the bookings prop, so it fetches and refreshes on its own.
+// Manager-only: configure the thresholds that drive customer segmentation.
+// Mirrors the loyalty-settings form pattern (load → edit locally → save),
+// plus a live preview against hypothetical values before committing.
+function SegmentSettingsCard({ notify }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [recency, setRecency] = useState(60);
+  const [visits, setVisits] = useState(4);
+  const [inactiveAfter, setInactiveAfter] = useState(120);
+  const [preview, setPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const s = await fetchSegmentSettings();
+      if (s) {
+        setRecency(s.loyal_recency_days);
+        setVisits(s.loyal_min_visits);
+        setInactiveAfter(s.inactive_after_days);
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  const rangeValid = inactiveAfter > recency;
+
+  async function handlePreview() {
+    if (!rangeValid) return;
+    setPreviewLoading(true);
+    setPreview(await previewSegmentDistribution({ recency, visits, inactive: inactiveAfter }));
+    setPreviewLoading(false);
+  }
+
+  async function handleSave() {
+    if (!rangeValid) { notify("روز «غیرفعال» باید بیشتر از روز «وفادار» باشد"); return; }
+    setSaving(true);
+    await updateSegmentSettings({ loyal_recency_days: recency, loyal_min_visits: visits, inactive_after_days: inactiveAfter });
+    setSaving(false);
+    notify("تنظیمات دسته‌بندی مشتریان ذخیره شد");
+  }
+
+  return (
+    <div className="card mb-4" style={{ padding: 14 }}>
+      <p className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)", marginBottom: 10 }}>
+        <SlidersHorizontal size={14} color="var(--color-accent-700)" /> تنظیمات دسته‌بندی هوشمند مشتریان
+      </p>
+
+      {!SUPABASE_ENABLED ? (
+        <p className="muted" style={{ fontSize: 11.5 }}>این بخش به دیتابیس Supabase نیاز دارد و در حالت دمو در دسترس نیست.</p>
+      ) : loading ? (
+        <p className="muted" style={{ fontSize: 12 }}>در حال بارگذاری...</p>
+      ) : (
+        <>
+          <div className="flex flex-col gap-3">
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)" }}>حداکثر روز از آخرین ویزیت برای «وفادار»</label>
+              <input
+                type="number" min="1" max="365" value={recency}
+                onChange={(e) => setRecency(Number(e.target.value))}
+                className="tabular" style={{ width: "100%", padding: "9px 10px", fontSize: 13, marginTop: 4 }}
+              />
+              <p className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>
+                مشتری‌ای که ظرف {toFa(recency)} روز اخیر نوبت تکمیل‌شده داشته، «به‌روز» حساب می‌شود
+              </p>
+            </div>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)" }}>حداقل تعداد ویزیت برای «وفادار»</label>
+              <input
+                type="number" min="1" max="100" value={visits}
+                onChange={(e) => setVisits(Number(e.target.value))}
+                className="tabular" style={{ width: "100%", padding: "9px 10px", fontSize: 13, marginTop: 4 }}
+              />
+              <p className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>
+                {toFa(visits)} ویزیت تکمیل‌شده یا بیشتر، مشتری را «پرتردد» می‌کند
+              </p>
+            </div>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)" }}>روز عدم مراجعه برای «غیرفعال»</label>
+              <input
+                type="number" min="1" max="365" value={inactiveAfter}
+                onChange={(e) => setInactiveAfter(Number(e.target.value))}
+                className="tabular" style={{ width: "100%", padding: "9px 10px", fontSize: 13, marginTop: 4 }}
+              />
+              {rangeValid ? (
+                <p className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>باید بزرگ‌تر از عدد «حداکثر روز وفادار» بالا باشد</p>
+              ) : (
+                <p style={{ fontSize: 10.5, marginTop: 3, color: "var(--color-danger)" }}>باید بزرگ‌تر از {toFa(recency)} باشد</p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex gap-2 mt-4">
+            <button disabled={previewLoading || !rangeValid} className="tap ghost-btn flex-1" style={{ padding: 10, fontSize: 12.5 }} onClick={handlePreview}>
+              {previewLoading ? "در حال محاسبه..." : "پیش‌نمایش توزیع مشتریان"}
+            </button>
+            <button disabled={saving || !rangeValid} className="tap accent-btn flex-1" style={{ padding: 10, fontSize: 12.5 }} onClick={handleSave}>
+              {saving ? "در حال ذخیره..." : "ذخیره تنظیمات"}
+            </button>
+          </div>
+
+          {preview && (
+            <div className="fade-in" style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {preview.map((p) => {
+                const meta = RFM_SEGMENT_META[p.segment] || { color: "var(--color-muted)" };
+                return (
+                  <div key={p.segment} style={{ padding: 10, borderRadius: "var(--radius-md)", background: `color-mix(in oklch, ${meta.color} 10%, var(--color-surface-raised))` }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--color-heading)" }}>{p.segment_fa}</div>
+                    <div className="tabular" style={{ fontSize: 15, fontWeight: 800, color: meta.color }}>{toFa(p.customer_count)} نفر</div>
+                    <div className="muted tabular" style={{ fontSize: 10 }}>{toFa(p.pct)}٪</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function RfmSegmentsCard({ onSendToSegment }) {
   const [segments, setSegments] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -5945,6 +6149,13 @@ function LoyaltyTab({ notify, currentStylist, onNavigateToSmsSegment }) {
           </>
         )}
       </div>
+
+      {/* Segment threshold configuration — manager-only. Stylists can VIEW
+          segmentation below (RfmSegmentsCard, opened to them earlier) but
+          must not see or change the thresholds that produce it; the RLS on
+          customer_segment_settings enforces this server-side regardless,
+          this is just keeping the UI honest about who can act on it. */}
+      {!currentStylist && <SegmentSettingsCard notify={notify} />}
 
       {/* Customer segmentation (RFM) — moved here from «هوش تجاری» earlier.
           Simplified to 4 targeted segments (from 6) and opened to stylists —
