@@ -1,4 +1,7 @@
 {
+  "rewrites": [
+    { "source": "/((?!assets/|manifest.json|sw.js|icon-.*\\.png).*)", "destination": "/index.html" }
+  ],
   "headers": [
     {
       "source": "/(.*)",

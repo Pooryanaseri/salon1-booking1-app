@@ -607,3 +607,16 @@ export async function previewSegmentDistribution({ recency, visits, inactive }) 
   return data || [];
 }
 
+// v2.14 — public feedback submission, no auth. booking_id is the bearer
+// token; RLS (p_feedback_insert) enforces it's a completed booking with no
+// existing feedback.
+export async function submitFeedback({ bookingId, rating, tags, comment }) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { error } = await supabase.from("feedbacks").insert({
+    booking_id: bookingId, rating, tags: tags || [], comment: comment?.trim() || "",
+  });
+  if (error) return { ok: false, error: error.code === "23505" ? "نظر شما قبلاً ثبت شده" : "ثبت نظر ناموفق بود" };
+  return { ok: true };
+}
+
+

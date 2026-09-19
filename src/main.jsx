@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
+import FeedbackPage from "./FeedbackPage.jsx";
 import { SUPABASE_ENABLED } from "./lib/supabase.js";
 import { getSession, signOut } from "./lib/auth.js";
 
@@ -143,12 +144,20 @@ function OfflineBanner() {
   );
 }
 
+const feedbackMatch = window.location.pathname.match(/^\/feedback\/([^/]+)\/?$/);
+
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <OfflineBanner />
-      <IdleSessionGuard />
-      <App />
+      {feedbackMatch ? (
+        <FeedbackPage bookingId={feedbackMatch[1]} />
+      ) : (
+        <>
+          <OfflineBanner />
+          <IdleSessionGuard />
+          <App />
+        </>
+      )}
     </ErrorBoundary>
   </React.StrictMode>
 );

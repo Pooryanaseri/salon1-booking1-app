@@ -520,6 +520,7 @@ const FALLBACK_SMS_TEMPLATES = {
   reschedule_proposed: "{{name}} عزیز، آرایشگر پیشنهاد داده نوبت شما به {{date}} ساعت {{time}} جابه‌جا بشه.\nبرای تایید یا رد این پیشنهاد، در تب «داشبورد من» شماره‌تون را وارد کنید.",
   campaign: "{{name}} عزیز، جای شما در {{salon}} خالیه!\nبه‌مناسبت بازگشتتون {{discount}}٪ تخفیف روی همه خدمات براتون فعال کردیم.\nهمین حالا رزرو کنید.",
   loyalty: "{{name}} عزیز، امتیاز شما در باشگاه مشتریان {{salon}}: {{points}}\nتخفیف فعال شما: {{discount}}٪",
+  feedback_request: "{{name}} عزیز، امیدواریم از {{service}} امروز راضی بوده باشید 🌸\nنظرتون برامون خیلی مهمه: {{link}}",
   custom: "",
 };
 
@@ -531,6 +532,7 @@ const SMS_KIND_LABEL = {
   reschedule_proposed: "پیشنهاد تغییر زمان",
   campaign: "کمپین جذب مجدد",
   loyalty: "باشگاه مشتریان",
+  feedback_request: "درخواست نظرسنجی",
   custom: "پیام آزاد",
 };
 
@@ -1161,6 +1163,7 @@ export default function App() {
       time: formatClock(b.start_min),
       stylist: b.staff_name || "بدون آرایشگر مشخص",
       code: b.tracking_code || "",
+      link: `${window.location.origin}/feedback/${b.id}`,
     };
   }
 
@@ -1232,6 +1235,8 @@ export default function App() {
         await queueReminder(after);
       } else if (patch.status === "no_show") {
         await cancelScheduledReminders(id);
+      } else if (patch.status === "completed") {
+        await sendBookingSms(after, "feedback_request");
       }
     })();
   }
