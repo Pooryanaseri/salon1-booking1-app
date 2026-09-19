@@ -5,7 +5,7 @@
 //  message into public.sms_messages.
 //
 //  Actions:
-//    { action: "send",     messages: [{ to, body, kind, appointment_id?, campaign_id? }] }
+//    { action: "send",     messages: [{ to, body, kind, appointment_id?, campaign_id?, campaign_log_id? }] }
 //    { action: "schedule", messages: [{ to, body, appointment_id, scheduled_for }] }
 //    { action: "cancel",   appointment_id: "..." }
 //
@@ -191,6 +191,7 @@ Deno.serve(async (req) => {
       kind: m.kind ?? "custom",
       appointment_id: m.appointment_id ?? null,
       campaign_id: m.campaign_id ?? null,
+      campaign_log_id: m.campaign_log_id ?? null,
       provider: r.provider,
       provider_msg_id: r.providerMsgId ?? null,
       status: r.ok ? "sent" : "failed",

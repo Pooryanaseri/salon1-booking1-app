@@ -374,6 +374,19 @@ export async function fetchRfmSegments() {
   return setCache(key, data || []);
 }
 
+// Per-customer × per-service-category recency (v2.11) — same caching
+// pattern as fetchRfmSegments, invalidated together since both derive from
+// the same underlying completed-appointments data.
+export async function fetchCategoryMatrix() {
+  if (!SUPABASE_ENABLED) return [];
+  const key = "category_matrix";
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase.rpc("get_customer_category_matrix");
+  if (error) { fail("get_customer_category_matrix", error); return []; }
+  return setCache(key, data || []);
+}
+
 export async function fetchCustomers() {
   if (!SUPABASE_ENABLED) return [];
   const key = "customers";
@@ -484,6 +497,52 @@ export async function createCampaign(campaign) {
   if (error) { fail("campaigns.create", error); return null; }
   invalidateCache("campaigns");
   return data;
+}
+
+// v2.13 — records one bulk send for per-template conversion tracking,
+// independent of the campaigns/campaign_targets pair above. Call this
+// BEFORE sendBulkSms, then pass the returned id as campaign_log_id on each
+// message so the attribution trigger can later find it by phone number.
+// id is DB-generated (not client-side) — we read it back via .select().
+export async function logCampaignSend({ templateId, templateLabel, segment, totalSent }) {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase
+    .from("campaign_logs")
+    .insert({
+      template_id: templateId ?? null,
+      template_label: templateLabel ?? "",
+      segment: segment ?? null,
+      total_sent: totalSent ?? 0,
+      successful_count: 0, // updated after the send completes, via updateCampaignLogResult
+    })
+    .select()
+    .maybeSingle();
+  if (error) { fail("campaign_logs.create", error); return null; }
+  return data;
+}
+
+// v2.13 — after sendBulkSms resolves, record how many actually succeeded.
+export async function updateCampaignLogResult(campaignLogId, successfulCount) {
+  if (!SUPABASE_ENABLED || !campaignLogId) return;
+  const { error } = await supabase
+    .from("campaign_logs")
+    .update({ successful_count: successfulCount })
+    .eq("id", campaignLogId);
+  if (error) fail("campaign_logs.update", error);
+  invalidateCache("campaign_performance");
+}
+
+// v2.13 — per-template conversion rate and attributed revenue. Pass a
+// template_id to scope to one template, or omit for the full breakdown
+// (used for the BI comparison chart and the "بهترین عملکرد" suggester).
+export async function fetchCampaignPerformance(templateId = null) {
+  if (!SUPABASE_ENABLED) return [];
+  const key = `campaign_performance:${templateId ?? "all"}`;
+  const cached = getCached(key);
+  if (cached !== undefined) return cached;
+  const { data, error } = await supabase.rpc("get_campaign_performance", { p_template_id: templateId });
+  if (error) { fail("get_campaign_performance", error); return []; }
+  return setCache(key, data || []);
 }
 
 export async function addCampaignTargets(campaignId, phones) {

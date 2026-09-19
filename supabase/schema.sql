@@ -277,6 +277,53 @@ create table if not exists public.campaign_targets (
   unique (campaign_id, customer_phone)
 );
 
+-- v2.13: per-template send log, independent of the campaigns/campaign_targets
+-- pair above (which tracks per-recipient outcomes for a named campaign) —
+-- this tracks per-TEMPLATE performance across every kind of bulk send.
+create table if not exists public.campaign_logs (
+  id               text primary key default 'cl-' || substr(md5(gen_random_uuid()::text), 1, 12),
+  -- Not FK-constrained: a real sms_templates.id for a manual-composer send,
+  -- or a synthetic key (e.g. "champions") for a one-click RFM smart
+  -- campaign, which has no row in sms_templates. template_label is a
+  -- human-readable snapshot so a title is always available either way.
+  template_id      text,
+  template_label   text not null default '',
+  segment          text, -- RFM segment targeted, if this was segment-based; null for a manual/free audience
+  sent_at          timestamptz not null default now(),
+  total_sent       integer not null default 0,
+  successful_count integer not null default 0,
+  created_by       uuid references auth.users(id),
+  created_at       timestamptz not null default now()
+);
+create index if not exists campaign_logs_template_idx on public.campaign_logs (template_id);
+create index if not exists campaign_logs_sent_at_idx on public.campaign_logs (sent_at);
+
+alter table public.sms_messages
+  add column if not exists campaign_log_id text references public.campaign_logs(id) on delete set null;
+create index if not exists sms_messages_campaign_log_idx on public.sms_messages (campaign_log_id);
+-- Partial index scoped to campaign sends only — this is exactly the lookup
+-- the v2.13 attribution trigger does on every new booking, so it needs to
+-- stay fast as sms_messages grows into mostly confirmation/reminder rows
+-- that have nothing to do with campaigns.
+create index if not exists sms_messages_conversion_lookup_idx
+  on public.sms_messages (to_phone, sent_at desc) where campaign_log_id is not null;
+
+-- v2.13: one row per booking attributed to a campaign send (time-based
+-- attribution — see the trigger below). unique(appointment_id) is the
+-- idempotency guard.
+create table if not exists public.campaign_conversions (
+  id               text primary key default 'cc-' || substr(md5(gen_random_uuid()::text), 1, 12),
+  campaign_log_id  text not null references public.campaign_logs(id) on delete cascade,
+  customer_phone   text not null,
+  appointment_id   text not null references public.appointments(id) on delete cascade,
+  sms_message_id   text references public.sms_messages(id) on delete set null,
+  converted_at     timestamptz not null default now(),
+  days_to_convert  integer not null default 0,
+  unique (appointment_id)
+);
+create index if not exists campaign_conversions_log_idx on public.campaign_conversions (campaign_log_id);
+create index if not exists campaign_conversions_phone_idx on public.campaign_conversions (customer_phone);
+
 create table if not exists public.loyalty_ledger (
   id             text primary key default 'lp-' || substr(md5(gen_random_uuid()::text), 1, 12),
   customer_phone text not null references public.customers (phone) on delete cascade,
@@ -472,6 +519,24 @@ drop policy if exists p_segment_settings_write on public.customer_segment_settin
 create policy p_segment_settings_write on public.customer_segment_settings
   for update using (public.is_manager()) with check (public.is_manager());
 grant select, update on public.customer_segment_settings to authenticated;
+
+-- v2.13: campaign_logs / campaign_conversions — also their own dedicated
+-- policies. campaign_logs is staff-read + staff-insert (append-only, no
+-- update/delete policy at all). campaign_conversions is staff-read only —
+-- every row is written by the security-definer attribution trigger, which
+-- isn't subject to RLS for its own inserts, so no client insert policy is
+-- needed or wanted.
+alter table public.campaign_logs enable row level security;
+drop policy if exists p_campaign_logs_read on public.campaign_logs;
+create policy p_campaign_logs_read on public.campaign_logs for select using (public.is_staff());
+drop policy if exists p_campaign_logs_write on public.campaign_logs;
+create policy p_campaign_logs_write on public.campaign_logs for insert with check (public.is_staff());
+grant select, insert on public.campaign_logs to authenticated;
+
+alter table public.campaign_conversions enable row level security;
+drop policy if exists p_campaign_conversions_read on public.campaign_conversions;
+create policy p_campaign_conversions_read on public.campaign_conversions for select using (public.is_staff());
+grant select on public.campaign_conversions to authenticated;
 
 -- Public read: the booking flow must work for unauthenticated visitors.
 do $$
@@ -724,45 +789,222 @@ left join public.appointments a
 group by c.phone, c.name, c.sms_opt_out;
 
 -- Direct-threshold classification against the manager-configurable
--- customer_segment_settings singleton (see that table for the shape) —
--- replaces the old fixed 1–4 R/F-score grid entirely. Return signature
--- drops r_score/f_score/m_score (meaningless under direct thresholds;
--- nothing in the frontend read them) — DROP is required first since
--- CREATE OR REPLACE cannot change a function's return columns.
+-- customer_segment_settings singleton (see that table for the shape).
+-- v2.11: recency is now compared against a PER-CUSTOMER threshold (their
+-- own average gap between completed visits × 1.5, floored at the salon
+-- default) instead of one flat number for everyone, and champions get an
+-- additional is_vip flag for the top 20% by completed spend. segment/
+-- segment_fa still return exactly the same 4 values as before — three
+-- columns are ADDED (avg_gap_days, personal_recency_limit, is_vip), so any
+-- existing caller reading the old columns by name is unaffected. DROP is
+-- required first since CREATE OR REPLACE cannot change a function's return
+-- columns — every aggregate below is explicitly cast to its declared
+-- output type for the same reason (count()/sum() default to bigint,
+-- avg()/percentile_cont() default to numeric/double precision; left
+-- uncast, a mismatch against the RETURNS TABLE declaration is exactly
+-- what trips a 42P16 "invalid table definition" error).
 drop function if exists public.get_customer_rfm_segments();
 
 create or replace function public.get_customer_rfm_segments()
 returns table (
   phone text, name text, sms_opt_out boolean,
   recency_days int, frequency int, monetary bigint,
-  segment text, segment_fa text
+  segment text, segment_fa text,
+  avg_gap_days numeric, personal_recency_limit int, is_vip boolean
 )
 language sql stable security definer set search_path = public as $fn$
-  -- Open to any authenticated staff member (owner, manager, or stylist) —
-  -- a stylist deciding who to follow up with needs this exactly as much as
-  -- the owner does. The THRESHOLDS themselves are manager-only to change
-  -- (see customer_segment_settings RLS).
   with settings as (
     select * from public.customer_segment_settings where id = 1
+  ),
+  -- Gap between each customer's own consecutive completed visits (in days).
+  -- date - date in Postgres yields a plain integer day count directly.
+  gaps as (
+    select
+      customer_phone,
+      (date - lag(date) over (partition by customer_phone order by date))::int as gap_days
+    from public.appointments
+    where status = 'completed'
+  ),
+  avg_gaps as (
+    select customer_phone, avg(gap_days)::numeric as avg_gap_days
+    from gaps
+    where gap_days is not null and gap_days > 0
+    group by customer_phone
+  ),
+  -- 80th percentile of total completed spend, among customers who have at
+  -- least one completed visit.
+  monetary_p80 as (
+    select percentile_cont(0.80) within group (order by monetary)::bigint as p80
+    from public.customer_rfm_raw
+    where frequency > 0
+  ),
+  scored as (
+    select
+      raw.*,
+      ag.avg_gap_days,
+      case
+        when coalesce(ag.avg_gap_days, 0) > 0
+          then greatest(s.loyal_recency_days, round(ag.avg_gap_days * 1.5)::int)
+        else s.loyal_recency_days
+      end as personal_recency_limit,
+      s.loyal_min_visits,
+      mp.p80
+    from public.customer_rfm_raw raw
+    left join avg_gaps ag on ag.customer_phone = raw.phone
+    cross join settings s
+    cross join monetary_p80 mp
+    where public.is_staff()
   )
   select
-    raw.phone, raw.name, raw.sms_opt_out, raw.recency_days, raw.frequency, raw.monetary,
+    phone, name, sms_opt_out, recency_days, frequency, monetary,
     case
-      when raw.recency_days <= s.loyal_recency_days and raw.frequency >= s.loyal_min_visits then 'champions'
-      when raw.recency_days >  s.loyal_recency_days and raw.frequency >= s.loyal_min_visits then 'at_risk'
-      when raw.recency_days <= s.loyal_recency_days and raw.frequency <  s.loyal_min_visits then 'new'
+      when recency_days <= personal_recency_limit and frequency >= loyal_min_visits then 'champions'
+      when recency_days >  personal_recency_limit and frequency >= loyal_min_visits then 'at_risk'
+      when recency_days <= personal_recency_limit and frequency <  loyal_min_visits then 'new'
       else 'inactive'
     end as segment,
     case
-      when raw.recency_days <= s.loyal_recency_days and raw.frequency >= s.loyal_min_visits then 'مشتریان وفادار'
-      when raw.recency_days >  s.loyal_recency_days and raw.frequency >= s.loyal_min_visits then 'در خطر ریزش'
-      when raw.recency_days <= s.loyal_recency_days and raw.frequency <  s.loyal_min_visits then 'مشتریان جدید'
+      when recency_days <= personal_recency_limit and frequency >= loyal_min_visits then 'مشتریان وفادار'
+      when recency_days >  personal_recency_limit and frequency >= loyal_min_visits then 'در خطر ریزش'
+      when recency_days <= personal_recency_limit and frequency <  loyal_min_visits then 'مشتریان جدید'
       else 'غیرفعال'
-    end as segment_fa
-  from public.customer_rfm_raw raw, settings s
-  where public.is_staff();
+    end as segment_fa,
+    avg_gap_days,
+    personal_recency_limit,
+    -- VIP only means anything within "champions" — a big spender who hasn't
+    -- been back in a year is a high-value at_risk/inactive customer, not a
+    -- VIP champion.
+    (recency_days <= personal_recency_limit
+       and frequency >= loyal_min_visits
+       and monetary >= coalesce(p80, monetary + 1)) as is_vip
+  from scored;
 $fn$;
 grant execute on function public.get_customer_rfm_segments() to authenticated;
+
+-- Per-customer × per-service-category recency — a customer who is a
+-- hair-color regular but hasn't had a facial in 8 months looks very
+-- different line by line vs. as one blended average recency number.
+create or replace function public.get_customer_category_matrix()
+returns table (
+  phone text, name text, category text, category_fa text,
+  visit_count int, last_visit_days int, line_status text, line_status_fa text
+)
+language sql stable security definer set search_path = public as $fn$
+  with cat_stats as (
+    select
+      a.customer_phone as phone,
+      c.name,
+      s.category,
+      count(a.id)::int as visit_count,
+      extract(day from (now() - max(a.date)))::int as last_visit_days
+    from public.appointments a
+    join public.services s on s.id = a.service_id
+    join public.customers c on c.phone = a.customer_phone
+    where a.status = 'completed'
+    group by a.customer_phone, c.name, s.category
+  )
+  select
+    phone, name, category,
+    case category
+      when 'hair'             then 'مو'
+      when 'beard'             then 'ریش'
+      when 'color'             then 'رنگ'
+      when 'makeup'            then 'میکاپ'
+      when 'nails'             then 'ناخن'
+      when 'skin'              then 'پوست'
+      when 'permanent_makeup'  then 'خدمات دائم'
+      else category
+    end as category_fa,
+    visit_count, last_visit_days,
+    case
+      when last_visit_days <= 45 then 'active'
+      when last_visit_days <= 90 then 'at_risk'
+      else 'dormant'
+    end as line_status,
+    case
+      when last_visit_days <= 45 then 'فعال در این خط خدمت'
+      when last_visit_days <= 90 then 'در خطر ریزش در این خط خدمت'
+      else 'غیرفعال در این خط خدمت'
+    end as line_status_fa
+  from cat_stats
+  where public.is_staff()
+  order by phone, category;
+$fn$;
+grant execute on function public.get_customer_category_matrix() to authenticated;
+
+-- v2.13: campaign conversion attribution — a separate, minimal AFTER
+-- INSERT trigger, fully isolated from sync_customer_from_appointment()
+-- (the existing booking trigger, which is untouched by this migration).
+-- Time-based attribution: a booking counts as a conversion if that phone
+-- was sent a campaign SMS within the preceding 7 days.
+create or replace function public.track_campaign_conversion() returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare matched_sms record;
+begin
+  if new.customer_phone !~ '^09[0-9]{9}$' then
+    return new;
+  end if;
+
+  select sm.id as sms_id, sm.campaign_log_id, sm.sent_at
+    into matched_sms
+    from public.sms_messages sm
+   where sm.to_phone = new.customer_phone
+     and sm.campaign_log_id is not null
+     and sm.status in ('sent', 'delivered')
+     and sm.sent_at >= now() - interval '7 days'
+   order by sm.sent_at desc
+   limit 1;
+
+  if matched_sms.campaign_log_id is not null then
+    insert into public.campaign_conversions
+      (campaign_log_id, customer_phone, appointment_id, sms_message_id, converted_at, days_to_convert)
+    values (
+      matched_sms.campaign_log_id, new.customer_phone, new.id, matched_sms.sms_id, now(),
+      greatest(0, extract(day from (now() - matched_sms.sent_at))::int)
+    )
+    on conflict (appointment_id) do nothing;
+  end if;
+
+  return new;
+end $fn$;
+
+drop trigger if exists appointments_track_conversion on public.appointments;
+create trigger appointments_track_conversion after insert on public.appointments
+  for each row execute function public.track_campaign_conversion();
+
+-- v2.13: per-template conversion rate and attributed revenue. Revenue is
+-- joined live from appointments.final_price at query time, not snapshotted,
+-- so a later price change or completion always reflects accurately. Every
+-- join is on an indexed key, and the result is one row per template (not
+-- per message or per conversion), so this stays fast as send volume grows.
+create or replace function public.get_campaign_performance(p_template_id text default null)
+returns table (
+  template_id text, template_label text, segment text,
+  total_sent bigint, successful_count bigint,
+  total_conversions bigint, conversion_rate numeric,
+  attributed_revenue bigint
+)
+language sql stable security definer set search_path = public as $fn$
+  select
+    cl.template_id,
+    max(cl.template_label) as template_label,
+    max(cl.segment) as segment,
+    sum(cl.total_sent)::bigint as total_sent,
+    sum(cl.successful_count)::bigint as successful_count,
+    count(distinct cc.id)::bigint as total_conversions,
+    case when sum(cl.successful_count) = 0 then 0::numeric
+         else round(count(distinct cc.id)::numeric / sum(cl.successful_count) * 100, 1)
+    end as conversion_rate,
+    coalesce(sum(a.final_price) filter (where a.status = 'completed'), 0)::bigint as attributed_revenue
+  from public.campaign_logs cl
+  left join public.campaign_conversions cc on cc.campaign_log_id = cl.id
+  left join public.appointments a on a.id = cc.appointment_id
+  where public.is_staff()
+    and (p_template_id is null or cl.template_id = p_template_id)
+  group by cl.template_id
+  order by conversion_rate desc;
+$fn$;
+grant execute on function public.get_campaign_performance(text) to authenticated;
 
 -- Preview a hypothetical set of thresholds (not yet saved) against live
 -- customer data, without writing anything — lets a manager see the effect
