@@ -23,7 +23,8 @@ import {
    ============================================================ */
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import {
-  bootstrap, subscribeAppointments,
+  bootstrap, subscribeAppointments, fetchFullAppointments, fetchMyBookings,
+  fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, fetchFeedbackStats,
   syncCollection, syncApprovedDates, saveWorkingHours, clearStaffWorkingHours,
   insertOne, updateOne, deleteOne,
   fetchSmsTemplates, fetchSmsLog, fetchCustomers, fetchInactiveCustomers,
@@ -521,6 +522,7 @@ const FALLBACK_SMS_TEMPLATES = {
   campaign: "{{name}} عزیز، جای شما در {{salon}} خالیه!\nبه‌مناسبت بازگشتتون {{discount}}٪ تخفیف روی همه خدمات براتون فعال کردیم.\nهمین حالا رزرو کنید.",
   loyalty: "{{name}} عزیز، امتیاز شما در باشگاه مشتریان {{salon}}: {{points}}\nتخفیف فعال شما: {{discount}}٪",
   feedback_request: "{{name}} عزیز، امیدواریم از {{service}} امروز راضی بوده باشید 🌸\nنظرتون برامون خیلی مهمه: {{link}}",
+  feedback_followup: "{{name}} عزیز، یادمون افتاد که هنوز نظرتون رو دربارهٔ {{service}} نگرفتیم 🙏\nاگه وقت داشتید: {{link}}",
   custom: "",
 };
 
@@ -533,6 +535,7 @@ const SMS_KIND_LABEL = {
   campaign: "کمپین جذب مجدد",
   loyalty: "باشگاه مشتریان",
   feedback_request: "درخواست نظرسنجی",
+  feedback_followup: "یادآوری نظرسنجی",
   custom: "پیام آزاد",
 };
 
@@ -1113,6 +1116,10 @@ export default function App() {
         setPanelAuthed(true);
         setCurrentRole(session.role);
         setCurrentStylistId(session.stylistId ?? null);
+        // bootstrap() only loaded the PII-free slots view (safe for the
+        // anonymous booking flow) — staff need the real dataset, RLS-scoped
+        // to their role.
+        fetchFullAppointments().then((full) => { if (!cancelled && full.length) setBookings(full); });
       }
 
       armAll();
@@ -1137,6 +1144,21 @@ export default function App() {
       });
     });
   }, []);
+
+  // v2.18 — anonymous visitors lost live updates when appointments' RLS was
+  // scoped to staff only (v2.16); postgres_changes above now delivers
+  // nothing to them. This broadcast-based signal replaces it: no row
+  // content crosses the wire, just a ping to re-fetch the PII-free slots
+  // view. Scoped to !panelAuthed only — a staff session already has full
+  // row updates above, and merging slot-only data into it would strip
+  // customer fields from what's already loaded.
+  useEffect(() => {
+    if (!SUPABASE_ENABLED || panelAuthed) return;
+    return subscribeSlotChanges(async () => {
+      const slots = await fetchPublicSlots();
+      if (slots.length) setBookings(slots);
+    });
+  }, [panelAuthed]);
 
   function notify(msg) {
     setToast(msg);
@@ -1194,6 +1216,24 @@ export default function App() {
     });
   }
 
+  // v2.18 — a second, softer nudge 24h after the first feedback request,
+  // in case the customer missed it or hasn't gotten to it yet. Cancelled
+  // automatically if they submit before it fires (see FeedbackPage.jsx,
+  // which calls cancelScheduledReminders on successful submit) — this
+  // reuses the exact same queue/cancel mechanism as booking reminders, no
+  // new infrastructure.
+  async function queueFeedbackFollowup(booking) {
+    if (!SUPABASE_ENABLED) return;
+    if (!/^09\d{9}$/.test(booking.customer_phone || "")) return;
+    await scheduleReminder({
+      to: booking.customer_phone,
+      body: renderTemplate(templateBody("feedback_followup"), bookingSmsVars(booking)),
+      appointmentId: booking.id,
+      scheduledFor: new Date(Date.now() + 24 * 3600000).toISOString(),
+      kind: "feedback_followup",
+    });
+  }
+
   /* ------------------------------------------------------------- mutations */
   function addBooking(b, onInserted) {
     setBookings((prev) => [...prev, b]);
@@ -1202,6 +1242,7 @@ export default function App() {
       if (err) { notify("ثبت نوبت روی سرور ناموفق بود"); return; }
       await sendBookingSms(b, "confirmation");
       await queueReminder(b);
+      broadcastSlotChange();
       if (onInserted) await onInserted();
     })();
   }
@@ -1221,10 +1262,12 @@ export default function App() {
       if (patch.status === "cancelled") {
         await cancelScheduledReminders(id);
         await sendBookingSms(after, "cancellation");
+        broadcastSlotChange();
       } else if (patch.status === "rescheduled") {
         await cancelScheduledReminders(id);
         await sendBookingSms(after, "reschedule");
         await queueReminder(after);
+        broadcastSlotChange();
       } else if (patch.status === "reschedule_proposed") {
         // The actual date/start_min haven't moved yet — only the pending_*
         // fields carry the proposed new time, so swap those in just for
@@ -1237,6 +1280,7 @@ export default function App() {
         await cancelScheduledReminders(id);
       } else if (patch.status === "completed") {
         await sendBookingSms(after, "feedback_request");
+        await queueFeedbackFollowup(after);
       }
     })();
   }
@@ -1288,9 +1332,10 @@ export default function App() {
 
   async function handleLogout() {
     await authSignOut();
-    setPanelAuthed(false);
-    setCurrentStylistId(null);
-    setCurrentRole(null);
+    // Full reload, not just clearing auth state — bootstrap() loads
+    // bookings/customers/etc. into React state, and that state must not
+    // persist into a different account's session in the same tab.
+    window.location.reload();
   }
 
   const tabs = [
@@ -1773,6 +1818,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
   const [lookingUp, setLookingUp] = useState(false);
   const [knownCustomer, setKnownCustomer] = useState(false);
   const [knownCustomerName, setKnownCustomerName] = useState("");
+  const [loyaltyDiscountPct, setLoyaltyDiscountPct] = useState(0);
   const [name, setName] = useState("");
   const [referralCode, setReferralCode] = useState("");
   const [result, setResult] = useState(null);
@@ -1930,31 +1976,46 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
         setKnownCustomer(true);
         setKnownCustomerName(res.name.trim());
         setName(res.name.trim());
+        setLoyaltyDiscountPct(res.discount_percent || 0);
       } else {
         setKnownCustomer(false);
         setKnownCustomerName("");
         setName("");
+        setLoyaltyDiscountPct(0);
       }
     } else if (phone === KNOWN_CUSTOMER.phone) {
       setKnownCustomer(true);
       setKnownCustomerName(KNOWN_CUSTOMER.name);
       setName(KNOWN_CUSTOMER.name);
+      setLoyaltyDiscountPct(0); // demo mode has no real loyalty_settings to compute a tier from
     } else {
       setKnownCustomer(false);
       setKnownCustomerName("");
       setName("");
+      setLoyaltyDiscountPct(0);
     }
     setLookingUp(false);
   }
 
   const phoneValid = /^09\d{9}$/.test(phone);
   const discount = service ? discountAmountFor(service) : 0;
-  const finalPrice = service ? finalPriceFor(service) : 0;
+  // Loyalty discount stacks AFTER the service's own discount (applied to
+  // the already-discounted price) — the common, customer-friendly pattern,
+  // and keeps original_price/discount_type/discount_value/final_price
+  // meaning exactly what they already mean (the service-level discount
+  // only); the loyalty layer is tracked separately as loyalty_discount_pct/
+  // loyalty_discount_amount so nothing about the existing columns changes.
+  const servicePrice = service ? finalPriceFor(service) : 0;
+  const loyaltyDiscountAmount = service && hasPrice(service) && servicePrice != null
+    ? Math.round((servicePrice * loyaltyDiscountPct) / 100)
+    : 0;
+  const finalPrice = servicePrice != null ? Math.max(0, servicePrice - loyaltyDiscountAmount) : null;
 
   function confirmBooking() {
     const code = randomTrackingCode();
     const finalStaffId = staffId || assignedStaffId || null;
     const finalStaff = stylists.find((s) => s.id === finalStaffId) || null;
+    const loyaltyNote = loyaltyDiscountAmount > 0 ? `${toFa(loyaltyDiscountPct)}٪ تخفیف باشگاه مشتریان` : "";
     const booking = makeSeedBooking({
       customer_name: name.trim(),
       customer_phone: phone,
@@ -1970,8 +2031,8 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
       original_price: service.price,
       discount_type: service.discount_type,
       discount_value: service.discount_value,
-      discount_reason: service.discount_reason,
-      final_price: finalPriceFor(service),
+      discount_reason: [service.discount_reason, loyaltyNote].filter(Boolean).join(" · "),
+      final_price: finalPrice,
       tracking_code: code,
       sms_sent_confirmation: true,
     });
@@ -2362,8 +2423,11 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             <Row label="شماره تماس" value={<span dir="ltr">{toFa(phone)}</span>} />
             <div style={{ borderTop: "1px dashed var(--color-border)", margin: "10px 0" }} />
             {!hasPrice(service) && <Row label="مبلغ" value={priceLabel(service)} bold />}
-            {hasPrice(service) && discount > 0 && <Row label="قیمت اصلی" value={formatToman(service.price)} strike />}
+            {hasPrice(service) && (discount > 0 || loyaltyDiscountAmount > 0) && <Row label="قیمت اصلی" value={formatToman(service.price)} strike />}
             {hasPrice(service) && discount > 0 && <Row label="تخفیف" value={"- " + formatToman(discount)} />}
+            {hasPrice(service) && loyaltyDiscountAmount > 0 && (
+              <Row label={`تخفیف باشگاه مشتریان (${toFa(loyaltyDiscountPct)}٪)`} value={"- " + formatToman(loyaltyDiscountAmount)} />
+            )}
             {hasPrice(service) && <Row label="مبلغ نهایی" value={formatToman(finalPrice)} bold />}
           </div>
 
@@ -2391,7 +2455,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
               <Row label="مبلغ" value="قیمت در سالن اعلام می‌شود" bold />
             ) : (
               <>
-                {result.discount_type !== "none" && result.discount_value > 0 && (
+                {result.original_price > result.final_price && (
                   <>
                     <Row label="قیمت اصلی" value={formatToman(result.original_price)} strike />
                     <Row label="تخفیف" value={"- " + formatToman(result.original_price - result.final_price)} />
@@ -2453,16 +2517,28 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
   const [loyalty, setLoyalty] = useState(null);
   const [loyaltyLoading, setLoyaltyLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [myBookings, setMyBookings] = useState([]);
+  const [searching, setSearching] = useState(false);
 
   const phoneValid = /^09\d{9}$/.test(phone);
-  const matches = useMemo(() => {
-    if (!phoneValid) return [];
-    return bookings
-      .filter((b) => b.customer_phone === phone)
-      .sort((a, b) => (b.date + String(b.start_min).padStart(4, "0")).localeCompare(a.date + String(a.start_min).padStart(4, "0")));
-  }, [bookings, phone, phoneValid]);
+  // v2.16: bookings prop is now the PII-free slots view for an anonymous
+  // caller — a customer's own bookings come from get_my_bookings(phone)
+  // instead, fetched on search rather than filtered client-side.
+  const matches = useMemo(
+    () => [...myBookings].sort((a, b) => (b.date + String(b.start_min).padStart(4, "0")).localeCompare(a.date + String(a.start_min).padStart(4, "0"))),
+    [myBookings]
+  );
 
-  const actionBooking = actionFor ? bookings.find((b) => b.id === actionFor.id) : null;
+  const actionBooking = actionFor ? myBookings.find((b) => b.id === actionFor.id) : null;
+
+  // v2.16: myBookings is a local fetch result now (from get_my_bookings),
+  // not derived from the global bookings state — updateBooking alone won't
+  // update it, so every cancel/reschedule action in this view goes through
+  // this instead to keep the UI in sync immediately.
+  function updateMyBooking(id, patch, logMsg) {
+    updateBooking(id, patch, logMsg);
+    setMyBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  }
 
   useEffect(() => {
     if (!searched || !phoneValid || !SUPABASE_ENABLED) { setLoyalty(null); return; }
@@ -2487,18 +2563,24 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
           dir="ltr"
           inputMode="numeric"
           value={phone}
-          onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 11)); setSearched(false); }}
+          onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 11)); setSearched(false); setMyBookings([]); }}
           placeholder="09xxxxxxxxx"
           className="tabular"
           style={{ flex: 1, padding: "11px 14px", fontSize: 14, textAlign: "left" }}
         />
         <button
-          disabled={!phoneValid}
-          onClick={() => { setSearched(true); setSegment("bookings"); }}
+          disabled={!phoneValid || searching}
+          onClick={async () => {
+            setSearching(true);
+            setMyBookings(SUPABASE_ENABLED ? await fetchMyBookings(phone) : bookings.filter((b) => b.customer_phone === phone));
+            setSearching(false);
+            setSearched(true);
+            setSegment("bookings");
+          }}
           className="tap"
           style={{ padding: "0 20px", fontSize: 13, fontWeight: 700, borderRadius: "var(--radius-md)", background: "var(--grad-tab-dash)", color: "white", boxShadow: "0 4px 14px -4px color-mix(in oklch, var(--color-tab-dash) 60%, transparent)" }}
         >
-          <Search size={16} style={{ display: "inline", marginLeft: 4 }} /> پیگیری
+          <Search size={16} style={{ display: "inline", marginLeft: 4 }} /> {searching ? "..." : "پیگیری"}
         </button>
       </div>
 
@@ -2603,7 +2685,7 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
               ) : matches.map((b) => {
                 const service = services.find((s) => s.id === b.service_id);
                 if (!service) return null;
-                const hasDiscount = b.discount_type !== "none" && b.discount_value > 0;
+                const hasDiscount = b.final_price != null && b.original_price > b.final_price;
                 const isProposed = b.status === "reschedule_proposed";
                 const changeable = ["pending", "confirmed", "rescheduled"].includes(b.status);
                 return (
@@ -2644,7 +2726,7 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
                           <button
                             className="tap accent-btn flex-1"
                             style={{ padding: 10, fontSize: 12.5 }}
-                            onClick={() => updateBooking(
+                            onClick={() => updateMyBooking(
                               b.id,
                               { date: b.pending_date, start_min: b.pending_start_min, end_min: b.pending_end_min, status: "rescheduled", pending_date: null, pending_start_min: null, pending_end_min: null },
                               "زمان جدید تایید شد"
@@ -2775,7 +2857,7 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
           booking={actionBooking}
           variant="customer"
           onClose={() => setActionFor(null)}
-          onConfirm={() => { updateBooking(actionBooking.id, { status: "cancelled" }, "نوبت شما لغو شد"); setActionFor(null); }}
+          onConfirm={() => { updateMyBooking(actionBooking.id, { status: "cancelled" }, "نوبت شما لغو شد"); setActionFor(null); }}
         />
       )}
       {actionFor?.type === "reschedule" && actionBooking && (
@@ -2791,7 +2873,7 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
           onClose={() => setActionFor(null)}
           onConfirm={(newStart, newDate) => {
             const svc = services.find((s) => s.id === actionBooking.service_id);
-            updateBooking(
+            updateMyBooking(
               actionBooking.id,
               { start_min: newStart, end_min: newStart + svc.duration_minutes, date: newDate, status: "rescheduled", pending_date: null, pending_start_min: null, pending_end_min: null },
               "نوبت شما جابه‌جا شد"
@@ -2818,17 +2900,21 @@ function PanelView({ bookings, services, setServices, stylists, addStylist, upda
   // since letting a stylist add/remove colleagues doesn't make sense.
   const subTabs = [
     { id: "dashboard", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList, color: "var(--color-tab-book)" },
-    { id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" },
-    { id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" },
+    ...(currentStylist ? [] : [{ id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" }]),
+    ...(currentStylist ? [] : [{ id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" }]),
     ...(currentStylist ? [] : [{ id: "staff", label: "آرایشگرها", Icon: Users, color: "var(--color-info)" }]),
     { id: "schedule", label: currentStylist ? "ساعات کاری من" : "ساعات کاری", Icon: CalendarIcon, color: "var(--color-tab-dash)" },
     // NEW — پنل ارسال پیامک: owner/manager only, same rule as staff management.
     ...(currentStylist ? [] : [{ id: "sms", label: "پیامک", Icon: MessageSquareText, color: "var(--color-tab-panel)" }]),
     // باشگاه مشتریان: owner/manager AND stylist (discount settings should be
     // adjustable by either, per explicit request — stylists interact with
-    // customers directly about redeeming rewards).
+    // customers directly about redeeming rewards). Segment/category views
+    // within this tab are separately gated to manager-only (they expose the
+    // full customer bank, not just the stylist's own customers).
     { id: "loyalty", label: "باشگاه مشتریان", Icon: Gift, color: "var(--color-success)" },
-    { id: "ai", label: "تحلیل هوشمند", Icon: Brain, color: "var(--color-tab-dash)" },
+    // v2.15: AIAnalysisTab includes a salon-wide revenue forecast —
+    // owner/manager only, same rule as accounting/BI.
+    ...(currentStylist ? [] : [{ id: "ai", label: "تحلیل هوشمند", Icon: Brain, color: "var(--color-tab-dash)" }]),
     ...(currentStylist ? [] : [{ id: "bi", label: "هوش تجاری", Icon: BarChart3, color: "var(--color-tab-panel)" }]),
   ];
 
@@ -2883,7 +2969,7 @@ function PanelView({ bookings, services, setServices, stylists, addStylist, upda
       {subTab === "dashboard" && (
         <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} />
       )}
-      {subTab === "accounting" && (
+      {subTab === "accounting" && !currentStylist && (
         <AccountingTab
           bookings={bookings}
           services={services}
@@ -2896,7 +2982,7 @@ function PanelView({ bookings, services, setServices, stylists, addStylist, upda
           canEditExpenses={!currentStylist}
         />
       )}
-      {subTab === "services" && <ServicesTab services={services} setServices={setServices} notify={notify} />}
+      {subTab === "services" && !currentStylist && <ServicesTab services={services} setServices={setServices} notify={notify} />}
       {subTab === "staff" && !currentStylist && (
         <StaffTab stylists={stylists} addStylist={addStylist} updateStylist={updateStylist} removeStylist={removeStylist} notify={notify} />
       )}
@@ -2934,7 +3020,7 @@ function PanelView({ bookings, services, setServices, stylists, addStylist, upda
           onNavigateToSmsSegment={(segment) => { setPendingSmsSegment(segment); setSubTab("sms"); }}
         />
       )}
-      {subTab === "ai" && <AIAnalysisTab bookings={bookings} />}
+      {subTab === "ai" && !currentStylist && <AIAnalysisTab bookings={bookings} />}
       {subTab === "bi" && !currentStylist && (
         <BITab
           bookings={bookings}
@@ -5691,6 +5777,62 @@ function CampaignPerformanceCard() {
   );
 }
 
+// v2.18 — average rating + distribution from customer feedback (v2.14),
+// which was collected but never surfaced anywhere until now.
+function FeedbackStatsCard() {
+  const { data: stats, loading, refetch } = useData(fetchFeedbackStats, [], { cacheKey: "feedback_stats" });
+  const total = stats?.total_count || 0;
+  const maxCount = Math.max(1, ...[1, 2, 3, 4, 5].map((n) => Number(stats?.[`rating_${n}`] || 0)));
+
+  return (
+    <div className="card mb-4" style={{ padding: 14 }}>
+      <div className="flex items-center justify-between mb-3">
+        <p className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>
+          <Star size={13} color="var(--color-warning)" /> رضایت مشتریان (نظرسنجی)
+        </p>
+        <button className="tap ghost-btn" style={{ width: 28, height: 28, padding: 0 }} onClick={refetch} disabled={loading}>
+          <RefreshCw size={13} style={{ margin: "auto", animation: loading ? "salonSpin 1s linear infinite" : "none" }} />
+        </button>
+      </div>
+
+      {!SUPABASE_ENABLED ? (
+        <p className="muted" style={{ fontSize: 11.5 }}>این بخش به دیتابیس Supabase نیاز دارد و در حالت دمو در دسترس نیست.</p>
+      ) : total === 0 && !loading ? (
+        <p className="muted" style={{ fontSize: 12.5 }}>هنوز نظری ثبت نشده</p>
+      ) : (
+        <>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="tabular" style={{ fontSize: 28, fontWeight: 800, color: "var(--color-heading)" }}>{toFa(stats.avg_rating)}</div>
+            <div>
+              <div className="flex items-center gap-0.5">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <Star key={n} size={14} fill={n <= Math.round(stats.avg_rating) ? "var(--color-warning)" : "none"} color="var(--color-warning)" />
+                ))}
+              </div>
+              <div className="muted tabular" style={{ fontSize: 11 }}>از {toFa(total)} نظر</div>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {[5, 4, 3, 2, 1].map((n) => {
+              const count = Number(stats[`rating_${n}`] || 0);
+              return (
+                <div key={n} className="flex items-center gap-2">
+                  <span className="tabular muted" style={{ fontSize: 10.5, width: 14 }}>{toFa(n)}</span>
+                  <Star size={10} fill="var(--color-warning)" color="var(--color-warning)" />
+                  <div style={{ flex: 1, height: 6, borderRadius: "var(--radius-full)", background: "var(--color-surface-raised)", overflow: "hidden" }}>
+                    <div style={{ width: `${(count / maxCount) * 100}%`, height: "100%", background: "var(--color-warning)" }} />
+                  </div>
+                  <span className="tabular muted" style={{ fontSize: 10.5, width: 24, textAlign: "left" }}>{toFa(count)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates }) {
   const [range, setRange] = useState("30"); // default 30 days
   const [branchFilter, setBranchFilter] = useState("all");
@@ -6087,6 +6229,7 @@ function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, 
       )}
 
       {!drill && <CampaignPerformanceCard />}
+      {!drill && <FeedbackStatsCard />}
       {!drill && <CampaignReturnRateCard />}
 
       {!drill && (
@@ -6583,15 +6726,15 @@ function LoyaltyTab({ notify, currentStylist, onNavigateToSmsSegment }) {
           this is just keeping the UI honest about who can act on it. */}
       {!currentStylist && <SegmentSettingsCard notify={notify} />}
 
-      {/* Customer segmentation (RFM) — moved here from «هوش تجاری» earlier.
-          Simplified to 4 targeted segments (from 6) and opened to stylists —
-          get_customer_rfm_segments() itself now allows any active staff
-          member, not just managers. */}
-      <RfmSegmentsCard onSendToSegment={onNavigateToSmsSegment} />
+      {/* Customer segmentation (RFM) — v2.15: reverted to manager-only.
+          get_customer_rfm_segments() now enforces is_manager() again —
+          this exposes the full customer bank's names/phones/spend, which
+          is exactly what "customer bank access blocked for stylist" means. */}
+      {!currentStylist && <RfmSegmentsCard onSendToSegment={onNavigateToSmsSegment} />}
 
-      {/* Category-level segmentation matrix (v2.11) — open to all staff,
-          matching get_customer_category_matrix()'s is_staff() gate. */}
-      <CategoryMatrixCard notify={notify} />
+      {/* Category-level segmentation matrix — v2.15: reverted to
+          manager-only, same reasoning as RFM above. */}
+      {!currentStylist && <CategoryMatrixCard notify={notify} />}
 
       {/* Customer list */}
       <div className="card" style={{ padding: 14 }}>

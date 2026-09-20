@@ -289,13 +289,27 @@ export async function syncApprovedDates(prev, next) {
  * One parallel fetch of everything the app needs at startup.
  * Returns null when Supabase isn't configured, so App.jsx keeps its seed data.
  */
+// v2.18 — just the slots (no services/stylists/etc), for re-fetching after
+// a slot-change broadcast without re-running the whole bootstrap().
+export async function fetchPublicSlots() {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.from("appointments_public_slots").select("*").order("date");
+  if (error) { fail("fetchPublicSlots", error); return []; }
+  return (data || []).map(map.appointments.fromRow);
+}
+
 export async function bootstrap() {
   if (!SUPABASE_ENABLED) return null;
 
   const [svc, sty, appt, off, wh, appr, exp, wait] = await Promise.all([
     supabase.from("services").select("*").order("id"),
     supabase.from("stylists").select("*").order("id"),
-    supabase.from("appointments").select("*").order("date"),
+    // v2.16: the PII-free slots view, not the raw table — this runs before
+    // we know if the caller is staff or an anonymous visitor, and the
+    // public booking flow only ever needs occupied-slot data here (who's
+    // booked when, not who they are). Staff get the full dataset
+    // separately via fetchFullAppointments() once a session is confirmed.
+    supabase.from("appointments_public_slots").select("*").order("date"),
     supabase.from("time_offs").select("*"),
     supabase.from("working_hours").select("*").order("day_of_week"),
     supabase.from("approved_dates").select("date"),
@@ -332,6 +346,27 @@ export async function bootstrap() {
     expenses: (exp.data || []).map(map.expenses.fromRow),
     waitlist: (wait.data || []).map(map.waitlist.fromRow),
   };
+}
+
+// v2.16 — the full appointments dataset (with customer PII), for staff
+// only. Call once a session is confirmed; RLS scopes the result by role
+// (manager: everything, stylist: their own bookings) same as any other
+// staff-only read.
+export async function fetchFullAppointments() {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.from("appointments").select("*").order("date");
+  if (error) { fail("fetchFullAppointments", error); return []; }
+  return (data || []).map(map.appointments.fromRow);
+}
+
+// v2.16 — a customer's own bookings by phone, via the phone-scoped RPC
+// (get_my_bookings) instead of filtering a client-side dataset that no
+// longer contains PII for anonymous callers.
+export async function fetchMyBookings(phone) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.rpc("get_my_bookings", { p_phone: phone });
+  if (error) { fail("get_my_bookings", error); return []; }
+  return (data || []).map(map.appointments.fromRow);
 }
 
 /* ----------------------------------------------------------------- realtime */
@@ -395,7 +430,8 @@ export async function fetchCustomers() {
   const { data, error } = await supabase
     .from("customers")
     .select("*")
-    .order("last_booking_at", { ascending: false });
+    .order("last_booking_at", { ascending: false })
+    .limit(500);
   if (error) { fail("customers", error); return []; }
   return setCache(key, data || []);
 }
@@ -617,6 +653,42 @@ export async function submitFeedback({ bookingId, rating, tags, comment }) {
   });
   if (error) return { ok: false, error: error.code === "23505" ? "نظر شما قبلاً ثبت شده" : "ثبت نظر ناموفق بود" };
   return { ok: true };
+}
+
+// v2.18 — average rating + distribution, for the BI card. Manager-only
+// (RLS on the RPC), same rule as any other salon-wide report.
+export async function fetchFeedbackStats() {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase.rpc("get_feedback_stats");
+  if (error) { fail("get_feedback_stats", error); return null; }
+  return Array.isArray(data) ? data[0] : data;
+}
+
+// v2.18 — lightweight signal-only replacement for postgres_changes, which
+// stopped delivering events to anonymous callers once appointments' RLS
+// was scoped to staff only (v2.16, closing the PII leak that RLS-open
+// table let anonymous subscribers read too). Broadcast doesn't read table
+// rows — it's pure pub/sub messaging on a channel — so it works the same
+// for every caller regardless of RLS. A listener just gets a "something
+// changed" ping and re-fetches the public slots view itself; no row
+// content ever crosses this channel.
+const SLOT_CHANGE_CHANNEL = "salon-slot-changes";
+
+export function subscribeSlotChanges(onChange) {
+  if (!SUPABASE_ENABLED) return () => {};
+  const channel = supabase
+    .channel(SLOT_CHANGE_CHANNEL)
+    .on("broadcast", { event: "changed" }, () => onChange())
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+export async function broadcastSlotChange() {
+  if (!SUPABASE_ENABLED) return;
+  const channel = supabase.channel(SLOT_CHANGE_CHANNEL);
+  await new Promise((resolve) => channel.subscribe((status) => status === "SUBSCRIBED" && resolve()));
+  await channel.send({ type: "broadcast", event: "changed", payload: {} });
+  supabase.removeChannel(channel);
 }
 
 

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Star, CheckCircle2 } from "lucide-react";
 import { submitFeedback } from "./lib/api";
+import { cancelScheduledReminders } from "./lib/sms";
 
 const TAGS = ["برخورد خوب", "کیفیت کار", "وقت‌شناسی", "محیط تمیز", "قیمت مناسب"];
 
@@ -24,6 +25,7 @@ export default function FeedbackPage({ bookingId }) {
     const res = await submitFeedback({ bookingId, rating, tags, comment });
     setSubmitting(false);
     if (!res.ok) { setError(res.error); return; }
+    cancelScheduledReminders(bookingId); // best-effort — don't block success on this
     setDone(true);
   }
 

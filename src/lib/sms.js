@@ -73,10 +73,10 @@ export function sendBulkSms(messages, { kind = "custom", campaignId = null } = {
  * Queue a reminder for later. The cron function picks it up when due.
  * `scheduledFor` is an ISO string, computed from the stylist's reminder_hours_before.
  */
-export function scheduleReminder({ to, body, appointmentId, scheduledFor }) {
+export function scheduleReminder({ to, body, appointmentId, scheduledFor, kind = "reminder" }) {
   return invoke({
     action: "schedule",
-    messages: [{ to, body, kind: "reminder", appointment_id: appointmentId, scheduled_for: scheduledFor }],
+    messages: [{ to, body, kind, appointment_id: appointmentId, scheduled_for: scheduledFor }],
   });
 }
 

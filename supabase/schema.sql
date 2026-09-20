@@ -348,6 +348,17 @@ alter table public.audit_log enable row level security;
 drop policy if exists p_audit_read on public.audit_log;
 create policy p_audit_read on public.audit_log for select using (public.is_manager());
 
+-- v2.18: lightweight rate limiting for public RPCs (get_my_bookings,
+-- apply_referral) — internal bookkeeping only, reachable exclusively
+-- through check_rate_limit() below (RLS enabled, no policies).
+create table if not exists public.rate_limit_events (
+  id bigserial primary key,
+  bucket text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists rate_limit_events_bucket_idx on public.rate_limit_events (bucket, created_at);
+alter table public.rate_limit_events enable row level security;
+
 create table if not exists public.loyalty_settings (
   id                int primary key default 1 check (id = 1),
   points_per_visit  integer not null default 10,
@@ -528,14 +539,14 @@ grant select, update on public.customer_segment_settings to authenticated;
 -- needed or wanted.
 alter table public.campaign_logs enable row level security;
 drop policy if exists p_campaign_logs_read on public.campaign_logs;
-create policy p_campaign_logs_read on public.campaign_logs for select using (public.is_staff());
+create policy p_campaign_logs_read on public.campaign_logs for select using (public.is_manager());
 drop policy if exists p_campaign_logs_write on public.campaign_logs;
-create policy p_campaign_logs_write on public.campaign_logs for insert with check (public.is_staff());
+create policy p_campaign_logs_write on public.campaign_logs for insert with check (public.is_manager());
 grant select, insert on public.campaign_logs to authenticated;
 
 alter table public.campaign_conversions enable row level security;
 drop policy if exists p_campaign_conversions_read on public.campaign_conversions;
-create policy p_campaign_conversions_read on public.campaign_conversions for select using (public.is_staff());
+create policy p_campaign_conversions_read on public.campaign_conversions for select using (public.is_manager());
 grant select on public.campaign_conversions to authenticated;
 
 -- Public read: the booking flow must work for unauthenticated visitors.
@@ -548,9 +559,65 @@ begin
   end loop;
 end $$;
 
--- Appointments: anyone may read (slot availability) and create (book).
+-- Appointments: staff read is role-scoped (manager: all, stylist: own).
+-- Anonymous reads do NOT go through this table — see
+-- appointments_public_slots (slot availability, no PII) and
+-- get_my_bookings() (a customer's own bookings by phone) below.
 drop policy if exists p_appt_select on public.appointments;
-create policy p_appt_select on public.appointments for select using (true);
+create policy p_appt_select on public.appointments for select using (
+  public.is_manager()
+  or (public.is_staff() and public.my_role() = 'stylist' and staff_id = public.my_stylist_id())
+);
+
+-- PII-free slots view for the public booking flow's availability check —
+-- id/staff_id/date/start_min/end_min/buffer_minutes/status only. A plain
+-- view runs as its owner, not the querying role, so this exposes all rows
+-- to anon regardless of the base table's RLS above — scoped by column
+-- instead of by row, which is exactly what "who's booked when, not who
+-- they are" needs.
+create or replace view public.appointments_public_slots as
+select id, staff_id, date, start_min, end_min, buffer_minutes, status
+from public.appointments;
+grant select on public.appointments_public_slots to anon, authenticated;
+
+-- v2.18: rate-limit checker — see rate_limit_events above.
+create or replace function public.check_rate_limit(p_bucket text, p_max_calls int, p_window_minutes int)
+returns boolean
+language plpgsql security definer set search_path = public as $fn$
+declare recent_count int;
+begin
+  select count(*) into recent_count from public.rate_limit_events
+   where bucket = p_bucket and created_at >= now() - (p_window_minutes || ' minutes')::interval;
+  if recent_count >= p_max_calls then
+    return false;
+  end if;
+  insert into public.rate_limit_events (bucket, created_at) values (p_bucket, now());
+  if random() < 0.01 then
+    delete from public.rate_limit_events where created_at < now() - interval '1 day';
+  end if;
+  return true;
+end;
+$fn$;
+grant execute on function public.check_rate_limit(text, int, int) to anon, authenticated;
+
+-- A customer's own bookings by phone — the existing trust model (typing
+-- your own number proves it's yours), just via an RPC instead of a raw
+-- table read so it can't be widened into everyone's data. v2.18: rate
+-- limited, so it's no longer side-effect-free (was `stable`).
+create or replace function public.get_my_bookings(p_phone text)
+returns setof public.appointments
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if not public.check_rate_limit('get_my_bookings:' || coalesce(p_phone, ''), 20, 10) then
+    raise exception 'تعداد درخواست بیش از حد مجاز است — چند دقیقه دیگر دوباره امتحان کنید';
+  end if;
+  return query
+    select * from public.appointments
+    where p_phone ~ '^09[0-9]{9}$' and customer_phone = p_phone
+    order by date desc, start_min desc;
+end;
+$fn$;
+grant execute on function public.get_my_bookings(text) to anon, authenticated;
 
 drop policy if exists p_appt_insert on public.appointments;
 create policy p_appt_insert on public.appointments for insert with check (true);
@@ -560,11 +627,11 @@ create policy p_appt_insert on public.appointments for insert with check (true);
 drop policy if exists p_appt_update on public.appointments;
 create policy p_appt_update on public.appointments for update using (
   public.is_manager()
-  or (public.my_role() = 'stylist' and staff_id = public.my_stylist_id())
+  or (public.is_staff() and public.my_role() = 'stylist' and staff_id = public.my_stylist_id())
   or auth.uid() is null
 ) with check (
   public.is_manager()
-  or (public.my_role() = 'stylist' and staff_id = public.my_stylist_id())
+  or (public.is_staff() and public.my_role() = 'stylist' and staff_id = public.my_stylist_id())
   or (auth.uid() is null and status in ('cancelled', 'rescheduled'))
 );
 
@@ -594,6 +661,17 @@ begin
       'appointment_self_update', null,
       jsonb_build_object('appointment_id', new.id, 'from_status', old.status, 'to_status', new.status)
     );
+  elsif public.my_role() = 'stylist' and not public.is_manager() then
+    if new.customer_phone is distinct from old.customer_phone
+       or new.customer_name is distinct from old.customer_name
+       or new.staff_id is distinct from old.staff_id
+       or new.service_id is distinct from old.service_id
+       or new.final_price is distinct from old.final_price
+       or new.original_price is distinct from old.original_price
+       or new.discount_type is distinct from old.discount_type
+       or new.discount_value is distinct from old.discount_value then
+      raise exception 'این تغییر خارج از اختیار آرایشگر است';
+    end if;
   end if;
   return new;
 end;
@@ -648,27 +726,45 @@ end $$;
 -- Schedule surfaces: managers do anything; a stylist edits only their own rows.
 drop policy if exists p_sched_write on public.working_hours;
 create policy p_sched_write on public.working_hours for all
-  using (public.is_manager() or (public.my_role() = 'stylist' and staff_id = public.my_stylist_id()))
-  with check (public.is_manager() or (public.my_role() = 'stylist' and staff_id = public.my_stylist_id()));
+  using (public.is_manager() or (public.is_staff() and public.my_role() = 'stylist' and staff_id = public.my_stylist_id()))
+  with check (public.is_manager() or (public.is_staff() and public.my_role() = 'stylist' and staff_id = public.my_stylist_id()));
 
 drop policy if exists p_sched_write on public.time_offs;
 create policy p_sched_write on public.time_offs for all
-  using (public.is_manager() or (public.my_role() = 'stylist' and staff_id = public.my_stylist_id()))
-  with check (public.is_manager() or (public.my_role() = 'stylist' and staff_id = public.my_stylist_id()));
+  using (public.is_manager() or (public.is_staff() and public.my_role() = 'stylist' and staff_id = public.my_stylist_id()))
+  with check (public.is_manager() or (public.is_staff() and public.my_role() = 'stylist' and staff_id = public.my_stylist_id()));
 
+-- Which days the whole salon is open for booking is a manager decision,
+-- not a per-stylist one.
 drop policy if exists p_sched_write on public.approved_dates;
 create policy p_sched_write on public.approved_dates for all
-  using (public.is_staff()) with check (public.is_staff());
+  using (public.is_manager()) with check (public.is_manager());
 
--- Signed-in staff can read the back-office tables.
+-- Back-office tables: no legitimate per-stylist scope — accounting,
+-- campaigns, SMS log/templates, and the full loyalty ledger are
+-- manager-only.
 do $$
 declare t text;
 begin
-  foreach t in array array['expenses','customers','campaigns','campaign_targets','sms_messages','sms_templates','loyalty_ledger'] loop
+  foreach t in array array['expenses','campaigns','campaign_targets','sms_messages','sms_templates','loyalty_ledger'] loop
     execute format('drop policy if exists p_staff_read on public.%I', t);
-    execute format('create policy p_staff_read on public.%I for select using (public.is_staff())', t);
+    execute format('create policy p_staff_read on public.%I for select using (public.is_manager())', t);
   end loop;
 end $$;
+
+-- customers: a stylist may look up a customer they've actually had an
+-- appointment with — not the whole customer bank.
+drop policy if exists p_staff_read on public.customers;
+create policy p_staff_read on public.customers for select using (
+  public.is_manager()
+  or (
+    public.is_staff() and public.my_role() = 'stylist'
+    and exists (
+      select 1 from public.appointments a
+      where a.customer_phone = customers.phone and a.staff_id = public.my_stylist_id()
+    )
+  )
+);
 
 drop policy if exists p_sms_insert on public.sms_messages;
 create policy p_sms_insert on public.sms_messages for insert with check (public.is_manager());
@@ -853,7 +949,7 @@ language sql stable security definer set search_path = public as $fn$
     left join avg_gaps ag on ag.customer_phone = raw.phone
     cross join settings s
     cross join monetary_p80 mp
-    where public.is_staff()
+    where public.is_manager()
   )
   select
     phone, name, sms_opt_out, recency_days, frequency, monetary,
@@ -877,7 +973,9 @@ language sql stable security definer set search_path = public as $fn$
     (recency_days <= personal_recency_limit
        and frequency >= loyal_min_visits
        and monetary >= coalesce(p80, monetary + 1)) as is_vip
-  from scored;
+  from scored
+  order by monetary desc
+  limit 500;
 $fn$;
 grant execute on function public.get_customer_rfm_segments() to authenticated;
 
@@ -927,10 +1025,61 @@ language sql stable security definer set search_path = public as $fn$
       else 'غیرفعال در این خط خدمت'
     end as line_status_fa
   from cat_stats
-  where public.is_staff()
-  order by phone, category;
+  where public.is_manager()
+  order by phone, category
+  limit 2000;
 $fn$;
 grant execute on function public.get_customer_category_matrix() to authenticated;
+
+-- v2.14/v2.18: customer feedback loop. Public insert (booking_id, an opaque
+-- appointments.id, is the bearer token — same trust model as the
+-- tracking-code lookup elsewhere), restricted to completed bookings, one
+-- submission per booking. Read is manager-only — v2.14 originally shipped
+-- as a standalone migration (not mirrored here per that task's explicit
+-- "single migration file" instruction) and used is_staff() for read; v2.18
+-- adds it here for a coherent fresh install and tightens read to
+-- is_manager(), consistent with v2.15's "salon-wide reports blocked for
+-- stylist" rule — feedback read is a quality metric across every
+-- stylist's bookings, not scoped to one's own.
+create table if not exists public.feedbacks (
+  id         text primary key default 'fb-' || substr(md5(gen_random_uuid()::text), 1, 12),
+  booking_id text not null unique references public.appointments(id) on delete cascade,
+  rating     int not null check (rating between 1 and 5),
+  tags       text[] not null default '{}',
+  comment    text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists feedbacks_created_at_idx on public.feedbacks (created_at);
+alter table public.feedbacks enable row level security;
+drop policy if exists p_feedback_insert on public.feedbacks;
+create policy p_feedback_insert on public.feedbacks
+  for insert
+  with check (
+    exists (select 1 from public.appointments a where a.id = booking_id and a.status = 'completed')
+  );
+drop policy if exists p_feedback_read on public.feedbacks;
+create policy p_feedback_read on public.feedbacks
+  for select using (public.is_manager());
+grant select, insert on public.feedbacks to anon, authenticated;
+
+create or replace function public.get_feedback_stats()
+returns table (
+  total_count bigint, avg_rating numeric,
+  rating_1 bigint, rating_2 bigint, rating_3 bigint, rating_4 bigint, rating_5 bigint
+)
+language sql stable security definer set search_path = public as $fn$
+  select
+    count(*)::bigint as total_count,
+    round(avg(rating)::numeric, 2) as avg_rating,
+    count(*) filter (where rating = 1)::bigint as rating_1,
+    count(*) filter (where rating = 2)::bigint as rating_2,
+    count(*) filter (where rating = 3)::bigint as rating_3,
+    count(*) filter (where rating = 4)::bigint as rating_4,
+    count(*) filter (where rating = 5)::bigint as rating_5
+  from public.feedbacks
+  where public.is_manager();
+$fn$;
+grant execute on function public.get_feedback_stats() to authenticated;
 
 -- v2.13: campaign conversion attribution — a separate, minimal AFTER
 -- INSERT trigger, fully isolated from sync_customer_from_appointment()
@@ -999,7 +1148,7 @@ language sql stable security definer set search_path = public as $fn$
   from public.campaign_logs cl
   left join public.campaign_conversions cc on cc.campaign_log_id = cl.id
   left join public.appointments a on a.id = cc.appointment_id
-  where public.is_staff()
+  where public.is_manager()
     and (p_template_id is null or cl.template_id = p_template_id)
   group by cl.template_id
   order by conversion_rate desc;
@@ -1058,6 +1207,10 @@ create or replace function public.apply_referral(p_new_phone text, p_code text)
 returns json language plpgsql security definer set search_path = public as $fn$
 declare referrer record;
 begin
+  if not public.check_rate_limit('apply_referral:' || coalesce(p_new_phone, ''), 5, 10) then
+    return json_build_object('ok', false, 'error', 'تعداد درخواست بیش از حد مجاز است — چند دقیقه دیگر دوباره امتحان کنید');
+  end if;
+
   select * into referrer from public.customers where referral_code = upper(p_code);
   if referrer is null then return json_build_object('ok', false, 'error', 'کد معرف پیدا نشد'); end if;
   if referrer.phone = p_new_phone then return json_build_object('ok', false, 'error', 'کد معرف خودتان قابل استفاده نیست'); end if;
