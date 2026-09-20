@@ -5945,16 +5945,18 @@ function FeedbackStatsCard() {
 
       {!SUPABASE_ENABLED ? (
         <p className="muted" style={{ fontSize: 11.5 }}>این بخش به دیتابیس Supabase نیاز دارد و در حالت دمو در دسترس نیست.</p>
+      ) : !stats ? (
+        <p className="muted" style={{ fontSize: 12.5 }}>در حال بارگذاری...</p>
       ) : total === 0 && !loading ? (
         <p className="muted" style={{ fontSize: 12.5 }}>هنوز نظری ثبت نشده</p>
       ) : (
         <>
           <div className="flex items-center gap-3 mb-3">
-            <div className="tabular" style={{ fontSize: 28, fontWeight: 800, color: "var(--color-heading)" }}>{toFa(stats.avg_rating)}</div>
+            <div className="tabular" style={{ fontSize: 28, fontWeight: 800, color: "var(--color-heading)" }}>{toFa(stats?.avg_rating)}</div>
             <div>
               <div className="flex items-center gap-0.5">
                 {[1, 2, 3, 4, 5].map((n) => (
-                  <Star key={n} size={14} fill={n <= Math.round(stats.avg_rating) ? "var(--color-warning)" : "none"} color="var(--color-warning)" />
+                  <Star key={n} size={14} fill={n <= Math.round(stats?.avg_rating || 0) ? "var(--color-warning)" : "none"} color="var(--color-warning)" />
                 ))}
               </div>
               <div className="muted tabular" style={{ fontSize: 11 }}>از {toFa(total)} نظر</div>
@@ -5962,7 +5964,7 @@ function FeedbackStatsCard() {
           </div>
           <div className="flex flex-col gap-1.5">
             {[5, 4, 3, 2, 1].map((n) => {
-              const count = Number(stats[`rating_${n}`] || 0);
+              const count = Number(stats?.[`rating_${n}`] || 0);
               return (
                 <div key={n} className="flex items-center gap-2">
                   <span className="tabular muted" style={{ fontSize: 10.5, width: 14 }}>{toFa(n)}</span>
