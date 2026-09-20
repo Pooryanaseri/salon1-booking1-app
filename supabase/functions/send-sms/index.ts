@@ -8,6 +8,7 @@
 //    { action: "send",     messages: [{ to, body, kind, appointment_id?, campaign_id?, campaign_log_id? }] }
 //    { action: "schedule", messages: [{ to, body, appointment_id, scheduled_for }] }
 //    { action: "cancel",   appointment_id: "..." }
+//    { action: "request_otp", phone: "09..." }  -- v2.19: sends a booking-management OTP; see supabase/migrations/v2.19_secure_public_booking.sql
 //
 //  Deploy:  supabase functions deploy send-sms
 // ============================================================================
@@ -108,6 +109,41 @@ Deno.serve(async (req) => {
       .eq("status", "queued");
     if (error) { console.error("[send-sms/cancel] db error:", error.message); return json({ ok: false, error: "لغو ناموفق بود" }, 500); }
     return json({ ok: true, cancelled: count ?? 0 });
+  }
+
+  /* --------------------------------------------------------- request_otp ---- */
+  // v2.19 — the only place the plaintext OTP ever exists outside the
+  // customer's own phone. request_booking_otp_internal is granted to
+  // service_role only (not anon/authenticated), so this admin-client call
+  // is the sole way to reach it. The OTP is sent by SMS and never appears
+  // in this function's response, logs, or any stored row beyond its own
+  // salted hash (written by the RPC itself).
+  if (action === "request_otp") {
+    const phone = normalizePhone(payload.phone ?? "");
+    if (!/^09\d{9}$/.test(phone)) return json({ ok: false, error: "شماره نامعتبر است" }, 400);
+
+    const { data, error } = await admin.rpc("request_booking_otp_internal", { p_phone: phone });
+    if (error) { console.error("[send-sms/request_otp] rpc error:", error.message); return json({ ok: false, error: "درخواست کد ناموفق بود" }, 500); }
+    if (!data?.ok) return json({ ok: false, error: data?.error ?? "درخواست کد ناموفق بود" });
+
+    const body = `کد تایید شما: ${data.otp}\nاین کد ظرف ۵ دقیقه منقضی می‌شود.`;
+    const r = await sendOne(phone, body);
+    await admin.from("sms_messages").insert({
+      to_phone: phone, body, kind: "otp", status: r.ok ? "sent" : "failed",
+      provider: r.provider, provider_msg_id: r.providerMsgId ?? null,
+      error: r.ok ? null : r.error, cost: r.cost ?? null,
+      sent_at: r.ok ? new Date().toISOString() : null,
+    });
+    if (!r.ok) return json({ ok: false, error: "ارسال پیامک ناموفق بود" }, 502);
+
+    // Testing without a real SMS provider: only when the project owner has
+    // explicitly set SMS_DRY_RUN=true (sendOne already skips the real send
+    // and just logs in that mode — see providers.ts). Off by default, so
+    // this never activates in a normal/production configuration; the OTP
+    // is returned only to the same caller who just requested it for their
+    // own phone, never to anyone else.
+    const devOtp = Deno.env.get("SMS_DRY_RUN") === "true" ? data.otp : undefined;
+    return json({ ok: true, expires_in_seconds: data.expires_in_seconds, ...(devOtp ? { dev_otp: devOtp } : {}) });
   }
 
   const messages: any[] = Array.isArray(payload.messages) ? payload.messages : [];

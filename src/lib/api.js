@@ -359,14 +359,66 @@ export async function fetchFullAppointments() {
   return (data || []).map(map.appointments.fromRow);
 }
 
-// v2.16 — a customer's own bookings by phone, via the phone-scoped RPC
-// (get_my_bookings) instead of filtering a client-side dataset that no
-// longer contains PII for anonymous callers.
-export async function fetchMyBookings(phone) {
-  if (!SUPABASE_ENABLED) return [];
-  const { data, error } = await supabase.rpc("get_my_bookings", { p_phone: phone });
-  if (error) { fail("get_my_bookings", error); return []; }
+// v2.19 — step 2 of booking-management OTP: verify the code (requested via
+// requestBookingOtp in sms.js) and receive a random access token. Phone
+// number and appointment_id are never sufficient on their own anymore —
+// every booking-management call below requires this token.
+export async function verifyBookingOtp(phone, otp) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("verify_booking_otp", { p_phone: phone, p_otp: otp });
+  if (error) { fail("verify_booking_otp", error); return { ok: false, error: "خطا در تایید کد" }; }
+  return data;
+}
+
+// v2.19 — a customer's own bookings, via the token issued by
+// verifyBookingOtp (never by phone alone).
+export async function fetchMyBookingsWithToken(token) {
+  if (!SUPABASE_ENABLED || !token) return [];
+  const { data, error } = await supabase.rpc("get_my_bookings_with_token", { p_token: token });
+  if (error) { fail("get_my_bookings_with_token", error); return []; }
   return (data || []).map(map.appointments.fromRow);
+}
+
+export async function cancelMyBookingWithToken(token, appointmentId) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("cancel_my_booking_with_token", { p_token: token, p_appointment_id: appointmentId });
+  if (error) { fail("cancel_my_booking_with_token", error); return { ok: false, error: "لغو ناموفق بود" }; }
+  return data;
+}
+
+export async function rescheduleMyBookingWithToken(token, appointmentId, newDate, newStartMin) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("reschedule_my_booking_with_token", {
+    p_token: token, p_appointment_id: appointmentId, p_new_date: newDate, p_new_start_min: newStartMin,
+  });
+  if (error) { fail("reschedule_my_booking_with_token", error); return { ok: false, error: "جابه‌جایی ناموفق بود" }; }
+  return data;
+}
+
+// v2.19 — actually invalidate the access token server-side (not just
+// clearing it from local state), so "log out" is a real security
+// boundary rather than a UI-only reset.
+export async function revokeBookingToken(token) {
+  if (!SUPABASE_ENABLED || !token) return { ok: true };
+  const { data, error } = await supabase.rpc("revoke_booking_token", { p_token: token });
+  if (error) { fail("revoke_booking_token", error); return { ok: false }; }
+  return data;
+}
+
+// v2.19 — booking creation now happens entirely server-side: price,
+// discount, end_min, and initial status are computed inside
+// create_public_booking from services/loyalty tables, never trusted from
+// this call's arguments beyond the customer's own choices (service,
+// staff, date, time, name, phone, gender, optional referral code).
+export async function createPublicBooking({ serviceId, staffId, date, startMin, customerName, customerPhone, customerGender, referralCode }) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("create_public_booking", {
+    p_service_id: serviceId, p_staff_id: staffId ?? null, p_date: date, p_start_min: startMin,
+    p_customer_name: customerName, p_customer_phone: customerPhone, p_customer_gender: customerGender,
+    p_referral_code: referralCode ?? null,
+  });
+  if (error) { fail("create_public_booking", error); return { ok: false, error: "ثبت نوبت ناموفق بود" }; }
+  return data;
 }
 
 /* ----------------------------------------------------------------- realtime */

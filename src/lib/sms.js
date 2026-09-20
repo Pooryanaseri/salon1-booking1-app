@@ -84,3 +84,13 @@ export function scheduleReminder({ to, body, appointmentId, scheduledFor, kind =
 export function cancelScheduledReminders(appointmentId) {
   return invoke({ action: "cancel", appointment_id: appointmentId });
 }
+
+/**
+ * v2.19 — request a 6-digit booking-management OTP by SMS. The plaintext
+ * code never reaches this function's return value in real mode — it's
+ * generated and sent entirely inside the send-sms Edge Function, which is
+ * the only caller granted execute on request_booking_otp_internal.
+ */
+export function requestBookingOtp(phone) {
+  return invoke({ action: "request_otp", phone });
+}
