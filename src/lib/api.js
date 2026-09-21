@@ -143,6 +143,22 @@ function fail(where, error) {
   return error || null;
 }
 
+// syncCollection/syncApprovedDates/saveWorkingHours run several Supabase
+// calls in parallel and log each failure individually via fail() above —
+// but fail() always RESOLVES (it returns the error, never throws), so
+// `await Promise.all(jobs)` used to succeed even when every single job
+// failed. That silently broke the contract usePersistedState relies on:
+// its callers (setServices, setApprovedDates, ...) treat persist() settling
+// successfully as "the database now matches the UI". Throwing the first
+// real error here is what lets usePersistedState notice, notify the user,
+// and roll the optimistic change back instead of leaving the UI showing a
+// change (e.g. an "approved" day) that a later authoritative check — like
+// create_public_booking's own approved_dates lookup — will disagree with.
+function throwIfAny(results) {
+  const firstError = results.find(Boolean);
+  if (firstError) throw firstError;
+}
+
 const byId = (arr) => new Map((arr || []).map((x) => [x.id, x]));
 const shallowEqual = (a, b) => {
   const ka = Object.keys(a), kb = Object.keys(b);
@@ -212,8 +228,9 @@ export async function syncCollection(table, prev, next) {
     jobs.push(supabase.from(table).update(row).eq("id", row.id).then(({ error }) => fail(`${table}.update`, error)));
   }
   if (deletes.length) jobs.push(supabase.from(table).delete().in("id", deletes).then(({ error }) => fail(`${table}.delete`, error)));
-  await Promise.all(jobs);
+  const results = await Promise.all(jobs);
   invalidateCache(table);
+  throwIfAny(results);
 }
 
 /* -------------------------------------------------------------- single ops */
@@ -262,13 +279,15 @@ export async function saveWorkingHours(staffId, hours) {
     is_closed: !!h.is_closed,
   }));
   const { error } = await supabase.from("working_hours").upsert(rows, { onConflict: "id" });
-  return fail("working_hours.save", error);
+  const result = fail("working_hours.save", error);
+  if (result) throw result;
 }
 
 export async function clearStaffWorkingHours(staffId) {
   if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from("working_hours").delete().eq("staff_id", staffId);
-  return fail("working_hours.clear", error);
+  const result = fail("working_hours.clear", error);
+  if (result) throw result;
 }
 
 /* ------------------------------------------------ approved dates (special) */
@@ -281,7 +300,8 @@ export async function syncApprovedDates(prev, next) {
   const jobs = [];
   if (added.length) jobs.push(supabase.from("approved_dates").upsert(added, { onConflict: "date" }).then(({ error }) => fail("approved_dates.add", error)));
   if (removed.length) jobs.push(supabase.from("approved_dates").delete().in("date", removed).then(({ error }) => fail("approved_dates.remove", error)));
-  await Promise.all(jobs);
+  const results = await Promise.all(jobs);
+  throwIfAny(results);
 }
 
 /* ---------------------------------------------------------------- bootstrap */

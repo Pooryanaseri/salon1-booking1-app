@@ -464,7 +464,7 @@ function uid() {
    `arm(false)` suppresses writes while we hydrate from the server,
    so loading data never echoes straight back as an UPDATE storm.
    ============================================================ */
-function usePersistedState(initial, persist) {
+function usePersistedState(initial, persist, onError) {
   const [value, setValue] = useState(initial);
   // `initial` may be a lazy initializer function (useState semantics), so seed the
   // ref from the already-resolved first-render value, never from `initial` itself.
@@ -478,11 +478,22 @@ function usePersistedState(initial, persist) {
     ref.current = next;
     setValue(next);
     if (live.current) {
-      Promise.resolve(persist(prev, next)).catch((e) =>
-        console.error("[salon] ذخیره‌سازی ناموفق:", e)
-      );
+      Promise.resolve(persist(prev, next)).catch((e) => {
+        console.error("[salon] ذخیره‌سازی ناموفق:", e);
+        // Roll back the optimistic update. Without this, a failed write
+        // (RLS denial, expired session, network blip — see syncCollection/
+        // syncApprovedDates, which now actually reject instead of silently
+        // swallowing the error) leaves the UI showing a change — e.g. a day
+        // marked "approved" — that never reached the database. Every later
+        // check that trusts the real DB state (like create_public_booking's
+        // own approved_dates lookup) then silently disagrees with what's on
+        // screen, and there was never any visible sign anything went wrong.
+        ref.current = prev;
+        setValue(prev);
+        onError?.(e);
+      });
     }
-  }, [persist]);
+  }, [persist, onError]);
 
   const hydrate = useCallback((v) => { ref.current = v; setValue(v); }, []);
   const arm = useCallback((on) => { live.current = on; }, []);
@@ -978,12 +989,22 @@ export default function App() {
   const [dataReady, setDataReady] = useState(false);
   const [backendNote, setBackendNote] = useState("");
 
+  // Shared failure notice for every usePersistedState-backed write below —
+  // previously a failed save (expired session, RLS denial, network blip)
+  // was only ever logged to the browser console; the manager saw the change
+  // "take" locally and had no way to know the database never actually got
+  // it. usePersistedState now also rolls the optimistic change back, so this
+  // toast and the visible state agree with each other.
+  function persistErrorNotice() {
+    setToast("ذخیره‌سازی تغییر روی سرور ناموفق بود — دوباره تلاش کنید و اتصال یا نشست ورود خود را بررسی کنید");
+  }
+
   // ---- collections wired to Postgres (setter contract unchanged) ------------
-  const [services, setServices, servicesCtl] = usePersistedState(SEED_SERVICES, persistServices);
+  const [services, setServices, servicesCtl] = usePersistedState(SEED_SERVICES, persistServices, persistErrorNotice);
   const [stylists, setStylists] = useState(SEED_STYLISTS);
-  const [workingHours, setWorkingHours, hoursCtl] = usePersistedState(SEED_WORKING_HOURS, persistSalonHours);
-  const [staffWorkingHours, setStaffWorkingHours, staffHoursCtl] = usePersistedState({}, persistStaffHours);
-  const [timeOff, setTimeOff, timeOffCtl] = usePersistedState([], persistTimeOff);
+  const [workingHours, setWorkingHours, hoursCtl] = usePersistedState(SEED_WORKING_HOURS, persistSalonHours, persistErrorNotice);
+  const [staffWorkingHours, setStaffWorkingHours, staffHoursCtl] = usePersistedState({}, persistStaffHours, persistErrorNotice);
+  const [timeOff, setTimeOff, timeOffCtl] = usePersistedState([], persistTimeOff, persistErrorNotice);
   // A day only accepts new customer bookings once the stylist has explicitly opened it —
   // by day, by week, or by month (all of which just add date keys to this same flat set).
   const [approvedDates, setApprovedDates, approvedCtl] = usePersistedState(() => {
@@ -996,7 +1017,7 @@ export default function App() {
       arr.push(dateKey(d));
     }
     return arr;
-  }, persistApproved);
+  }, persistApproved, persistErrorNotice);
 
   const [bookings, setBookings] = useState(() => {
     const t = new Date();
@@ -6730,11 +6751,12 @@ function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, 
    thing holding the کاوه‌نگار / ملی‌پیامک API key.
    ============================================================ */
 const AUDIENCES = [
-  { id: "today",    label: "نوبت‌های امروز",   Icon: CalendarCheck },
-  { id: "tomorrow", label: "نوبت‌های فردا",    Icon: CalendarClock },
-  { id: "week",     label: "۷ روز آینده",      Icon: CalendarIcon },
-  { id: "all",      label: "همهٔ مشتری‌ها",     Icon: Users },
-  { id: "manual",   label: "شمارهٔ دستی",      Icon: UserPlus },
+  { id: "today",        label: "نوبت‌های امروز",   Icon: CalendarCheck },
+  { id: "tomorrow",     label: "نوبت‌های فردا",    Icon: CalendarClock },
+  { id: "week",         label: "۷ روز آینده",      Icon: CalendarIcon },
+  { id: "all",          label: "همهٔ مشتری‌ها",     Icon: Users },
+  { id: "reactivation", label: "جذب مجدد",         Icon: Repeat2 },
+  { id: "manual",       label: "شمارهٔ دستی",      Icon: UserPlus },
 ];
 
 /* ============================================================
@@ -7019,6 +7041,13 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
   const [discount, setDiscount] = useState(15); // only used if the {{discount}} token is inserted
   const [allCustomers, setAllCustomers] = useState([]);
 
+  // ---- win-back / reactivation audience (phase 3 — was wired to the
+  // backend via fetchInactiveCustomers but had no way to reach it from
+  // this tab; AUDIENCES/recipients now have a real "reactivation" case) ----
+  const [inactiveDays, setInactiveDays] = useState(60);
+  const [inactiveCustomers, setInactiveCustomers] = useState([]);
+  const [inactiveLoading, setInactiveLoading] = useState(false);
+
   // ---- v2.13: "بهترین عملکرد" suggester ----
   const [suggestingBest, setSuggestingBest] = useState(false);
   const [bestSuggestion, setBestSuggestion] = useState(null); // { template_label, conversion_rate } — last suggestion shown
@@ -7130,6 +7159,17 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
     (async () => setAllCustomers(await fetchCustomers()))();
   }, [audience]);
 
+  useEffect(() => {
+    if (audience !== "reactivation") return;
+    let cancelled = false;
+    (async () => {
+      setInactiveLoading(true);
+      const rows = await fetchInactiveCustomers(inactiveDays);
+      if (!cancelled) { setInactiveCustomers(rows); setInactiveLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [audience, inactiveDays]);
+
   /* -------------------------------------------------- recipient resolution */
   const recipients = useMemo(() => {
     const svcName = (id) => (services.find((s) => s.id === id) || {}).name || "خدمت";
@@ -7185,6 +7225,18 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
       }));
     }
 
+    if (audience === "reactivation") {
+      return inactiveCustomers
+        .filter((c) => /^09\d{9}$/.test(c.phone || ""))
+        .map((c) => ({
+          phone: c.phone,
+          vars: {
+            name: c.name || "مشتری", days: String(c.days_since ?? inactiveDays),
+            discount: String(discount), points: "0", service: "", date: "", time: "", stylist: "", code: "",
+          },
+        }));
+    }
+
     // manual
     return [...new Set(
       manualNumbers.split(/[\s,،;\n]+/).map((x) => x.trim()).filter((x) => /^09\d{9}$/.test(x))
@@ -7192,7 +7244,7 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
       phone,
       vars: { name: "مشتری", discount: String(discount), points: "0", service: "", date: "", time: "", stylist: "", code: "" },
     }));
-  }, [audience, bookings, services, manualNumbers, allCustomers, discount]);
+  }, [audience, bookings, services, manualNumbers, allCustomers, inactiveCustomers, inactiveDays, discount]);
 
   const preview = recipients.length ? renderTemplate(body, recipients[0].vars) : renderTemplate(body, {});
   const parts = smsParts(preview);
@@ -7238,18 +7290,38 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
 
     setSending(true);
     const selectedTemplate = templates.find((t) => t.id === templateId);
+
+    // Reactivation sends are real win-back campaigns — write the
+    // campaigns/campaign_targets rows CampaignReturnRateCard already reads,
+    // so a booking from one of these customers is attributed and the
+    // return rate shows up there (same mechanism as the RFM quick-send cards).
+    let campaignId = null;
+    if (audience === "reactivation") {
+      const created = await createCampaign({
+        id: "cmp-" + Date.now().toString(36),
+        name: `جذب مجدد — بیش از ${inactiveDays} روز`,
+        inactive_days: inactiveDays,
+        discount_percent: usesDiscountToken ? discount : null,
+        template_id: selectedTemplate && !selectedTemplate.id?.startsWith("fallback-") ? selectedTemplate.id : null,
+        valid_until: null,
+        targeted_count: recipients.length,
+      });
+      campaignId = created?.id ?? null;
+      if (campaignId) await addCampaignTargets(campaignId, recipients.map((r) => r.phone));
+    }
+
     const campaignLog = await logCampaignSend({
       templateId: selectedTemplate?.id ?? null,
       templateLabel: selectedTemplate?.title || SMS_KIND_LABEL[selectedTemplate?.kind] || "پیام دستی",
-      segment: null, // manual composer isn't segment-scoped
+      segment: audience === "reactivation" ? "inactive" : null,
       totalSent: recipients.length,
     });
 
     const messages = recipients.map((r) => ({
       to: r.phone,
       body: renderTemplate(body, r.vars),
-      kind: "custom",
-      campaign_id: null,
+      kind: audience === "reactivation" ? "campaign" : "custom",
+      campaign_id: campaignId,
       campaign_log_id: campaignLog?.id ?? null,
     }));
 
@@ -7393,6 +7465,23 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
                 className="tabular fade-in"
                 style={{ width: "100%", padding: 11, fontSize: 13, marginTop: 12, minHeight: 74, resize: "vertical" }}
               />
+            )}
+
+            {audience === "reactivation" && (
+              <div className="fade-in flex items-center justify-between" style={{ marginTop: 12, padding: "8px 10px", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
+                <label className="muted flex items-center gap-1" style={{ fontSize: 11.5 }}>
+                  {inactiveLoading && <Loader2 size={11} style={{ animation: "salonSpin 1s linear infinite" }} />}
+                  بیش از چند روز بدون رزرو
+                </label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number" min="1" max="365" value={inactiveDays}
+                    onChange={(e) => setInactiveDays(Math.max(1, Number(e.target.value) || 1))}
+                    className="tabular" style={{ width: 52, padding: "5px 6px", fontSize: 12, textAlign: "center" }}
+                  />
+                  <span className="muted" style={{ fontSize: 11 }}>روز</span>
+                </div>
+              </div>
             )}
 
             <div className="flex items-center justify-between" style={{ marginTop: 12 }}>
