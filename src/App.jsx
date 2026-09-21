@@ -24,7 +24,7 @@ import {
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import {
   bootstrap, subscribeAppointments, fetchFullAppointments,
-  verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, createPublicBooking, revokeBookingToken,
+  verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, createPublicBooking, revokeBookingToken, requestBookingOtpTestMode,
   fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, fetchFeedbackStats,
   syncCollection, syncApprovedDates, saveWorkingHours, clearStaffWorkingHours,
   insertOne, updateOne, deleteOne,
@@ -2573,13 +2573,26 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
       return;
     }
     setOtpRequesting(true);
-    const res = await requestBookingOtp(phone);
+    let res = await requestBookingOtp(phone); // normal path: Edge Function -> real SMS (or SMS_DRY_RUN)
+    if (!res?.ok) {
+      // Edge Function unreachable/not deployed, or SMS provider not
+      // configured — try the DB-only test path instead. This only ever
+      // succeeds if a manager has explicitly enabled sms_test_mode (one
+      // SQL line, no deploy needed); otherwise it fails too and we fall
+      // through to showing the original real error below, so a genuine
+      // production SMS failure is never masked by a confusing "test mode
+      // is off" message.
+      const testRes = await requestBookingOtpTestMode(phone);
+      if (testRes?.ok) res = testRes;
+    }
     setOtpRequesting(false);
     if (!res?.ok) { setOtpError(res?.error || "ارسال کد ناموفق بود"); return; }
-    // Only ever present when the project owner has explicitly turned on
-    // SMS_DRY_RUN for testing — never in a normal/production setup, and
-    // never anyone else's code (it's this same request's own OTP).
-    if (res.dev_otp) { setDevOtp(res.dev_otp); setOtpCode(res.dev_otp); } else { setDevOtp(null); }
+    // dev_otp: SMS_DRY_RUN path (v2.19). test_otp: DB-only path (v2.20).
+    // Either way, only ever present for this same request's own phone —
+    // never anyone else's code, and never shown to a real customer unless
+    // a manager explicitly turned on a test mode.
+    const testCode = res.dev_otp || res.test_otp;
+    if (testCode) { setDevOtp(testCode); setOtpCode(testCode); } else { setDevOtp(null); }
     setOtpStep("code");
   }
 
@@ -2689,7 +2702,7 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
 
           {otpStep === "code" && devOtp && (
             <p className="badge mt-2" style={{ background: "var(--color-warning)", color: "oklch(16% 0.02 70)", display: "inline-flex" }}>
-              حالت تست (SMS_DRY_RUN) — کد بدون پیامک واقعی: {toFa(devOtp)}
+              حالت تست — کد بدون پیامک واقعی: {toFa(devOtp)}
             </p>
           )}
 

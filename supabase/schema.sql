@@ -909,6 +909,63 @@ end;
 $fn$;
 grant execute on function public.revoke_booking_token(text) to anon, authenticated;
 
+-- v2.20: DB-only OTP test path — no Edge Function needed. Off by default
+-- (sms_test_mode = false); a manager flips it directly in the database.
+-- Even when on, the OTP is returned only to the caller who just requested
+-- it for their own phone. See v2.20_db_only_test_mode.sql for full rationale.
+create table if not exists public.app_settings (
+  id            int primary key default 1 check (id = 1),
+  sms_test_mode boolean not null default false
+);
+insert into public.app_settings (id) values (1) on conflict (id) do nothing;
+alter table public.app_settings enable row level security;
+drop policy if exists p_app_settings_read on public.app_settings;
+create policy p_app_settings_read on public.app_settings for select using (true);
+drop policy if exists p_app_settings_write on public.app_settings;
+create policy p_app_settings_write on public.app_settings for update using (public.is_manager()) with check (public.is_manager());
+grant select on public.app_settings to anon, authenticated;
+grant update on public.app_settings to authenticated;
+
+create or replace function public.request_booking_otp_test(p_phone text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_otp text; v_salt text; v_hash text; v_bytes bytea; v_test_mode boolean;
+begin
+  select sms_test_mode into v_test_mode from public.app_settings where id = 1;
+  if not coalesce(v_test_mode, false) then
+    return json_build_object('ok', false, 'error', 'حالت تست فعال نیست');
+  end if;
+  if p_phone !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شماره نامعتبر است');
+  end if;
+  if not public.check_rate_limit('otp_request_test:' || p_phone, 5, 10) then
+    return json_build_object('ok', false, 'error', 'تعداد درخواست بیش از حد مجاز است — چند دقیقه دیگر دوباره امتحان کنید');
+  end if;
+
+  update public.booking_otp_challenges
+     set consumed = true
+   where phone = p_phone and consumed = false and expires_at > now();
+
+  v_bytes := gen_random_bytes(4);
+  v_otp := lpad((
+    ((get_byte(v_bytes, 0)::bigint << 24) | (get_byte(v_bytes, 1)::bigint << 16)
+     | (get_byte(v_bytes, 2)::bigint << 8) | get_byte(v_bytes, 3)::bigint) % 900000 + 100000
+  )::text, 6, '0');
+  v_salt := encode(gen_random_bytes(16), 'hex');
+  v_hash := encode(digest(v_otp || v_salt, 'sha256'), 'hex');
+
+  insert into public.booking_otp_challenges (phone, otp_hash, salt, expires_at)
+  values (p_phone, v_hash, v_salt, now() + interval '5 minutes');
+
+  if random() < 0.01 then
+    delete from public.booking_otp_challenges where expires_at < now() - interval '1 day';
+  end if;
+
+  return json_build_object('ok', true, 'test_otp', v_otp, 'expires_in_seconds', 300);
+end;
+$fn$;
+grant execute on function public.request_booking_otp_test(text) to anon, authenticated;
+
 -- ----------------------------------------------------------------------------
 -- 9) Server-computed booking creation — price, discount, end_min, and
 --    initial status are computed here, never accepted from the client.

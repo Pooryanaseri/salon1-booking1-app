@@ -405,6 +405,17 @@ export async function revokeBookingToken(token) {
   return data;
 }
 
+// v2.20 — DB-only OTP test path: a direct RPC call, no Edge Function
+// involved at all. Refuses unless a manager has explicitly turned
+// sms_test_mode on (one SQL line — see DEPLOY.md); safe to always try as
+// a fallback since it's a no-op error otherwise.
+export async function requestBookingOtpTestMode(phone) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("request_booking_otp_test", { p_phone: phone });
+  if (error) { fail("request_booking_otp_test", error); return { ok: false, error: "خطا در دریافت کد تست" }; }
+  return data;
+}
+
 // v2.19 — booking creation now happens entirely server-side: price,
 // discount, end_min, and initial status are computed inside
 // create_public_booking from services/loyalty tables, never trusted from
