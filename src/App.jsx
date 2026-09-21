@@ -1270,10 +1270,36 @@ export default function App() {
     }
 
     setBookings((prev) => [...prev, booking]);
-    await sendBookingSms(booking, "confirmation");
-    await queueReminder(booking);
-    broadcastSlotChange();
-    if (onInserted) await onInserted();
+
+    // Everything below is a side effect of an already-successful booking —
+    // none of it may ever block the customer from seeing their
+    // confirmation. If the SMS Edge Function isn't deployed (or any other
+    // transient failure happens here), the booking is still real and
+    // already in the database; only notify about it, never let it
+    // propagate and stall the UI on a booking that actually succeeded.
+    try {
+      await sendBookingSms(booking, "confirmation");
+    } catch (err) {
+      console.error("[salon] booking confirmation SMS failed:", err);
+      notify("نوبت ثبت شد، ولی ارسال پیامک تایید ناموفق بود");
+    }
+    try {
+      await queueReminder(booking);
+    } catch (err) {
+      console.error("[salon] scheduling the reminder failed:", err);
+    }
+    try {
+      broadcastSlotChange();
+    } catch (err) {
+      console.error("[salon] slot-change broadcast failed:", err);
+    }
+    if (onInserted) {
+      try {
+        await onInserted();
+      } catch (err) {
+        console.error("[salon] post-booking callback failed:", err);
+      }
+    }
     return booking;
   }
 
@@ -2045,39 +2071,48 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
   async function confirmBooking() {
     if (confirming) return;
     setConfirming(true);
-    const finalStaffId = staffId || assignedStaffId || null;
-    const booking = await addBooking(
-      {
-        serviceId: service.id,
-        staffId: finalStaffId,
-        date: dateKey(selectedDate),
-        startMin: selectedSlot,
-        endMin: selectedSlot + service.duration_minutes,
-        bufferMinutes: service.buffer_minutes || 0,
-        customerName: name.trim(),
-        customerPhone: phone,
-        customerGender: gender,
-        // Demo-mode-only fields (ignored by create_public_booking in real
-        // mode, which computes these itself) — kept so the demo flow still
-        // shows a realistic price breakdown with no backend to compute it.
-        originalPrice: service.price,
-        discountType: service.discount_type,
-        discountValue: service.discount_value,
-        discountReason: [service.discount_reason, loyaltyDiscountAmount > 0 ? `${toFa(loyaltyDiscountPct)}٪ تخفیف باشگاه مشتریان` : ""].filter(Boolean).join(" · "),
-        finalPrice,
-      },
-      !knownCustomer && referralCode.trim()
-        ? async () => {
-            const res = await applyReferral(phone, referralCode.trim());
-            if (res.ok) notify("کد معرفی ثبت شد — بعد از اولین نوبت شما، پاداش معرف فعال می‌شود");
-          }
-        : null
-    );
-    if (!booking) { setConfirming(false); return; } // addBooking already notified the error
-    setResult(booking);
-    notify("پیامک تایید نوبت ارسال شد");
-    setStep(7);
-    setConfirming(false);
+    try {
+      const finalStaffId = staffId || assignedStaffId || null;
+      const booking = await addBooking(
+        {
+          serviceId: service.id,
+          staffId: finalStaffId,
+          date: dateKey(selectedDate),
+          startMin: selectedSlot,
+          endMin: selectedSlot + service.duration_minutes,
+          bufferMinutes: service.buffer_minutes || 0,
+          customerName: name.trim(),
+          customerPhone: phone,
+          customerGender: gender,
+          // Demo-mode-only fields (ignored by create_public_booking in real
+          // mode, which computes these itself) — kept so the demo flow still
+          // shows a realistic price breakdown with no backend to compute it.
+          originalPrice: service.price,
+          discountType: service.discount_type,
+          discountValue: service.discount_value,
+          discountReason: [service.discount_reason, loyaltyDiscountAmount > 0 ? `${toFa(loyaltyDiscountPct)}٪ تخفیف باشگاه مشتریان` : ""].filter(Boolean).join(" · "),
+          finalPrice,
+        },
+        !knownCustomer && referralCode.trim()
+          ? async () => {
+              const res = await applyReferral(phone, referralCode.trim());
+              if (res.ok) notify("کد معرفی ثبت شد — بعد از اولین نوبت شما، پاداش معرف فعال می‌شود");
+            }
+          : null
+      );
+      if (!booking) return; // addBooking already notified the error
+      // Not "SMS sent" — addBooking already reports that specifically (and
+      // only on actual failure); this is the one thing that's always true
+      // once we reach here: the booking itself is confirmed.
+      setResult(booking);
+      notify("نوبت شما ثبت شد");
+      setStep(7);
+    } catch (err) {
+      console.error("[salon] confirmBooking failed unexpectedly:", err);
+      notify("ثبت نوبت با خطا مواجه شد — لطفاً دوباره امتحان کنید");
+    } finally {
+      setConfirming(false);
+    }
   }
 
   function reset() {
@@ -2599,20 +2634,26 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
   async function verifyCode() {
     setOtpError("");
     setOtpVerifying(true);
-    const res = await verifyBookingOtp(phone, otpCode);
-    if (!res?.ok) {
+    try {
+      const res = await verifyBookingOtp(phone, otpCode);
+      if (!res?.ok) {
+        setOtpError(res?.error || "کد اشتباه است");
+        return;
+      }
+      const bookingsRes = await fetchMyBookingsWithToken(res.token);
+      setAccessToken(res.token);
+      setMyBookings(bookingsRes);
+      setOtpStep("verified");
+      setSearched(true);
+      setSegment("bookings");
+    } catch (err) {
+      console.error("[salon] verifyCode failed unexpectedly:", err);
+      setOtpError("خطایی رخ داد — دوباره امتحان کنید");
+    } finally {
       setOtpVerifying(false);
-      setOtpError(res?.error || "کد اشتباه است");
-      return;
     }
-    const bookingsRes = await fetchMyBookingsWithToken(res.token);
-    setOtpVerifying(false);
-    setAccessToken(res.token);
-    setMyBookings(bookingsRes);
-    setOtpStep("verified");
-    setSearched(true);
-    setSegment("bookings");
   }
+
 
   // v2.19: bookings prop is the PII-free slots view for an anonymous
   // caller — a customer's own bookings come from the token-gated RPCs

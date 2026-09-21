@@ -40,12 +40,23 @@ async function invoke(payload) {
     console.info("[salon/sms] حالت دمو — پیامک واقعی ارسال نشد:", payload);
     return { ok: false, demo: true };
   }
-  const { data, error } = await supabase.functions.invoke("send-sms", { body: payload });
-  if (error) {
-    console.error("[salon/sms] send-sms failed:", error.message);
-    return { ok: false, error: error.message };
+  try {
+    const { data, error } = await supabase.functions.invoke("send-sms", { body: payload });
+    if (error) {
+      console.error("[salon/sms] send-sms failed:", error.message);
+      return { ok: false, error: error.message };
+    }
+    return data;
+  } catch (err) {
+    // supabase.functions.invoke() can throw outright for network-level
+    // failures (Edge Function not deployed, unreachable, CORS, etc.) —
+    // every caller in this app assumes invoke() always resolves to
+    // {ok, ...} and never throws, so an uncaught exception here would
+    // propagate up and could block an already-successful booking from
+    // ever reaching its confirmation screen.
+    console.error("[salon/sms] send-sms unreachable:", err?.message || err);
+    return { ok: false, error: "سرویس پیامک در دسترس نیست" };
   }
-  return data;
 }
 
 /**
