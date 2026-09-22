@@ -3421,7 +3421,8 @@ function StylistEditModal({ stylist, onClose, onSave }) {
 function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHours, timeOff, updateBooking, waitlist, removeWaitlistEntry }) {
   const [menuFor, setMenuFor] = useState(null);
   const [action, setAction] = useState(null);
-  const [verifyAction, setVerifyAction] = useState(null); // { booking } — pending referral-verification prompt
+  const [verifyAction, setVerifyAction] = useState(null); // { booking, extraPatch? } — pending referral-verification prompt
+  const [priceAction, setPriceAction] = useState(null); // { booking, thenVerifyReferral } — service has no fixed price, ask staff what was actually charged
   const [genderFilter, setGenderFilter] = useState("all");
   const [staffFilter, setStaffFilter] = useState(defaultStaffId || "all");
   const [view, setView] = useState("list"); // "list" | "timeline"
@@ -3439,10 +3440,19 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
   // immediately as before. Only when this customer was referred does staff
   // need to confirm (in ReferralVerifyModal) that they're genuinely new
   // before the referrer's reward can be awarded.
+  //
+  // A service with no fixed price ("قیمت در سالن اعلام می‌شود") leaves
+  // final_price null forever unless staff enters what was actually charged
+  // right here — every accounting/BI total filters on `final_price != null`,
+  // so without this step the visit is real revenue that accounting silently
+  // never counts.
   async function handleComplete(b) {
     setMenuFor(null);
+    const needsPrice = b.final_price == null;
     const referredBy = await fetchCustomerReferredBy(b.customer_phone);
-    if (referredBy) {
+    if (needsPrice) {
+      setPriceAction({ booking: b, thenVerifyReferral: !!referredBy });
+    } else if (referredBy) {
       setVerifyAction({ booking: b });
     } else {
       updateBooking(b.id, { status: "completed" }, "وضعیت به «انجام شده» تغییر کرد");
@@ -3730,6 +3740,25 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
           }}
         />
       )}
+      {priceAction && (
+        <SetPriceModal
+          booking={priceAction.booking}
+          onClose={() => setPriceAction(null)}
+          onConfirm={(price) => {
+            const pricePatch = { final_price: price, original_price: price };
+            if (priceAction.thenVerifyReferral) {
+              setVerifyAction({ booking: priceAction.booking, extraPatch: pricePatch });
+            } else {
+              updateBooking(
+                priceAction.booking.id,
+                { status: "completed", ...pricePatch },
+                `وضعیت به «انجام شده» تغییر کرد؛ مبلغ ${formatToman(price)} در حسابداری ثبت شد`
+              );
+            }
+            setPriceAction(null);
+          }}
+        />
+      )}
       {verifyAction && (
         <ReferralVerifyModal
           booking={verifyAction.booking}
@@ -3737,7 +3766,7 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
           onConfirm={(verified) => {
             updateBooking(
               verifyAction.booking.id,
-              { status: "completed", referral_verified: verified },
+              { status: "completed", referral_verified: verified, ...(verifyAction.extraPatch || {}) },
               verified ? "وضعیت به «انجام شده» تغییر کرد؛ امتیاز معرف و مشتری ثبت شد" : "وضعیت به «انجام شده» تغییر کرد؛ بدون امتیاز معرفی"
             );
             setVerifyAction(null);
@@ -3783,6 +3812,40 @@ function MenuItem({ label, onClick, danger, positive }) {
     <button onClick={onClick} className="tap w-full" style={{ padding: "9px 12px", textAlign: "right", fontSize: 13, borderRadius: "var(--radius-sm)", color: danger ? "var(--color-danger)" : positive ? "var(--color-success)" : "var(--color-body)" }}>
       {label}
     </button>
+  );
+}
+
+// Shown when marking a booking "انجام شد" (completed) if its service has no
+// fixed price ("قیمت در سالن اعلام می‌شود" — hasPrice(service) is false).
+// Without this step final_price stays null forever and every accounting/BI
+// total (BITab, StaffTab, revenue charts — all filter on `final_price != null`)
+// silently drops the visit, even though the customer really paid something.
+function SetPriceModal({ booking, onClose, onConfirm }) {
+  const [amount, setAmount] = useState("");
+  const n = Number(amount);
+  const valid = amount !== "" && n > 0;
+  return (
+    <Modal title="ثبت مبلغ دریافتی" onClose={onClose}>
+      <p style={{ fontSize: 13, lineHeight: 1.8, marginBottom: 14 }}>
+        قیمت این خدمت «در سالن اعلام می‌شود» و مبلغ ثابتی ندارد. برای اینکه این نوبت در حسابداری و گزارش‌های درآمد
+        حساب شود، مبلغی که از <b>{booking.customer_name}</b> دریافت کردید را وارد کنید.
+      </p>
+      <label className="muted" style={{ fontSize: 12 }}>مبلغ دریافتی (تومان)</label>
+      <input
+        type="number" min={0} step={1000} autoFocus value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+        placeholder="مثلاً ۳۵۰۰۰۰"
+        className="tabular" style={{ width: "100%", padding: "10px 14px", fontSize: 14, marginTop: 4 }}
+      />
+      <div className="flex gap-2 mt-4">
+        <button className="tap ghost-btn flex-1" style={{ padding: 11 }} onClick={onClose}>
+          انصراف
+        </button>
+        <button disabled={!valid} className="tap accent-btn flex-1" style={{ padding: 11 }} onClick={() => onConfirm(n)}>
+          ثبت و ادامه
+        </button>
+      </div>
+    </Modal>
   );
 }
 
