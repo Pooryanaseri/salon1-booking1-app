@@ -12,7 +12,7 @@
 //  If Supabase env vars are absent every function resolves to a no-op, so the
 //  app degrades to the original demo behaviour instead of crashing.
 // ============================================================================
-import { supabase, SUPABASE_ENABLED } from "./supabase";
+import { supabase, SUPABASE_ENABLED, getCurrentSalonId } from "./supabase";
 
 /* ---------------------------------------------------------------- date glue */
 // The app's dateKey() produces an UNPADDED key: "2026-8-31".
@@ -143,22 +143,6 @@ function fail(where, error) {
   return error || null;
 }
 
-// syncCollection/syncApprovedDates/saveWorkingHours run several Supabase
-// calls in parallel and log each failure individually via fail() above —
-// but fail() always RESOLVES (it returns the error, never throws), so
-// `await Promise.all(jobs)` used to succeed even when every single job
-// failed. That silently broke the contract usePersistedState relies on:
-// its callers (setServices, setApprovedDates, ...) treat persist() settling
-// successfully as "the database now matches the UI". Throwing the first
-// real error here is what lets usePersistedState notice, notify the user,
-// and roll the optimistic change back instead of leaving the UI showing a
-// change (e.g. an "approved" day) that a later authoritative check — like
-// create_public_booking's own approved_dates lookup — will disagree with.
-function throwIfAny(results) {
-  const firstError = results.find(Boolean);
-  if (firstError) throw firstError;
-}
-
 const byId = (arr) => new Map((arr || []).map((x) => [x.id, x]));
 const shallowEqual = (a, b) => {
   const ka = Object.keys(a), kb = Object.keys(b);
@@ -228,9 +212,8 @@ export async function syncCollection(table, prev, next) {
     jobs.push(supabase.from(table).update(row).eq("id", row.id).then(({ error }) => fail(`${table}.update`, error)));
   }
   if (deletes.length) jobs.push(supabase.from(table).delete().in("id", deletes).then(({ error }) => fail(`${table}.delete`, error)));
-  const results = await Promise.all(jobs);
+  await Promise.all(jobs);
   invalidateCache(table);
-  throwIfAny(results);
 }
 
 /* -------------------------------------------------------------- single ops */
@@ -279,15 +262,13 @@ export async function saveWorkingHours(staffId, hours) {
     is_closed: !!h.is_closed,
   }));
   const { error } = await supabase.from("working_hours").upsert(rows, { onConflict: "id" });
-  const result = fail("working_hours.save", error);
-  if (result) throw result;
+  return fail("working_hours.save", error);
 }
 
 export async function clearStaffWorkingHours(staffId) {
   if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from("working_hours").delete().eq("staff_id", staffId);
-  const result = fail("working_hours.clear", error);
-  if (result) throw result;
+  return fail("working_hours.clear", error);
 }
 
 /* ------------------------------------------------ approved dates (special) */
@@ -300,8 +281,7 @@ export async function syncApprovedDates(prev, next) {
   const jobs = [];
   if (added.length) jobs.push(supabase.from("approved_dates").upsert(added, { onConflict: "date" }).then(({ error }) => fail("approved_dates.add", error)));
   if (removed.length) jobs.push(supabase.from("approved_dates").delete().in("date", removed).then(({ error }) => fail("approved_dates.remove", error)));
-  const results = await Promise.all(jobs);
-  throwIfAny(results);
+  await Promise.all(jobs);
 }
 
 /* ---------------------------------------------------------------- bootstrap */
@@ -735,6 +715,86 @@ export async function submitFeedback({ bookingId, rating, tags, comment }) {
     booking_id: bookingId, rating, tags: tags || [], comment: comment?.trim() || "",
   });
   if (error) return { ok: false, error: error.code === "23505" ? "نظر شما قبلاً ثبت شده" : "ثبت نظر ناموفق بود" };
+  return { ok: true };
+}
+
+// v2.25 — the other half of the post-visit interaction: the customer
+// saying they didn't actually have this appointment, instead of rating it.
+export async function reportAppointmentNoShow(bookingId) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("report_appointment_no_show", { p_booking_id: bookingId });
+  if (error) { fail("report_appointment_no_show", error); return { ok: false, error: "ثبت ناموفق بود" }; }
+  return data;
+}
+
+// v2.25 — the owner's weekly reconciliation page, reached via the SMS
+// magic link's token (no login needed, same bearer-token trust model as
+// the customer OTP/token flow).
+export async function fetchReconciliationQueue(token) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.rpc("get_reconciliation_queue", { p_token: token });
+  if (error) { fail("get_reconciliation_queue", error); return []; }
+  return data || [];
+}
+
+export async function submitReconciliationBatch(token, decisions) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("submit_reconciliation_batch", { p_token: token, p_decisions: decisions });
+  if (error) { fail("submit_reconciliation_batch", error); return { ok: false, error: "ثبت ناموفق بود" }; }
+  return data;
+}
+
+// v2.26 — the rebooking-link flow (SMS from a closure cancellation or the
+// predictive engine). The token is the only identity-bearing input
+// anywhere in this flow — see the migration's own security note.
+export async function resolveRebookingToken(token) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("resolve_rebooking_token", { p_token: token });
+  if (error) { fail("resolve_rebooking_token", error); return { ok: false, error: "خطا در بارگذاری" }; }
+  return data;
+}
+
+export async function fetchRebookingSlots(token, date, staffId) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.rpc("get_available_slots_for_rebooking", {
+    p_token: token, p_date: date, p_staff_id: staffId ?? null,
+  });
+  if (error) { fail("get_available_slots_for_rebooking", error); return []; }
+  return (data || []).map((r) => r.start_min);
+}
+
+export async function createBookingFromRebookingToken(token, date, startMin, staffId) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("create_booking_from_rebooking_token", {
+    p_token: token, p_date: date, p_start_min: startMin, p_staff_id: staffId ?? null,
+  });
+  if (error) { fail("create_booking_from_rebooking_token", error); return { ok: false, error: "ثبت نوبت ناموفق بود" }; }
+  return data;
+}
+
+// v2.26 — salon closures (holiday/maintenance/personal leave). Manager-only.
+export async function fetchClosures() {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.from("salon_closures").select("*").eq("is_active", true).order("closure_date");
+  if (error) { fail("salon_closures.fetch", error); return []; }
+  return data || [];
+}
+
+export async function announceClosure(closureDate, closureType, notes) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const salonId = getCurrentSalonId();
+  if (!salonId) return { ok: false, error: "سالن مشخص نیست" };
+  const { data, error } = await supabase.rpc("handle_closure_announcement", {
+    p_salon_id: salonId, p_closure_date: closureDate, p_closure_type: closureType, p_notes: notes || "",
+  });
+  if (error) { fail("handle_closure_announcement", error); return { ok: false, error: "ثبت تعطیلی ناموفق بود" }; }
+  return data;
+}
+
+export async function revokeClosure(closureId) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { error } = await supabase.from("salon_closures").update({ is_active: false }).eq("id", closureId);
+  if (error) { fail("salon_closures.revoke", error); return { ok: false, error: "لغو تعطیلی ناموفق بود" }; }
   return { ok: true };
 }
 

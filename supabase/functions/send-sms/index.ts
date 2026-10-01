@@ -120,16 +120,18 @@ Deno.serve(async (req) => {
   // salted hash (written by the RPC itself).
   if (action === "request_otp") {
     const phone = normalizePhone(payload.phone ?? "");
+    const salonId = payload.salon_id ?? null;
     if (!/^09\d{9}$/.test(phone)) return json({ ok: false, error: "شماره نامعتبر است" }, 400);
+    if (!salonId) return json({ ok: false, error: "سالن نامعتبر است" }, 400);
 
-    const { data, error } = await admin.rpc("request_booking_otp_internal", { p_phone: phone });
+    const { data, error } = await admin.rpc("request_booking_otp_internal", { p_phone: phone, p_salon_id: salonId });
     if (error) { console.error("[send-sms/request_otp] rpc error:", error.message); return json({ ok: false, error: "درخواست کد ناموفق بود" }, 500); }
     if (!data?.ok) return json({ ok: false, error: data?.error ?? "درخواست کد ناموفق بود" });
 
     const body = `کد تایید شما: ${data.otp}\nاین کد ظرف ۵ دقیقه منقضی می‌شود.`;
     const r = await sendOne(phone, body);
     await admin.from("sms_messages").insert({
-      to_phone: phone, body, kind: "otp", status: r.ok ? "sent" : "failed",
+      salon_id: salonId, to_phone: phone, body, kind: "otp", status: r.ok ? "sent" : "failed",
       provider: r.provider, provider_msg_id: r.providerMsgId ?? null,
       error: r.ok ? null : r.error, cost: r.cost ?? null,
       sent_at: r.ok ? new Date().toISOString() : null,
@@ -166,9 +168,24 @@ Deno.serve(async (req) => {
 
     if (!rows.length) return json({ ok: true, queued: 0, note: "زمان یادآوری گذشته بود" });
 
-    const { error } = await admin.from("sms_messages").insert(rows);
+    // salon_id is derived from each row's own appointment — never trusted
+    // from the caller — so a message can't be filed under a different
+    // salon than the appointment it's actually about.
+    const apptIds = [...new Set(rows.map((r) => r.appointment_id).filter(Boolean))];
+    let salonByAppt = {};
+    if (apptIds.length) {
+      const { data: appts } = await admin.from("appointments").select("id, salon_id").in("id", apptIds);
+      salonByAppt = Object.fromEntries((appts ?? []).map((a) => [a.id, a.salon_id]));
+    }
+    const rowsWithSalon = rows
+      .map((r) => ({ ...r, salon_id: r.appointment_id ? salonByAppt[r.appointment_id] : null }))
+      .filter((r) => r.salon_id); // an appointment_id that didn't resolve is dropped, not silently filed under no salon
+
+    if (!rowsWithSalon.length) return json({ ok: true, queued: 0, note: "زمان یادآوری گذشته بود" });
+
+    const { error } = await admin.from("sms_messages").insert(rowsWithSalon);
     if (error) { console.error("[send-sms/schedule] db error:", error.message); return json({ ok: false, error: "ثبت یادآوری ناموفق بود" }, 500); }
-    return json({ ok: true, queued: rows.length });
+    return json({ ok: true, queued: rowsWithSalon.length });
   }
 
   /* --------------------------------------------------------------- send ---- */
@@ -196,22 +213,41 @@ Deno.serve(async (req) => {
       continue;
     }
 
+    // Resolve which salon this message belongs to — from the appointment
+    // or campaign it references (never trusted from the caller for those
+    // cases, since it must match an existing row), or an explicit
+    // salon_id on the message itself for a truly ad-hoc send with neither.
+    let salonId = m.salon_id ?? null;
+    if (m.appointment_id) {
+      const { data: appt } = await admin.from("appointments").select("salon_id").eq("id", m.appointment_id).maybeSingle();
+      salonId = appt?.salon_id ?? null;
+    } else if (m.campaign_id) {
+      const { data: camp } = await admin.from("campaigns").select("salon_id").eq("id", m.campaign_id).maybeSingle();
+      salonId = camp?.salon_id ?? null;
+    }
+    if (!salonId) {
+      results.push({ to, ok: false, error: "سالن این پیام مشخص نیست" });
+      continue;
+    }
+
     // Idempotency: if this exact key was already processed (e.g. the client
     // retried a request whose response got lost on the way back), reuse
-    // that outcome instead of sending the SMS again.
+    // that outcome instead of sending the SMS again. Scoped to this salon
+    // — the same key could legitimately recur at a different salon.
     if (idempotencyKey) {
       const { data: existing } = await admin
-        .from("sms_messages").select("status").eq("idempotency_key", idempotencyKey).maybeSingle();
+        .from("sms_messages").select("status").eq("salon_id", salonId).eq("idempotency_key", idempotencyKey).maybeSingle();
       if (existing) {
         results.push({ to, ok: existing.status === "sent", idempotent: true });
         continue;
       }
     }
 
-    // Respect opt-out for anything marketing-flavoured.
+    // Respect opt-out for anything marketing-flavoured — scoped to this
+    // salon's own customer row for this phone, not any salon's.
     if (m.kind === "campaign" || m.kind === "loyalty") {
       const { data: cust } = await admin
-        .from("customers").select("sms_opt_out").eq("phone", to).maybeSingle();
+        .from("customers").select("sms_opt_out").eq("phone", to).eq("salon_id", salonId).maybeSingle();
       if (cust?.sms_opt_out) {
         results.push({ to, ok: false, error: "مشتری از دریافت پیام‌های تبلیغاتی انصراف داده" });
         continue;
@@ -221,6 +257,7 @@ Deno.serve(async (req) => {
     const r = await sendOne(to, body);
 
     auditRows.push({
+      salon_id: salonId,
       to_phone: to,
       idempotency_key: idempotencyKey,
       body,

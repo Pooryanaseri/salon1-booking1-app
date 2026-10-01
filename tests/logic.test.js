@@ -129,3 +129,51 @@ describe("category-matrix win-back candidate filtering", () => {
     expect(result.map((m) => m.phone).sort()).toEqual(["09121234567", "09121234568"]);
   });
 });
+
+// ------------------------------------------------------- customer segmentation (v2.23) --
+// Mirrors get_customer_rfm_segments()'s classification exactly — both the
+// personalization (avg_gap_days-adjusted recency limit) and the
+// inactive_after_days boundary that was previously collected/validated in
+// the UI but never actually used (confirmed dead against real Postgres —
+// see CHANGES.md v2.23).
+function personalLimit(recencyDefault, avgGapDays) {
+  return avgGapDays > 0 ? Math.max(recencyDefault, Math.round(avgGapDays * 1.5)) : recencyDefault;
+}
+function classifySegmentV223(recencyDays, frequency, personalLimitVal, loyalMinVisits, inactiveAfterDays) {
+  if (recencyDays <= personalLimitVal && frequency >= loyalMinVisits) return "champions";
+  if (recencyDays <= personalLimitVal && frequency < loyalMinVisits) return "new";
+  if (recencyDays > personalLimitVal && recencyDays <= inactiveAfterDays && frequency >= loyalMinVisits) return "at_risk";
+  return "inactive";
+}
+
+describe("customer segmentation: inactive_after_days is now a real boundary", () => {
+  it("a loyal customer lapsed WITHIN the grace window is at_risk", () => {
+    const limit = personalLimit(60, 0);
+    expect(classifySegmentV223(90, 5, limit, 4, 120)).toBe("at_risk");
+  });
+  it("the SAME loyal customer lapsed BEYOND the grace window is inactive, not at_risk", () => {
+    const limit = personalLimit(60, 0);
+    // This is the exact bug: previously "at_risk" regardless of how far
+    // past inactive_after_days the customer was.
+    expect(classifySegmentV223(200, 5, limit, 4, 120)).toBe("inactive");
+  });
+  it("a never-loyal, lapsed customer is inactive regardless of inactive_after_days", () => {
+    const limit = personalLimit(60, 0);
+    expect(classifySegmentV223(90, 1, limit, 4, 120)).toBe("inactive");
+  });
+});
+
+describe("customer segmentation: preview now matches live personalization", () => {
+  it("a customer whose natural visit cadence exceeds the flat default is still champions, not at_risk", () => {
+    // avg_gap_days=90 pushes their personal limit to round(90*1.5)=135,
+    // well past their 85-day recency — champions either way. Before the
+    // v2.23 fix, preview ignored avg_gap_days entirely and would have
+    // classified this same customer as at_risk (85 > flat 60).
+    const limit = personalLimit(60, 90);
+    expect(limit).toBe(135);
+    expect(classifySegmentV223(85, 5, limit, 4, 120)).toBe("champions");
+    // the old (buggy) preview logic, for contrast:
+    const oldFlatResult = 85 <= 60 && 5 >= 4 ? "champions" : "at_risk";
+    expect(oldFlatResult).toBe("at_risk"); // proves preview and live used to disagree
+  });
+});

@@ -11,6 +11,27 @@ const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const SUPABASE_ENABLED = Boolean(url && anonKey);
 
+// v2.24 — multi-tenant: every anonymous/public request needs to carry
+// which salon it's for (see src/lib/tenant.js). The salon isn't known
+// until AFTER this client exists (resolving it is itself a query through
+// this client), so it can't be a fixed header set once at createClient()
+// time — instead, a custom fetch wrapper injects whatever the current
+// value is on every outgoing request. setCurrentSalonId() is called once,
+// right after the URL's slug resolves; nothing else in the app needs to
+// change to pick this up.
+let currentSalonId = null;
+export function setCurrentSalonId(id) {
+  currentSalonId = id;
+}
+export function getCurrentSalonId() {
+  return currentSalonId;
+}
+function fetchWithSalonHeader(input, init = {}) {
+  const headers = new Headers(init.headers);
+  if (currentSalonId) headers.set("x-salon-id", currentSalonId);
+  return fetch(input, { ...init, headers });
+}
+
 export const supabase = SUPABASE_ENABLED
   ? createClient(url, anonKey, {
       auth: {
@@ -20,7 +41,7 @@ export const supabase = SUPABASE_ENABLED
         storageKey: "salon-auth",
       },
       realtime: { params: { eventsPerSecond: 3 } },
-      global: { headers: { "x-application-name": "salon-booking" } },
+      global: { headers: { "x-application-name": "salon-booking" }, fetch: fetchWithSalonHeader },
     })
   : null;
 

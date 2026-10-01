@@ -26,6 +26,7 @@ import {
   bootstrap, subscribeAppointments, fetchFullAppointments,
   verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, createPublicBooking, revokeBookingToken, requestBookingOtpTestMode,
   fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, fetchFeedbackStats,
+  fetchClosures, announceClosure, revokeClosure,
   syncCollection, syncApprovedDates, saveWorkingHours, clearStaffWorkingHours,
   insertOne, updateOne, deleteOne,
   fetchSmsTemplates, fetchSmsLog, fetchCustomers, fetchInactiveCustomers,
@@ -114,6 +115,14 @@ function hhmmToMin(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + m;
 }
+// v2.25 — the ONE rule for whether a booking counts toward revenue/income/
+// commission anywhere in this app. completed is the only eligible status:
+// pending_verification and archived_unconfirmed are unverified income and
+// must never be counted, no matter how "not cancelled" they look.
+function isRevenueEligible(status) {
+  return status === "completed";
+}
+
 function dateKey(d) {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
@@ -464,7 +473,7 @@ function uid() {
    `arm(false)` suppresses writes while we hydrate from the server,
    so loading data never echoes straight back as an UPDATE storm.
    ============================================================ */
-function usePersistedState(initial, persist, onError) {
+function usePersistedState(initial, persist) {
   const [value, setValue] = useState(initial);
   // `initial` may be a lazy initializer function (useState semantics), so seed the
   // ref from the already-resolved first-render value, never from `initial` itself.
@@ -478,22 +487,11 @@ function usePersistedState(initial, persist, onError) {
     ref.current = next;
     setValue(next);
     if (live.current) {
-      Promise.resolve(persist(prev, next)).catch((e) => {
-        console.error("[salon] ذخیره‌سازی ناموفق:", e);
-        // Roll back the optimistic update. Without this, a failed write
-        // (RLS denial, expired session, network blip — see syncCollection/
-        // syncApprovedDates, which now actually reject instead of silently
-        // swallowing the error) leaves the UI showing a change — e.g. a day
-        // marked "approved" — that never reached the database. Every later
-        // check that trusts the real DB state (like create_public_booking's
-        // own approved_dates lookup) then silently disagrees with what's on
-        // screen, and there was never any visible sign anything went wrong.
-        ref.current = prev;
-        setValue(prev);
-        onError?.(e);
-      });
+      Promise.resolve(persist(prev, next)).catch((e) =>
+        console.error("[salon] ذخیره‌سازی ناموفق:", e)
+      );
     }
-  }, [persist, onError]);
+  }, [persist]);
 
   const hydrate = useCallback((v) => { ref.current = v; setValue(v); }, []);
   const arm = useCallback((on) => { live.current = on; }, []);
@@ -690,17 +688,20 @@ const STATUS_META = {
   pending: { label: "در انتظار تایید", bg: "var(--color-info)", fg: "white", Icon: Clock, strike: false },
   confirmed: { label: "تایید شده", bg: "var(--color-accent-500)", fg: "oklch(16% 0.02 70)", Icon: CheckCircle2, strike: false },
   cancelled: { label: "لغو شده", bg: "var(--color-muted)", fg: "white", Icon: XCircle, strike: true },
+  cancelled_by_salon: { label: "لغو توسط سالن", bg: "var(--color-muted)", fg: "white", Icon: XCircle, strike: true },
   rescheduled: { label: "تغییر زمان", bg: "var(--color-accent-700)", fg: "white", Icon: RotateCcw, strike: false },
   reschedule_proposed: { label: "پیشنهاد تغییر زمان", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: Clock, strike: false },
   completed: { label: "انجام شده", bg: "var(--color-success)", fg: "white", Icon: Check, strike: false },
   no_show: { label: "عدم حضور", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: X, strike: false },
+  pending_verification: { label: "در انتظار تایید نهایی", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: Hourglass, strike: false },
+  archived_unconfirmed: { label: "بایگانی‌شده (تاییدنشده)", bg: "var(--color-muted)", fg: "white", Icon: CalendarX, strike: true },
 };
 
 /* ============================================================
    Small shared UI atoms
    ============================================================ */
 function Badge({ status }) {
-  const meta = STATUS_META[status];
+  const meta = STATUS_META[status] || { label: status || "—", bg: "var(--color-muted)", fg: "white", Icon: Info, strike: false };
   const Icon = meta.Icon;
   return (
     <span className="badge" style={{ background: meta.bg, color: meta.fg }}>
@@ -989,22 +990,12 @@ export default function App() {
   const [dataReady, setDataReady] = useState(false);
   const [backendNote, setBackendNote] = useState("");
 
-  // Shared failure notice for every usePersistedState-backed write below —
-  // previously a failed save (expired session, RLS denial, network blip)
-  // was only ever logged to the browser console; the manager saw the change
-  // "take" locally and had no way to know the database never actually got
-  // it. usePersistedState now also rolls the optimistic change back, so this
-  // toast and the visible state agree with each other.
-  function persistErrorNotice() {
-    setToast("ذخیره‌سازی تغییر روی سرور ناموفق بود — دوباره تلاش کنید و اتصال یا نشست ورود خود را بررسی کنید");
-  }
-
   // ---- collections wired to Postgres (setter contract unchanged) ------------
-  const [services, setServices, servicesCtl] = usePersistedState(SEED_SERVICES, persistServices, persistErrorNotice);
+  const [services, setServices, servicesCtl] = usePersistedState(SEED_SERVICES, persistServices);
   const [stylists, setStylists] = useState(SEED_STYLISTS);
-  const [workingHours, setWorkingHours, hoursCtl] = usePersistedState(SEED_WORKING_HOURS, persistSalonHours, persistErrorNotice);
-  const [staffWorkingHours, setStaffWorkingHours, staffHoursCtl] = usePersistedState({}, persistStaffHours, persistErrorNotice);
-  const [timeOff, setTimeOff, timeOffCtl] = usePersistedState([], persistTimeOff, persistErrorNotice);
+  const [workingHours, setWorkingHours, hoursCtl] = usePersistedState(SEED_WORKING_HOURS, persistSalonHours);
+  const [staffWorkingHours, setStaffWorkingHours, staffHoursCtl] = usePersistedState({}, persistStaffHours);
+  const [timeOff, setTimeOff, timeOffCtl] = usePersistedState([], persistTimeOff);
   // A day only accepts new customer bookings once the stylist has explicitly opened it —
   // by day, by week, or by month (all of which just add date keys to this same flat set).
   const [approvedDates, setApprovedDates, approvedCtl] = usePersistedState(() => {
@@ -1017,7 +1008,7 @@ export default function App() {
       arr.push(dateKey(d));
     }
     return arr;
-  }, persistApproved, persistErrorNotice);
+  }, persistApproved);
 
   const [bookings, setBookings] = useState(() => {
     const t = new Date();
@@ -3343,6 +3334,7 @@ function StylistEditModal({ stylist, onClose, onSave }) {
   const [gender, setGender] = useState(stylist?.gender || "female");
   const [phone, setPhone] = useState(stylist?.phone || "");
   const [password, setPassword] = useState(stylist?.password || "");
+  const [reminderHours, setReminderHours] = useState(stylist?.reminder_hours_before ?? 3);
 
   const phoneValid = /^09\d{9}$/.test(phone);
   // A password is only meaningful in demo mode (compared locally for the demo
@@ -3405,11 +3397,27 @@ function StylistEditModal({ stylist, onClose, onSave }) {
             رمز عبور اینجا تنظیم نمی‌شود — خودِ آرایشگر با همین شماره موبایل از «ورود آرایشگر ← ثبت‌نام» وارد می‌شود و رمز خودش را انتخاب می‌کند.
           </p>
         )}
+        <div>
+          <label className="muted" style={{ fontSize: 12 }}>چند ساعت قبل از هر نوبت، پیامک یادآوری ارسال شود؟</label>
+          <select
+            value={reminderHours}
+            onChange={(e) => setReminderHours(Number(e.target.value))}
+            style={{ width: "100%", padding: "10px 14px", fontSize: 14, marginTop: 4, fontWeight: 700 }}
+          >
+            <option value={1}>۱ ساعت قبل</option>
+            <option value={2}>۲ ساعت قبل</option>
+            <option value={3}>۳ ساعت قبل</option>
+            <option value={6}>۶ ساعت قبل</option>
+            <option value={12}>۱۲ ساعت قبل</option>
+            <option value={24}>۲۴ ساعت قبل</option>
+          </select>
+          <p className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>خودِ آرایشگر هم می‌تواند این را از پنل شخصی‌اش تغییر دهد</p>
+        </div>
         <button
           disabled={!canSave}
           className="tap accent-btn w-full"
           style={{ padding: 12, fontSize: 14, marginTop: 4 }}
-          onClick={() => canSave && onSave({ id: stylist?.id, name: name.trim(), gender, phone, password: needsPassword ? password : undefined, active: stylist?.active ?? true })}
+          onClick={() => canSave && onSave({ id: stylist?.id, name: name.trim(), gender, phone, password: needsPassword ? password : undefined, active: stylist?.active ?? true, reminder_hours_before: reminderHours })}
         >
           {stylist ? "ذخیره تغییرات" : "افزودن آرایشگر"}
         </button>
@@ -3421,8 +3429,7 @@ function StylistEditModal({ stylist, onClose, onSave }) {
 function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHours, timeOff, updateBooking, waitlist, removeWaitlistEntry }) {
   const [menuFor, setMenuFor] = useState(null);
   const [action, setAction] = useState(null);
-  const [verifyAction, setVerifyAction] = useState(null); // { booking, extraPatch? } — pending referral-verification prompt
-  const [priceAction, setPriceAction] = useState(null); // { booking, thenVerifyReferral } — service has no fixed price, ask staff what was actually charged
+  const [verifyAction, setVerifyAction] = useState(null); // { booking } — pending referral-verification prompt
   const [genderFilter, setGenderFilter] = useState("all");
   const [staffFilter, setStaffFilter] = useState(defaultStaffId || "all");
   const [view, setView] = useState("list"); // "list" | "timeline"
@@ -3440,19 +3447,10 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
   // immediately as before. Only when this customer was referred does staff
   // need to confirm (in ReferralVerifyModal) that they're genuinely new
   // before the referrer's reward can be awarded.
-  //
-  // A service with no fixed price ("قیمت در سالن اعلام می‌شود") leaves
-  // final_price null forever unless staff enters what was actually charged
-  // right here — every accounting/BI total filters on `final_price != null`,
-  // so without this step the visit is real revenue that accounting silently
-  // never counts.
   async function handleComplete(b) {
     setMenuFor(null);
-    const needsPrice = b.final_price == null;
     const referredBy = await fetchCustomerReferredBy(b.customer_phone);
-    if (needsPrice) {
-      setPriceAction({ booking: b, thenVerifyReferral: !!referredBy });
-    } else if (referredBy) {
+    if (referredBy) {
       setVerifyAction({ booking: b });
     } else {
       updateBooking(b.id, { status: "completed" }, "وضعیت به «انجام شده» تغییر کرد");
@@ -3472,7 +3470,7 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
       && (!locked || !w.staff_id || w.staff_id === defaultStaffId)
   );
 
-  const billable = todays.filter((b) => b.status !== "cancelled");
+  const billable = todays.filter((b) => isRevenueEligible(b.status));
   const summary = {
     total: todays.length,
     confirmed: todays.filter((b) => b.status === "confirmed").length,
@@ -3691,20 +3689,34 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
                     </div>
                   </div>
                 </div>
-                <button onClick={() => setMenuFor(menuFor === b.id ? null : b.id)} className="tap" style={{ width: 32, height: 32, borderRadius: "var(--radius-sm)" }}>
-                  <MoreVertical size={16} style={{ margin: "auto" }} />
-                </button>
+                {!["completed", "cancelled", "cancelled_by_salon", "no_show", "archived_unconfirmed"].includes(b.status) && (
+                  <button onClick={() => setMenuFor(menuFor === b.id ? null : b.id)} className="tap" style={{ width: 32, height: 32, borderRadius: "var(--radius-sm)" }}>
+                    <MoreVertical size={16} style={{ margin: "auto" }} />
+                  </button>
+                )}
               </div>
 
               {menuFor === b.id && (
                 <div className="fade-in card" style={{ position: "absolute", left: 12, top: 44, zIndex: 20, minWidth: 170, padding: 6, boxShadow: "0 8px 24px rgba(0,0,0,.15)" }}>
+                  {/* Only actions that are genuinely valid from the booking's
+                      CURRENT status are shown — not every action regardless
+                      of state (e.g. "لغو نوبت" on an already-cancelled
+                      booking, or "انجام شد" on an already-completed one). */}
                   {b.status === "pending" && (
                     <MenuItem positive label="تایید نوبت" onClick={() => { updateBooking(b.id, { status: "confirmed" }, "نوبت تایید شد؛ پیامک برای مشتری ارسال شد"); setMenuFor(null); }} />
                   )}
-                  <MenuItem label="تغییر زمان" onClick={() => { setAction({ type: "reschedule", booking: b }); setMenuFor(null); }} />
-                  <MenuItem label="انجام شد" onClick={() => handleComplete(b)} />
-                  <MenuItem label="عدم حضور" onClick={() => { updateBooking(b.id, { status: "no_show" }, "وضعیت به «عدم حضور» تغییر کرد"); setMenuFor(null); }} />
-                  <MenuItem danger label="لغو نوبت" onClick={() => { setAction({ type: "cancel", booking: b }); setMenuFor(null); }} />
+                  {["pending", "confirmed", "rescheduled"].includes(b.status) && (
+                    <MenuItem label="تغییر زمان" onClick={() => { setAction({ type: "reschedule", booking: b }); setMenuFor(null); }} />
+                  )}
+                  {["pending", "confirmed", "rescheduled", "pending_verification"].includes(b.status) && (
+                    <MenuItem label="انجام شد" onClick={() => handleComplete(b)} />
+                  )}
+                  {["pending", "confirmed", "rescheduled", "pending_verification"].includes(b.status) && (
+                    <MenuItem label="عدم حضور" onClick={() => { updateBooking(b.id, { status: "no_show" }, "وضعیت به «عدم حضور» تغییر کرد"); setMenuFor(null); }} />
+                  )}
+                  {["pending", "confirmed", "rescheduled", "reschedule_proposed"].includes(b.status) && (
+                    <MenuItem danger label="لغو نوبت" onClick={() => { setAction({ type: "cancel", booking: b }); setMenuFor(null); }} />
+                  )}
                 </div>
               )}
               </div>
@@ -3740,25 +3752,6 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
           }}
         />
       )}
-      {priceAction && (
-        <SetPriceModal
-          booking={priceAction.booking}
-          onClose={() => setPriceAction(null)}
-          onConfirm={(price) => {
-            const pricePatch = { final_price: price, original_price: price };
-            if (priceAction.thenVerifyReferral) {
-              setVerifyAction({ booking: priceAction.booking, extraPatch: pricePatch });
-            } else {
-              updateBooking(
-                priceAction.booking.id,
-                { status: "completed", ...pricePatch },
-                `وضعیت به «انجام شده» تغییر کرد؛ مبلغ ${formatToman(price)} در حسابداری ثبت شد`
-              );
-            }
-            setPriceAction(null);
-          }}
-        />
-      )}
       {verifyAction && (
         <ReferralVerifyModal
           booking={verifyAction.booking}
@@ -3766,7 +3759,7 @@ function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHou
           onConfirm={(verified) => {
             updateBooking(
               verifyAction.booking.id,
-              { status: "completed", referral_verified: verified, ...(verifyAction.extraPatch || {}) },
+              { status: "completed", referral_verified: verified },
               verified ? "وضعیت به «انجام شده» تغییر کرد؛ امتیاز معرف و مشتری ثبت شد" : "وضعیت به «انجام شده» تغییر کرد؛ بدون امتیاز معرفی"
             );
             setVerifyAction(null);
@@ -3812,40 +3805,6 @@ function MenuItem({ label, onClick, danger, positive }) {
     <button onClick={onClick} className="tap w-full" style={{ padding: "9px 12px", textAlign: "right", fontSize: 13, borderRadius: "var(--radius-sm)", color: danger ? "var(--color-danger)" : positive ? "var(--color-success)" : "var(--color-body)" }}>
       {label}
     </button>
-  );
-}
-
-// Shown when marking a booking "انجام شد" (completed) if its service has no
-// fixed price ("قیمت در سالن اعلام می‌شود" — hasPrice(service) is false).
-// Without this step final_price stays null forever and every accounting/BI
-// total (BITab, StaffTab, revenue charts — all filter on `final_price != null`)
-// silently drops the visit, even though the customer really paid something.
-function SetPriceModal({ booking, onClose, onConfirm }) {
-  const [amount, setAmount] = useState("");
-  const n = Number(amount);
-  const valid = amount !== "" && n > 0;
-  return (
-    <Modal title="ثبت مبلغ دریافتی" onClose={onClose}>
-      <p style={{ fontSize: 13, lineHeight: 1.8, marginBottom: 14 }}>
-        قیمت این خدمت «در سالن اعلام می‌شود» و مبلغ ثابتی ندارد. برای اینکه این نوبت در حسابداری و گزارش‌های درآمد
-        حساب شود، مبلغی که از <b>{booking.customer_name}</b> دریافت کردید را وارد کنید.
-      </p>
-      <label className="muted" style={{ fontSize: 12 }}>مبلغ دریافتی (تومان)</label>
-      <input
-        type="number" min={0} step={1000} autoFocus value={amount}
-        onChange={(e) => setAmount(e.target.value)}
-        placeholder="مثلاً ۳۵۰۰۰۰"
-        className="tabular" style={{ width: "100%", padding: "10px 14px", fontSize: 14, marginTop: 4 }}
-      />
-      <div className="flex gap-2 mt-4">
-        <button className="tap ghost-btn flex-1" style={{ padding: 11 }} onClick={onClose}>
-          انصراف
-        </button>
-        <button disabled={!valid} className="tap accent-btn flex-1" style={{ padding: 11 }} onClick={() => onConfirm(n)}>
-          ثبت و ادامه
-        </button>
-      </div>
-    </Modal>
   );
 }
 
@@ -4213,6 +4172,7 @@ function ServiceEditModal({ service, onClose, onSave }) {
   const [discountType, setDiscountType] = useState(service?.discount_type || "none");
   const [discountValue, setDiscountValue] = useState(service?.discount_value || 0);
   const [discountReason, setDiscountReason] = useState(service?.discount_reason || "");
+  const [cycleDays, setCycleDays] = useState(service?.average_cycle_days ? String(service.average_cycle_days) : "");
 
   const priceNum = price === "" ? null : Number(price);
   const priceSet = priceNum != null && priceNum > 0;
@@ -4338,6 +4298,19 @@ function ServiceEditModal({ service, onClose, onSave }) {
           )}
         </div>
 
+        <div>
+          <label className="muted" style={{ fontSize: 12 }}>فاصلهٔ معمول بین نوبت‌ها (روز) — اختیاری</label>
+          <input
+            type="number" min={1} step={1} value={cycleDays}
+            onChange={(e) => setCycleDays(e.target.value)}
+            placeholder="مثلاً ۳۰ روز برای کوتاهی مو"
+            className="tabular" style={{ width: "100%", padding: "10px 14px", fontSize: 14, marginTop: 4 }}
+          />
+          <p className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>
+            وقتی پر بشه، نزدیک این موعد برای مشتری‌هایی که نوبت آینده‌ای برای این خدمت ندارن، خودکار پیامک یادآوریِ رزرو مجدد ارسال می‌شه
+          </p>
+        </div>
+
         <button
           disabled={!name.trim()}
           className="tap accent-btn w-full mt-1"
@@ -4350,6 +4323,7 @@ function ServiceEditModal({ service, onClose, onSave }) {
             discount_type: priceSet ? discountType : "none",
             discount_value: priceSet ? discountValue : 0,
             discount_reason: priceSet ? discountReason.trim() : "",
+            average_cycle_days: cycleDays === "" ? null : Math.max(1, Number(cycleDays)),
           })}
         >
           {service ? "ذخیره تغییرات" : "افزودن خدمت"}
@@ -4362,6 +4336,86 @@ function ServiceEditModal({ service, onClose, onSave }) {
 /* ============================================================
    Schedule management tab (working hours + time-off)
    ============================================================ */
+// v2.26 — Smart Absence & Holiday Management. Self-contained (useData),
+// matching FeedbackStatsCard's pattern, rather than threading a new piece
+// of global state through ScheduleTab's existing prop chain. Distinct
+// from the simpler per-stylist/salon time-off mechanism just below it:
+// announcing a closure here actually cancels every affected confirmed/
+// rescheduled appointment on that date and queues a personalized
+// rebooking-link SMS to each customer — not just blocking future bookings.
+function ClosuresCard({ notify }) {
+  const { data: closures, loading, refetch } = useData(fetchClosures, [], { cacheKey: "salon_closures" });
+  const [date, setDate] = useState("");
+  const [type, setType] = useState("holiday");
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const TYPE_LABEL = { holiday: "تعطیلی رسمی", maintenance: "تعمیرات", personal_leave: "مرخصی" };
+
+  async function submit() {
+    if (!date) { notify("تاریخ را انتخاب کنید"); return; }
+    setSubmitting(true);
+    const res = await announceClosure(date, type, notes.trim());
+    setSubmitting(false);
+    if (!res.ok) { notify(res.error || "ثبت تعطیلی ناموفق بود"); return; }
+    notify(
+      res.affected_appointments > 0
+        ? `تعطیلی ثبت شد — ${toFa(res.affected_appointments)} نوبت لغو و پیامک رزرو مجدد برای مشتریان ارسال شد`
+        : "تعطیلی ثبت شد"
+    );
+    setDate(""); setNotes("");
+    refetch();
+  }
+
+  async function revoke(id) {
+    const res = await revokeClosure(id);
+    if (!res.ok) { notify(res.error || "لغو ناموفق بود"); return; }
+    notify("تعطیلی لغو شد");
+    refetch();
+  }
+
+  return (
+    <>
+      <p className="muted" style={{ fontSize: 13, marginBottom: 4 }}>تعطیلی سریع (لغو خودکار نوبت‌ها + پیامک رزرو مجدد)</p>
+      <p className="muted" style={{ fontSize: 11.5, marginBottom: 10, lineHeight: 1.7 }}>
+        برخلاف «تعطیلی‌های موقت» پایین، اعلام تعطیلی اینجا نوبت‌های تاییدشدهٔ همان روز را خودکار لغو می‌کند
+        و به هر مشتری پیامکی با لینک رزرو مجدد (با یک لمس) ارسال می‌شود.
+      </p>
+      <div className="card mb-3" style={{ padding: 12 }}>
+        <div className="flex gap-2 mb-2" style={{ flexWrap: "wrap" }}>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ flex: 1, minWidth: 140, padding: "9px 10px", fontSize: 12.5 }} />
+          <select value={type} onChange={(e) => setType(e.target.value)} style={{ flex: 1, minWidth: 120, padding: "9px 10px", fontSize: 12.5 }}>
+            {Object.entries(TYPE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </div>
+        <input
+          value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="یادداشت (اختیاری)"
+          style={{ width: "100%", padding: "9px 10px", fontSize: 12.5, marginBottom: 8 }}
+        />
+        <button disabled={!date || submitting} className="tap accent-btn w-full" style={{ padding: 10, fontSize: 13 }} onClick={submit}>
+          {submitting ? "در حال ثبت..." : "اعلام تعطیلی"}
+        </button>
+      </div>
+
+      {loading ? (
+        <p className="muted" style={{ fontSize: 12 }}>در حال بارگذاری...</p>
+      ) : (closures || []).length > 0 && (
+        <div className="flex flex-col gap-2 mb-3">
+          {closures.map((c) => (
+            <div key={c.id} className="card flex items-center justify-between" style={{ padding: "10px 12px" }}>
+              <div>
+                <p style={{ fontSize: 12.5, fontWeight: 700 }}>{jalaliLabel(parseDateKey(c.closure_date), { withWeekday: false })} — {TYPE_LABEL[c.closure_type]}</p>
+                {c.notes && <p className="muted" style={{ fontSize: 11 }}>{c.notes}</p>}
+              </div>
+              <button className="tap ghost-btn" style={{ fontSize: 11, padding: "5px 10px" }} onClick={() => revoke(c.id)}>لغو</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, currentStylistId, currentStylist, updateStylist, timeOff, setTimeOff, approvedDates, setApprovedDates, notify }) {
   const [newOffDate, setNewOffDate] = useState("");
   const [newOffReason, setNewOffReason] = useState("");
@@ -4380,6 +4434,34 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
       });
     } else {
       setWorkingHours((prev) => prev.map((w) => (w.day_of_week === day ? { ...w, ...patch } : w)));
+    }
+  }
+
+  // Per-stylist attendance confirmation — parallel to the manager's
+  // salon-wide "روزهای باز برای رزرو" calendar below, but for this one
+  // stylist's own presence on specific upcoming dates. Reuses time_offs
+  // (already scoped to this stylist and correctly persisted) rather than
+  // introducing a new concept: a day within the stylist's own weekly
+  // schedule is attending by default; a whole-day time-off entry for that
+  // date is what marks them absent.
+  function isMyWorkingDay(d) {
+    const wh = myHours.find((w) => w.day_of_week === schemaDayOf(d));
+    return !!wh && !wh.is_closed;
+  }
+  function isMyAttending(d) {
+    const k = dateKey(d);
+    return !myTimeOff.some((t) => t.date === k && t.start_min == null);
+  }
+  function toggleMyAttendance(d) {
+    if (!isMyWorkingDay(d)) return; // outside my weekly schedule — change the schedule itself, not a one-off exception here
+    const k = dateKey(d);
+    const existing = myTimeOff.find((t) => t.date === k && t.start_min == null);
+    if (existing) {
+      setTimeOff((prev) => prev.filter((t) => t.id !== existing.id));
+      notify("حضور شما در این روز دوباره تایید شد");
+    } else {
+      setTimeOff((prev) => [...prev, { id: uid(), date: k, reason: "", staff_id: currentStylistId, start_min: null, end_min: null }]);
+      notify("این روز به‌عنوان مرخصی ثبت شد");
     }
   }
   const newOffRangeValid = newOffAllDay || hhmmToMin(newOffEnd) > hhmmToMin(newOffStart);
@@ -4481,6 +4563,57 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
         ))}
       </div>
 
+      {currentStylistId && (
+        <>
+          <p className="muted" style={{ fontSize: 13, marginBottom: 4 }}>تایید روزهای حضور من</p>
+          <p className="muted" style={{ fontSize: 11.5, marginBottom: 10, lineHeight: 1.7 }}>
+            روزهایی که طبق برنامهٔ هفتگی‌تان کار می‌کنید، پیش‌فرض «حضور دارم» هستند —
+            روی هر روز بزنید تا آن را به‌عنوان مرخصی علامت بزنید یا حضورتان را دوباره تایید کنید.
+            روزهایی که در برنامهٔ هفتگی‌تان تعطیل است از اینجا قابل‌تغییر نیست.
+          </p>
+          <div className="card mb-6" style={{ padding: 12 }}>
+            <div className="flex items-center gap-3 mb-3" style={{ flexWrap: "wrap" }}>
+              <span className="flex items-center gap-1 muted" style={{ fontSize: 11 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 3, background: "var(--color-accent-500)", display: "inline-block" }} /> حضور دارم
+              </span>
+              <span className="flex items-center gap-1 muted" style={{ fontSize: 11 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 3, background: "var(--color-warning)", display: "inline-block" }} /> مرخصی
+              </span>
+              <span className="flex items-center gap-1 muted" style={{ fontSize: 11 }}>
+                <Lock size={9} /> خارج از برنامهٔ هفتگی
+              </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+              {upcomingDates.slice(0, 30).map((d) => {
+                const k = dateKey(d);
+                const workingDay = isMyWorkingDay(d);
+                const attending = workingDay && isMyAttending(d);
+                return (
+                  <button
+                    key={k}
+                    disabled={!workingDay}
+                    onClick={() => toggleMyAttendance(d)}
+                    className="tap tabular"
+                    title={!workingDay ? "خارج از برنامهٔ هفتگی شماست" : attending ? "علامت‌زدن به‌عنوان مرخصی" : "تایید دوبارهٔ حضور"}
+                    style={{
+                      padding: "6px 2px", borderRadius: "var(--radius-md)", textAlign: "center",
+                      border: `1px solid ${!workingDay ? "var(--color-border)" : attending ? "var(--color-accent-500)" : "var(--color-warning)"}`,
+                      background: !workingDay ? "var(--color-surface)" : attending ? "var(--color-accent-500)" : "var(--color-warning)",
+                      color: !workingDay ? "var(--color-muted)" : "white",
+                      opacity: !workingDay ? 0.4 : 1,
+                    }}
+                  >
+                    <div style={{ fontSize: 9, fontWeight: 700, opacity: 0.8 }}>{WEEKDAYS_FA_SHORT[d.getDay()]}</div>
+                    <div className="tabular" style={{ fontSize: 12.5, fontWeight: 800, marginTop: 1 }}>{toFa(jalaliDayNum(d))}</div>
+                    {!workingDay && <Lock size={9} style={{ margin: "2px auto 0" }} />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
       {!currentStylistId && (
         <>
           <p className="muted" style={{ fontSize: 13, marginBottom: 4 }}>روزهای باز برای رزرو</p>
@@ -4548,6 +4681,8 @@ function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaf
           </div>
         </>
       )}
+
+      {!currentStylistId && <ClosuresCard notify={notify} />}
 
       <p className="muted" style={{ fontSize: 13, marginBottom: 10 }}>
         {currentStylistId ? "مرخصی‌های شخصی شما" : "تعطیلی‌های موقت سالن"}
@@ -4672,7 +4807,7 @@ function AccountingTab({ bookings, services, stylists = [], expenses, addExpense
 
   const completed = rangeBookings.filter((b) => b.status === "completed");
   const upcoming = rangeBookings.filter((b) => ["pending", "confirmed", "rescheduled"].includes(b.status));
-  const cancelled = rangeBookings.filter((b) => b.status === "cancelled" || b.status === "no_show");
+  const cancelled = rangeBookings.filter((b) => b.status === "cancelled" || b.status === "cancelled_by_salon" || b.status === "no_show");
   const priced = (list) => list.filter((b) => b.final_price != null);
 
   const realizedRevenue = priced(completed).reduce((s, b) => s + b.final_price, 0);
@@ -5503,7 +5638,10 @@ function SegmentSettingsCard({ notify }) {
                 className="tabular" style={{ width: "100%", padding: "9px 10px", fontSize: 13, marginTop: 4 }}
               />
               {rangeValid ? (
-                <p className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>باید بزرگ‌تر از عدد «حداکثر روز وفادار» بالا باشد</p>
+                <p className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>
+                  مشتری وفاداری که بین آستانهٔ «وفادار» بالا و این عدد لپس کرده «در خطر ریزش» است؛
+                  فراتر از این عدد (یا اگر هیچ‌وقت وفادار نبوده) «غیرفعال» حساب می‌شود
+                </p>
               ) : (
                 <p style={{ fontSize: 10.5, marginTop: 3, color: "var(--color-danger)" }}>باید بزرگ‌تر از {toFa(recency)} باشد</p>
               )}
@@ -6814,12 +6952,11 @@ function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, 
    thing holding the کاوه‌نگار / ملی‌پیامک API key.
    ============================================================ */
 const AUDIENCES = [
-  { id: "today",        label: "نوبت‌های امروز",   Icon: CalendarCheck },
-  { id: "tomorrow",     label: "نوبت‌های فردا",    Icon: CalendarClock },
-  { id: "week",         label: "۷ روز آینده",      Icon: CalendarIcon },
-  { id: "all",          label: "همهٔ مشتری‌ها",     Icon: Users },
-  { id: "reactivation", label: "جذب مجدد",         Icon: Repeat2 },
-  { id: "manual",       label: "شمارهٔ دستی",      Icon: UserPlus },
+  { id: "today",    label: "نوبت‌های امروز",   Icon: CalendarCheck },
+  { id: "tomorrow", label: "نوبت‌های فردا",    Icon: CalendarClock },
+  { id: "week",     label: "۷ روز آینده",      Icon: CalendarIcon },
+  { id: "all",      label: "همهٔ مشتری‌ها",     Icon: Users },
+  { id: "manual",   label: "شمارهٔ دستی",      Icon: UserPlus },
 ];
 
 /* ============================================================
@@ -7104,13 +7241,6 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
   const [discount, setDiscount] = useState(15); // only used if the {{discount}} token is inserted
   const [allCustomers, setAllCustomers] = useState([]);
 
-  // ---- win-back / reactivation audience (phase 3 — was wired to the
-  // backend via fetchInactiveCustomers but had no way to reach it from
-  // this tab; AUDIENCES/recipients now have a real "reactivation" case) ----
-  const [inactiveDays, setInactiveDays] = useState(60);
-  const [inactiveCustomers, setInactiveCustomers] = useState([]);
-  const [inactiveLoading, setInactiveLoading] = useState(false);
-
   // ---- v2.13: "بهترین عملکرد" suggester ----
   const [suggestingBest, setSuggestingBest] = useState(false);
   const [bestSuggestion, setBestSuggestion] = useState(null); // { template_label, conversion_rate } — last suggestion shown
@@ -7222,17 +7352,6 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
     (async () => setAllCustomers(await fetchCustomers()))();
   }, [audience]);
 
-  useEffect(() => {
-    if (audience !== "reactivation") return;
-    let cancelled = false;
-    (async () => {
-      setInactiveLoading(true);
-      const rows = await fetchInactiveCustomers(inactiveDays);
-      if (!cancelled) { setInactiveCustomers(rows); setInactiveLoading(false); }
-    })();
-    return () => { cancelled = true; };
-  }, [audience, inactiveDays]);
-
   /* -------------------------------------------------- recipient resolution */
   const recipients = useMemo(() => {
     const svcName = (id) => (services.find((s) => s.id === id) || {}).name || "خدمت";
@@ -7288,18 +7407,6 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
       }));
     }
 
-    if (audience === "reactivation") {
-      return inactiveCustomers
-        .filter((c) => /^09\d{9}$/.test(c.phone || ""))
-        .map((c) => ({
-          phone: c.phone,
-          vars: {
-            name: c.name || "مشتری", days: String(c.days_since ?? inactiveDays),
-            discount: String(discount), points: "0", service: "", date: "", time: "", stylist: "", code: "",
-          },
-        }));
-    }
-
     // manual
     return [...new Set(
       manualNumbers.split(/[\s,،;\n]+/).map((x) => x.trim()).filter((x) => /^09\d{9}$/.test(x))
@@ -7307,7 +7414,7 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
       phone,
       vars: { name: "مشتری", discount: String(discount), points: "0", service: "", date: "", time: "", stylist: "", code: "" },
     }));
-  }, [audience, bookings, services, manualNumbers, allCustomers, inactiveCustomers, inactiveDays, discount]);
+  }, [audience, bookings, services, manualNumbers, allCustomers, discount]);
 
   const preview = recipients.length ? renderTemplate(body, recipients[0].vars) : renderTemplate(body, {});
   const parts = smsParts(preview);
@@ -7353,38 +7460,18 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
 
     setSending(true);
     const selectedTemplate = templates.find((t) => t.id === templateId);
-
-    // Reactivation sends are real win-back campaigns — write the
-    // campaigns/campaign_targets rows CampaignReturnRateCard already reads,
-    // so a booking from one of these customers is attributed and the
-    // return rate shows up there (same mechanism as the RFM quick-send cards).
-    let campaignId = null;
-    if (audience === "reactivation") {
-      const created = await createCampaign({
-        id: "cmp-" + Date.now().toString(36),
-        name: `جذب مجدد — بیش از ${inactiveDays} روز`,
-        inactive_days: inactiveDays,
-        discount_percent: usesDiscountToken ? discount : null,
-        template_id: selectedTemplate && !selectedTemplate.id?.startsWith("fallback-") ? selectedTemplate.id : null,
-        valid_until: null,
-        targeted_count: recipients.length,
-      });
-      campaignId = created?.id ?? null;
-      if (campaignId) await addCampaignTargets(campaignId, recipients.map((r) => r.phone));
-    }
-
     const campaignLog = await logCampaignSend({
       templateId: selectedTemplate?.id ?? null,
       templateLabel: selectedTemplate?.title || SMS_KIND_LABEL[selectedTemplate?.kind] || "پیام دستی",
-      segment: audience === "reactivation" ? "inactive" : null,
+      segment: null, // manual composer isn't segment-scoped
       totalSent: recipients.length,
     });
 
     const messages = recipients.map((r) => ({
       to: r.phone,
       body: renderTemplate(body, r.vars),
-      kind: audience === "reactivation" ? "campaign" : "custom",
-      campaign_id: campaignId,
+      kind: "custom",
+      campaign_id: null,
       campaign_log_id: campaignLog?.id ?? null,
     }));
 
@@ -7528,23 +7615,6 @@ function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegm
                 className="tabular fade-in"
                 style={{ width: "100%", padding: 11, fontSize: 13, marginTop: 12, minHeight: 74, resize: "vertical" }}
               />
-            )}
-
-            {audience === "reactivation" && (
-              <div className="fade-in flex items-center justify-between" style={{ marginTop: 12, padding: "8px 10px", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
-                <label className="muted flex items-center gap-1" style={{ fontSize: 11.5 }}>
-                  {inactiveLoading && <Loader2 size={11} style={{ animation: "salonSpin 1s linear infinite" }} />}
-                  بیش از چند روز بدون رزرو
-                </label>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number" min="1" max="365" value={inactiveDays}
-                    onChange={(e) => setInactiveDays(Math.max(1, Number(e.target.value) || 1))}
-                    className="tabular" style={{ width: 52, padding: "5px 6px", fontSize: 12, textAlign: "center" }}
-                  />
-                  <span className="muted" style={{ fontSize: 11 }}>روز</span>
-                </div>
-              </div>
             )}
 
             <div className="flex items-center justify-between" style={{ marginTop: 12 }}>

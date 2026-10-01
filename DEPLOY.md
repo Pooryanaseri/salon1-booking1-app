@@ -145,6 +145,8 @@ deploy:
 ```bash
 supabase functions deploy send-sms
 supabase functions deploy cron-reminders --no-verify-jwt
+supabase functions deploy weekly-reconciliation --no-verify-jwt
+supabase functions deploy predictive-rebooking-cron --no-verify-jwt
 ```
 
 با `SMS_DRY_RUN=true` هیچ اعتباری خرج نمی‌شود؛ متن پیام‌ها در

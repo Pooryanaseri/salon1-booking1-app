@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Star, CheckCircle2 } from "lucide-react";
-import { submitFeedback } from "./lib/api";
+import { submitFeedback, reportAppointmentNoShow } from "./lib/api";
 import { cancelScheduledReminders } from "./lib/sms";
 
 const TAGS = ["برخورد خوب", "کیفیت کار", "وقت‌شناسی", "محیط تمیز", "قیمت مناسب"];
@@ -12,6 +12,7 @@ export default function FeedbackPage({ bookingId }) {
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const [noShowDone, setNoShowDone] = useState(false);
   const [error, setError] = useState("");
 
   function toggleTag(t) {
@@ -27,6 +28,16 @@ export default function FeedbackPage({ bookingId }) {
     if (!res.ok) { setError(res.error); return; }
     cancelScheduledReminders(bookingId); // best-effort — don't block success on this
     setDone(true);
+  }
+
+  async function reportNoShow() {
+    setSubmitting(true);
+    setError("");
+    const res = await reportAppointmentNoShow(bookingId);
+    setSubmitting(false);
+    if (!res.ok) { setError(res.error); return; }
+    cancelScheduledReminders(bookingId);
+    setNoShowDone(true);
   }
 
   const wrap = {
@@ -45,6 +56,18 @@ export default function FeedbackPage({ bookingId }) {
           <CheckCircle2 size={52} color="#4caf7d" style={{ margin: "0 auto 14px" }} />
           <h2 style={{ fontSize: 18, marginBottom: 6 }}>ممنون از نظرتون!</h2>
           <p style={{ fontSize: 13.5, color: "#777" }}>نظر شما به ما کمک می‌کنه خدمات بهتری ارائه بدیم.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (noShowDone) {
+    return (
+      <div dir="rtl" style={wrap}>
+        <div style={card}>
+          <CheckCircle2 size={52} color="#4caf7d" style={{ margin: "0 auto 14px" }} />
+          <h2 style={{ fontSize: 18, marginBottom: 6 }}>ثبت شد</h2>
+          <p style={{ fontSize: 13.5, color: "#777" }}>متوجه شدیم این نوبت برگزار نشده.</p>
         </div>
       </div>
     );
@@ -108,6 +131,17 @@ export default function FeedbackPage({ bookingId }) {
           }}
         >
           {submitting ? "در حال ثبت..." : "ثبت نظر"}
+        </button>
+
+        <button
+          onClick={reportNoShow}
+          disabled={submitting}
+          style={{
+            width: "100%", padding: 8, marginTop: 10, borderRadius: 10, border: "none", cursor: "pointer",
+            background: "none", color: "#999", fontSize: 12, fontFamily: "inherit", textDecoration: "underline",
+          }}
+        >
+          این نوبت رو نداشتم
         </button>
       </div>
     </div>

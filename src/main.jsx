@@ -2,8 +2,44 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
 import FeedbackPage from "./FeedbackPage.jsx";
+import ReconciliationPage from "./ReconciliationPage.jsx";
+import BookingRecoveryPage from "./BookingRecoveryPage.jsx";
 import { SUPABASE_ENABLED } from "./lib/supabase.js";
 import { getSession, signOut } from "./lib/auth.js";
+import { slugFromLocation, resolveSalonFromSlug } from "./lib/tenant.js";
+
+// ----------------------------------------------------------------------------
+//  v2.24 — multi-tenant: resolves which salon this URL belongs to before
+//  anything else renders. Every screen below (booking flow, staff login,
+//  dashboards) is unchanged in shape — it just now always runs inside a
+//  known salon context, the same way it always assumed exactly one salon
+//  existed before this.
+// ----------------------------------------------------------------------------
+function TenantGate({ children }) {
+  const [state, setState] = React.useState({ status: "loading" });
+
+  React.useEffect(() => {
+    let cancelled = false;
+    resolveSalonFromSlug(slugFromLocation()).then((res) => {
+      if (cancelled) return;
+      setState(res.ok ? { status: "ready", salon: res.salon } : { status: "error", error: res.error });
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (state.status === "loading") return null; // instant in practice; avoids a flash for the common case
+  if (state.status === "error") {
+    return (
+      <div dir="rtl" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", fontFamily: "system-ui, sans-serif", textAlign: "center", padding: 24 }}>
+        <div>
+          <p style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>سالنی با این آدرس پیدا نشد</p>
+          <p style={{ fontSize: 13, color: "#888" }}>{state.error}</p>
+        </div>
+      </div>
+    );
+  }
+  return children;
+}
 
 // ----------------------------------------------------------------------------
 //  Idle + absolute session timeout (≈ L7). Only relevant for a real, logged
@@ -145,18 +181,26 @@ function OfflineBanner() {
 }
 
 const feedbackMatch = window.location.pathname.match(/^\/feedback\/([^/]+)\/?$/);
+const reconcileMatch = window.location.pathname.match(/^\/[^/]+\/reconcile\/?$/);
+const reconcileToken = reconcileMatch ? new URLSearchParams(window.location.search).get("token") : null;
+const bookRecoveryMatch = window.location.pathname.match(/^\/book\/?$/);
+const bookRecoveryToken = bookRecoveryMatch ? new URLSearchParams(window.location.search).get("token") : null;
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <ErrorBoundary>
       {feedbackMatch ? (
         <FeedbackPage bookingId={feedbackMatch[1]} />
+      ) : reconcileMatch ? (
+        <ReconciliationPage token={reconcileToken} />
+      ) : bookRecoveryMatch ? (
+        <BookingRecoveryPage token={bookRecoveryToken} />
       ) : (
-        <>
+        <TenantGate>
           <OfflineBanner />
           <IdleSessionGuard />
           <App />
-        </>
+        </TenantGate>
       )}
     </ErrorBoundary>
   </React.StrictMode>

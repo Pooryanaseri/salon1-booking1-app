@@ -4,7 +4,7 @@
 //  the `send-sms` Supabase Edge Function, which holds the secret server-side
 //  and writes an audit row into public.sms_messages.
 // ============================================================================
-import { supabase, SUPABASE_ENABLED } from "./supabase";
+import { supabase, SUPABASE_ENABLED, getCurrentSalonId } from "./supabase";
 
 export const SALON_NAME_SMS = import.meta.env.VITE_SALON_NAME || "آرایشگاه مانا";
 
@@ -103,5 +103,5 @@ export function cancelScheduledReminders(appointmentId) {
  * the only caller granted execute on request_booking_otp_internal.
  */
 export function requestBookingOtp(phone) {
-  return invoke({ action: "request_otp", phone });
+  return invoke({ action: "request_otp", phone, salon_id: getCurrentSalonId() });
 }

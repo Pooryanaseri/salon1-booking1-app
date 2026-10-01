@@ -1194,6 +1194,47 @@ begin
   end loop;
 end $$;
 
+-- v2.22: a narrow, additional insert policy letting a freshly-authenticated
+-- person (no users row yet — this can only be true once, at first
+-- registration) create exactly their own stylists profile during
+-- self-registration (StylistAuthPanel's "ثبت‌نام" flow). The phone in the
+-- row must match their own authenticated identity (the local part of
+-- auth.email(), which is always `${phone}@<domain>` for this app's
+-- synthetic-email auth model), so this can't be used to register a phone
+-- number other than the one they just proved ownership of via Supabase
+-- Auth signup. Purely additive to p_mgr_write above (RLS policies for the
+-- same command are OR'd together) — managers keep full existing access.
+drop policy if exists p_stylists_selfreg on public.stylists;
+create policy p_stylists_selfreg on public.stylists for insert
+  with check (
+    not exists (select 1 from public.users where id = auth.uid())
+    and split_part(coalesce(auth.email(), ''), '@', 1) = phone
+  );
+
+-- v2.22: 13 tables across the schema had zero explicit grants, relying
+-- entirely on Supabase's implicit default privileges (same fragility
+-- already fixed individually for appointments/working_hours/time_offs/
+-- approved_dates). Each grant below is derived directly from that table's
+-- own RLS policies above/below — nothing here loosens what RLS actually
+-- permits; it only makes the privilege model explicit and self-contained.
+grant select on public.audit_log to authenticated;
+grant select, insert, update, delete on public.campaigns to authenticated;
+grant select, insert, update, delete on public.campaign_targets to authenticated;
+grant select, insert, update, delete on public.customers to authenticated;
+grant select, insert, update, delete on public.expenses to authenticated;
+grant select, insert, update, delete on public.sms_templates to authenticated;
+grant select on public.loyalty_ledger to authenticated;
+grant select, insert on public.sms_messages to authenticated;
+grant select on public.loyalty_settings to anon, authenticated;
+grant insert, update, delete on public.loyalty_settings to authenticated;
+grant select on public.services to anon, authenticated;
+grant insert, update, delete on public.services to authenticated;
+grant select on public.stylists to anon, authenticated;
+grant insert, update, delete on public.stylists to authenticated;
+grant select, insert, update, delete on public.users to authenticated;
+grant select, insert on public.waitlist to anon, authenticated;
+grant delete on public.waitlist to authenticated;
+
 -- Schedule surfaces: managers do anything; a stylist edits only their own rows.
 drop policy if exists p_sched_write on public.working_hours;
 create policy p_sched_write on public.working_hours for all
@@ -1210,6 +1251,18 @@ create policy p_sched_write on public.time_offs for all
 drop policy if exists p_sched_write on public.approved_dates;
 create policy p_sched_write on public.approved_dates for all
   using (public.is_manager()) with check (public.is_manager());
+
+-- v2.21: explicit base grants — these three tables relied entirely on
+-- Supabase's implicit default privileges (same fragility already fixed
+-- for appointments above); without an explicit grant, a write that RLS
+-- would otherwise permit (e.g. a stylist saving their own hours) fails
+-- with a bare "permission denied" before RLS is even evaluated.
+grant select on public.working_hours to anon, authenticated;
+grant insert, update, delete on public.working_hours to authenticated;
+grant select on public.time_offs to anon, authenticated;
+grant insert, update, delete on public.time_offs to authenticated;
+grant select on public.approved_dates to anon, authenticated;
+grant insert, update, delete on public.approved_dates to authenticated;
 
 -- Back-office tables: no legitimate per-stylist scope — accounting,
 -- campaigns, SMS log/templates, and the full loyalty ledger are
@@ -1383,8 +1436,6 @@ language sql stable security definer set search_path = public as $fn$
   with settings as (
     select * from public.customer_segment_settings where id = 1
   ),
-  -- Gap between each customer's own consecutive completed visits (in days).
-  -- date - date in Postgres yields a plain integer day count directly.
   gaps as (
     select
       customer_phone,
@@ -1398,8 +1449,6 @@ language sql stable security definer set search_path = public as $fn$
     where gap_days is not null and gap_days > 0
     group by customer_phone
   ),
-  -- 80th percentile of total completed spend, among customers who have at
-  -- least one completed visit.
   monetary_p80 as (
     select percentile_cont(0.80) within group (order by monetary)::bigint as p80
     from public.customer_rfm_raw
@@ -1415,6 +1464,7 @@ language sql stable security definer set search_path = public as $fn$
         else s.loyal_recency_days
       end as personal_recency_limit,
       s.loyal_min_visits,
+      s.inactive_after_days,
       mp.p80
     from public.customer_rfm_raw raw
     left join avg_gaps ag on ag.customer_phone = raw.phone
@@ -1426,21 +1476,19 @@ language sql stable security definer set search_path = public as $fn$
     phone, name, sms_opt_out, recency_days, frequency, monetary,
     case
       when recency_days <= personal_recency_limit and frequency >= loyal_min_visits then 'champions'
-      when recency_days >  personal_recency_limit and frequency >= loyal_min_visits then 'at_risk'
       when recency_days <= personal_recency_limit and frequency <  loyal_min_visits then 'new'
+      when recency_days >  personal_recency_limit and recency_days <= inactive_after_days
+           and frequency >= loyal_min_visits then 'at_risk'
       else 'inactive'
     end as segment,
     case
       when recency_days <= personal_recency_limit and frequency >= loyal_min_visits then 'مشتریان وفادار'
-      when recency_days >  personal_recency_limit and frequency >= loyal_min_visits then 'در خطر ریزش'
       when recency_days <= personal_recency_limit and frequency <  loyal_min_visits then 'مشتریان جدید'
+      when recency_days >  personal_recency_limit and recency_days <= inactive_after_days
+           and frequency >= loyal_min_visits then 'در خطر ریزش'
       else 'غیرفعال'
     end as segment_fa,
-    avg_gap_days,
-    personal_recency_limit,
-    -- VIP only means anything within "champions" — a big spender who hasn't
-    -- been back in a year is a high-value at_risk/inactive customer, not a
-    -- VIP champion.
+    avg_gap_days, personal_recency_limit,
     (recency_days <= personal_recency_limit
        and frequency >= loyal_min_visits
        and monetary >= coalesce(p80, monetary + 1)) as is_vip
@@ -1448,207 +1496,47 @@ language sql stable security definer set search_path = public as $fn$
   order by monetary desc
   limit 500;
 $fn$;
-grant execute on function public.get_customer_rfm_segments() to authenticated;
 
--- Per-customer × per-service-category recency — a customer who is a
--- hair-color regular but hasn't had a facial in 8 months looks very
--- different line by line vs. as one blended average recency number.
-create or replace function public.get_customer_category_matrix()
-returns table (
-  phone text, name text, category text, category_fa text,
-  visit_count int, last_visit_days int, line_status text, line_status_fa text
-)
-language sql stable security definer set search_path = public as $fn$
-  with cat_stats as (
-    select
-      a.customer_phone as phone,
-      c.name,
-      s.category,
-      count(a.id)::int as visit_count,
-      extract(day from (now() - max(a.date)))::int as last_visit_days
-    from public.appointments a
-    join public.services s on s.id = a.service_id
-    join public.customers c on c.phone = a.customer_phone
-    where a.status = 'completed'
-    group by a.customer_phone, c.name, s.category
-  )
-  select
-    phone, name, category,
-    case category
-      when 'hair'             then 'مو'
-      when 'beard'             then 'ریش'
-      when 'color'             then 'رنگ'
-      when 'makeup'            then 'میکاپ'
-      when 'nails'             then 'ناخن'
-      when 'skin'              then 'پوست'
-      when 'permanent_makeup'  then 'خدمات دائم'
-      else category
-    end as category_fa,
-    visit_count, last_visit_days,
-    case
-      when last_visit_days <= 45 then 'active'
-      when last_visit_days <= 90 then 'at_risk'
-      else 'dormant'
-    end as line_status,
-    case
-      when last_visit_days <= 45 then 'فعال در این خط خدمت'
-      when last_visit_days <= 90 then 'در خطر ریزش در این خط خدمت'
-      else 'غیرفعال در این خط خدمت'
-    end as line_status_fa
-  from cat_stats
-  where public.is_manager()
-  order by phone, category
-  limit 2000;
-$fn$;
-grant execute on function public.get_customer_category_matrix() to authenticated;
-
--- v2.14/v2.18: customer feedback loop. Public insert (booking_id, an opaque
--- appointments.id, is the bearer token — same trust model as the
--- tracking-code lookup elsewhere), restricted to completed bookings, one
--- submission per booking. Read is manager-only — v2.14 originally shipped
--- as a standalone migration (not mirrored here per that task's explicit
--- "single migration file" instruction) and used is_staff() for read; v2.18
--- adds it here for a coherent fresh install and tightens read to
--- is_manager(), consistent with v2.15's "salon-wide reports blocked for
--- stylist" rule — feedback read is a quality metric across every
--- stylist's bookings, not scoped to one's own.
-create table if not exists public.feedbacks (
-  id         text primary key default 'fb-' || substr(md5(gen_random_uuid()::text), 1, 12),
-  booking_id text not null unique references public.appointments(id) on delete cascade,
-  rating     int not null check (rating between 1 and 5),
-  tags       text[] not null default '{}',
-  comment    text not null default '',
-  created_at timestamptz not null default now()
-);
-create index if not exists feedbacks_created_at_idx on public.feedbacks (created_at);
-alter table public.feedbacks enable row level security;
-drop policy if exists p_feedback_insert on public.feedbacks;
-create policy p_feedback_insert on public.feedbacks
-  for insert
-  with check (
-    exists (select 1 from public.appointments a where a.id = booking_id and a.status = 'completed')
-  );
-drop policy if exists p_feedback_read on public.feedbacks;
-create policy p_feedback_read on public.feedbacks
-  for select using (public.is_manager());
-grant select, insert on public.feedbacks to anon, authenticated;
-
-create or replace function public.get_feedback_stats()
-returns table (
-  total_count bigint, avg_rating numeric,
-  rating_1 bigint, rating_2 bigint, rating_3 bigint, rating_4 bigint, rating_5 bigint
-)
-language sql stable security definer set search_path = public as $fn$
-  select
-    count(*)::bigint as total_count,
-    round(avg(rating)::numeric, 2) as avg_rating,
-    count(*) filter (where rating = 1)::bigint as rating_1,
-    count(*) filter (where rating = 2)::bigint as rating_2,
-    count(*) filter (where rating = 3)::bigint as rating_3,
-    count(*) filter (where rating = 4)::bigint as rating_4,
-    count(*) filter (where rating = 5)::bigint as rating_5
-  from public.feedbacks
-  where public.is_manager();
-$fn$;
-grant execute on function public.get_feedback_stats() to authenticated;
-
--- v2.13: campaign conversion attribution — a separate, minimal AFTER
--- INSERT trigger, fully isolated from sync_customer_from_appointment()
--- (the existing booking trigger, which is untouched by this migration).
--- Time-based attribution: a booking counts as a conversion if that phone
--- was sent a campaign SMS within the preceding 7 days.
-create or replace function public.track_campaign_conversion() returns trigger
-language plpgsql security definer set search_path = public as $fn$
-declare matched_sms record;
-begin
-  if new.customer_phone !~ '^09[0-9]{9}$' then
-    return new;
-  end if;
-
-  select sm.id as sms_id, sm.campaign_log_id, sm.sent_at
-    into matched_sms
-    from public.sms_messages sm
-   where sm.to_phone = new.customer_phone
-     and sm.campaign_log_id is not null
-     and sm.status in ('sent', 'delivered')
-     and sm.sent_at >= now() - interval '7 days'
-   order by sm.sent_at desc
-   limit 1;
-
-  if matched_sms.campaign_log_id is not null then
-    insert into public.campaign_conversions
-      (campaign_log_id, customer_phone, appointment_id, sms_message_id, converted_at, days_to_convert)
-    values (
-      matched_sms.campaign_log_id, new.customer_phone, new.id, matched_sms.sms_id, now(),
-      greatest(0, extract(day from (now() - matched_sms.sent_at))::int)
-    )
-    on conflict (appointment_id) do nothing;
-  end if;
-
-  return new;
-end $fn$;
-
-drop trigger if exists appointments_track_conversion on public.appointments;
-create trigger appointments_track_conversion after insert on public.appointments
-  for each row execute function public.track_campaign_conversion();
-
--- v2.13: per-template conversion rate and attributed revenue. Revenue is
--- joined live from appointments.final_price at query time, not snapshotted,
--- so a later price change or completion always reflects accurately. Every
--- join is on an indexed key, and the result is one row per template (not
--- per message or per conversion), so this stays fast as send volume grows.
-create or replace function public.get_campaign_performance(p_template_id text default null)
-returns table (
-  template_id text, template_label text, segment text,
-  total_sent bigint, successful_count bigint,
-  total_conversions bigint, conversion_rate numeric,
-  attributed_revenue bigint
-)
-language sql stable security definer set search_path = public as $fn$
-  select
-    cl.template_id,
-    max(cl.template_label) as template_label,
-    max(cl.segment) as segment,
-    sum(cl.total_sent)::bigint as total_sent,
-    sum(cl.successful_count)::bigint as successful_count,
-    count(distinct cc.id)::bigint as total_conversions,
-    case when sum(cl.successful_count) = 0 then 0::numeric
-         else round(count(distinct cc.id)::numeric / sum(cl.successful_count) * 100, 1)
-    end as conversion_rate,
-    coalesce(sum(a.final_price) filter (where a.status = 'completed'), 0)::bigint as attributed_revenue
-  from public.campaign_logs cl
-  left join public.campaign_conversions cc on cc.campaign_log_id = cl.id
-  left join public.appointments a on a.id = cc.appointment_id
-  where public.is_manager()
-    and (p_template_id is null or cl.template_id = p_template_id)
-  group by cl.template_id
-  order by conversion_rate desc;
-$fn$;
-grant execute on function public.get_campaign_performance(text) to authenticated;
-
--- Preview a hypothetical set of thresholds (not yet saved) against live
--- customer data, without writing anything — lets a manager see the effect
--- of a change before committing to it.
 create or replace function public.preview_customer_segment_distribution(
   p_recency int, p_visits int, p_inactive int
 )
 returns table (segment text, segment_fa text, customer_count bigint, pct numeric)
 language sql stable security definer set search_path = public as $fn$
-  -- p_inactive is accepted for parameter symmetry with the 3-field settings
-  -- form (and to leave room for a future "hibernating beyond N days"
-  -- split), but the current 4-way classification is fully determined by
-  -- the recency/visits crossover alone, matching get_customer_rfm_segments()
-  -- exactly — it isn't referenced further in this query.
-  with classified as (
+  with gaps as (
+    select
+      customer_phone,
+      (date - lag(date) over (partition by customer_phone order by date))::int as gap_days
+    from public.appointments
+    where status = 'completed'
+  ),
+  avg_gaps as (
+    select customer_phone, avg(gap_days)::numeric as avg_gap_days
+    from gaps
+    where gap_days is not null and gap_days > 0
+    group by customer_phone
+  ),
+  with_limit as (
+    select
+      raw.recency_days, raw.frequency,
+      case
+        when coalesce(ag.avg_gap_days, 0) > 0
+          then greatest(p_recency, round(ag.avg_gap_days * 1.5)::int)
+        else p_recency
+      end as personal_limit
+    from public.customer_rfm_raw raw
+    left join avg_gaps ag on ag.customer_phone = raw.phone
+    where public.is_manager()
+  ),
+  classified as (
     select
       case
-        when raw.recency_days <= p_recency and raw.frequency >= p_visits then 'champions'
-        when raw.recency_days >  p_recency and raw.frequency >= p_visits then 'at_risk'
-        when raw.recency_days <= p_recency and raw.frequency <  p_visits then 'new'
+        when recency_days <= personal_limit and frequency >= p_visits then 'champions'
+        when recency_days <= personal_limit and frequency <  p_visits then 'new'
+        when recency_days >  personal_limit and recency_days <= p_inactive
+             and frequency >= p_visits then 'at_risk'
         else 'inactive'
       end as segment
-    from public.customer_rfm_raw raw
-    where public.is_manager()
+    from with_limit
   ),
   totals as (select count(*) as n from classified),
   counted as (

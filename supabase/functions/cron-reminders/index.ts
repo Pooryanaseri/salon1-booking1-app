@@ -95,6 +95,18 @@ Deno.serve(async (req) => {
     .limit(200);
 
   for (const msg of due ?? []) {
+    // v2.25: an appointment can change state (cancelled, no_show) in the
+    // window between when its reminder was queued and when it's actually
+    // due to send — recheck right before sending, not just when queuing.
+    if (msg.appointment_id && msg.kind === "reminder") {
+      const { data: appt } = await admin.from("appointments").select("status").eq("id", msg.appointment_id).maybeSingle();
+      if (appt && !["confirmed", "rescheduled"].includes(appt.status)) {
+        await admin.from("sms_messages").update({ status: "cancelled", error: `appointment status became '${appt.status}'` }).eq("id", msg.id);
+        report.drainFailed++;
+        continue;
+      }
+    }
+
     const r = await sendOne(msg.to_phone, msg.body);
     await admin.from("sms_messages").update({
       status: r.ok ? "sent" : "failed",

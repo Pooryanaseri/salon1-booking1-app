@@ -38,6 +38,62 @@ select cron.schedule(
   $$
 );
 
+-- =============================================================================
+--  Autopilot 2.0 (v2.25/v2.26) — بدون این ۴ زمان‌بندی، کل این بخش از اپ
+--  (چرخهٔ خودکار پس از نوبت، تطبیق هفتگی، موتور پیش‌بینی) هیچ‌وقت خودش
+--  اجرا نمی‌شه؛ فقط با فراخوانی دستی کار می‌کنه.
+-- =============================================================================
+
+-- هر ۲۰ دقیقه: نوبت‌های «تایید‌شده/تغییرزمان‌یافته»ای که زمانشون گذشته
+-- رو به «در انتظار تایید نهایی» منتقل می‌کنه.
+select cron.schedule(
+  'salon-transition-elapsed-appointments',
+  '*/20 * * * *',
+  $$ select public.transition_elapsed_appointments(); $$
+);
+
+-- هر شب ساعت ۴ بامداد: نوبت‌های «در انتظار تایید نهایی»ِ قدیمی‌تر از
+-- ۷ روز رو خودکار بایگانی می‌کنه (هرگز خودکار «تکمیل‌شده» نه).
+select cron.schedule(
+  'salon-archive-stale-pending-verifications',
+  '0 4 * * *',
+  $$ select public.archive_stale_pending_verifications(); $$
+);
+
+-- هر جمعه ساعت ۱۸: برای هر سالن، اگه نوبت تاییدنشده داره، لینک تطبیق
+-- پیامک می‌کنه؛ وگرنه خلاصهٔ درآمد هفتگی.
+select cron.schedule(
+  'salon-weekly-reconciliation',
+  '0 18 * * 5',
+  $$
+  select net.http_post(
+    url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/weekly-reconciliation',
+    headers := jsonb_build_object(
+                 'Content-Type',  'application/json',
+                 'Authorization', 'Bearer <SERVICE_ROLE>'
+               ),
+    body    := '{}'::jsonb
+  );
+  $$
+);
+
+-- هر روز ساعت ۱۰ صبح: مشتری‌هایی که به موعد تقریبی رزرو مجددشون
+-- رسیدن رو پیدا می‌کنه و پیامک رزرو مجدد می‌فرسته.
+select cron.schedule(
+  'salon-predictive-rebooking',
+  '0 10 * * *',
+  $$
+  select net.http_post(
+    url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/predictive-rebooking-cron',
+    headers := jsonb_build_object(
+                 'Content-Type',  'application/json',
+                 'Authorization', 'Bearer <SERVICE_ROLE>'
+               ),
+    body    := '{}'::jsonb
+  );
+  $$
+);
+
 -- بررسی زمان‌بندی‌ها:      select * from cron.job;
 -- تاریخچهٔ اجرا:            select * from cron.job_run_details order by start_time desc limit 20;
 -- حذف یک زمان‌بندی:        select cron.unschedule('salon-sms-reminders');
