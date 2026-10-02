@@ -239,6 +239,9 @@ begin
   foreach r in array array['postgres', 'supabase_admin'] loop
     if exists (select 1 from pg_roles where rolname = r) then
       execute format('alter default privileges for role %I in schema public revoke execute on functions from public, anon, authenticated', r);
+      -- PUBLIC's EXECUTE default is global — a per-schema revoke can't remove
+      -- it, so revoke it for the role as a whole too.
+      execute format('alter default privileges for role %I revoke execute on functions from public', r);
     end if;
   end loop;
 end $$;

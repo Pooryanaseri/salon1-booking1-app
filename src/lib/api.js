@@ -144,6 +144,17 @@ function fail(where, error) {
   return error || null;
 }
 
+// A failed WRITE must be visible: the UI updates optimistically, so a
+// silently failed save looked like it worked (that hid the missing
+// salon_id defaults from v2.24 to v2.33). App.jsx listens for this event
+// and shows a message.
+function failWrite(where, error) {
+  if (error && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("salon:save-error", { detail: { where, message: error.message || String(error) } }));
+  }
+  return fail(where, error);
+}
+
 const byId = (arr) => new Map((arr || []).map((x) => [x.id, x]));
 const shallowEqual = (a, b) => {
   const ka = Object.keys(a), kb = Object.keys(b);
@@ -208,11 +219,11 @@ export async function syncCollection(table, prev, next) {
   for (const id of before.keys()) if (!after.has(id)) deletes.push(id);
 
   const jobs = [];
-  if (inserts.length) jobs.push(supabase.from(table).upsert(inserts).then(({ error }) => fail(`${table}.insert`, error)));
+  if (inserts.length) jobs.push(supabase.from(table).upsert(inserts).then(({ error }) => failWrite(`${table}.insert`, error)));
   for (const row of updates) {
-    jobs.push(supabase.from(table).update(row).eq("id", row.id).then(({ error }) => fail(`${table}.update`, error)));
+    jobs.push(supabase.from(table).update(row).eq("id", row.id).then(({ error }) => failWrite(`${table}.update`, error)));
   }
-  if (deletes.length) jobs.push(supabase.from(table).delete().in("id", deletes).then(({ error }) => fail(`${table}.delete`, error)));
+  if (deletes.length) jobs.push(supabase.from(table).delete().in("id", deletes).then(({ error }) => failWrite(`${table}.delete`, error)));
   await Promise.all(jobs);
   invalidateCache(table);
 }
@@ -222,7 +233,7 @@ export async function insertOne(table, item) {
   if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from(table).upsert(map[table].toRow(item));
   invalidateCache(table);
-  return fail(`${table}.insertOne`, error);
+  return failWrite(`${table}.insertOne`, error);
 }
 
 export async function updateOne(table, id, patch) {
@@ -233,14 +244,14 @@ export async function updateOne(table, id, patch) {
   const slim = Object.fromEntries(Object.entries(row).filter(([k]) => allowed.has(k)));
   const { error } = await supabase.from(table).update(slim).eq("id", id);
   invalidateCache(table);
-  return fail(`${table}.updateOne`, error);
+  return failWrite(`${table}.updateOne`, error);
 }
 
 export async function deleteOne(table, id) {
   if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from(table).delete().eq("id", id);
   invalidateCache(table);
-  return fail(`${table}.deleteOne`, error);
+  return failWrite(`${table}.deleteOne`, error);
 }
 
 /* ------------------------------------------------- working hours (special) */
@@ -253,22 +264,22 @@ const whFromRow = (r) => ({
 
 export async function saveWorkingHours(staffId, hours) {
   if (!SUPABASE_ENABLED) return;
+  // v2.33: replaced server-side per salon — fixed ids like "wh-salon-0"
+  // collided between salons (working_hours.id is globally unique).
   const rows = (hours || []).map((h) => ({
-    id: `wh-${staffId || "salon"}-${h.day_of_week}`,
-    staff_id: staffId || null,
     day_of_week: h.day_of_week,
     start_time: h.start_time ?? "09:00",
     end_time: h.end_time ?? "21:00",
     is_closed: !!h.is_closed,
   }));
-  const { error } = await supabase.from("working_hours").upsert(rows, { onConflict: "id" });
-  return fail("working_hours.save", error);
+  const { error } = await supabase.rpc("save_working_hours", { p_staff_id: staffId || null, p_hours: rows });
+  return failWrite("working_hours.save", error);
 }
 
 export async function clearStaffWorkingHours(staffId) {
   if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from("working_hours").delete().eq("staff_id", staffId);
-  return fail("working_hours.clear", error);
+  return failWrite("working_hours.clear", error);
 }
 
 /* ------------------------------------------------ approved dates (special) */
@@ -279,8 +290,8 @@ export async function syncApprovedDates(prev, next) {
   const removed = [...before].filter((k) => !after.has(k)).map(keyToISO);
 
   const jobs = [];
-  if (added.length) jobs.push(supabase.from("approved_dates").upsert(added, { onConflict: "date" }).then(({ error }) => fail("approved_dates.add", error)));
-  if (removed.length) jobs.push(supabase.from("approved_dates").delete().in("date", removed).then(({ error }) => fail("approved_dates.remove", error)));
+  if (added.length) jobs.push(supabase.from("approved_dates").upsert(added, { onConflict: "salon_id,date" }).then(({ error }) => failWrite("approved_dates.add", error)));
+  if (removed.length) jobs.push(supabase.from("approved_dates").delete().in("date", removed).then(({ error }) => failWrite("approved_dates.remove", error)));
   await Promise.all(jobs);
 }
 

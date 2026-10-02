@@ -251,6 +251,14 @@ export default function App() {
     });
   }, [panelAuthed]);
 
+  // Any failed save to the server (see failWrite in lib/api.js) — the screen
+  // already shows the change, so say plainly that it didn't stick.
+  useEffect(() => {
+    const onSaveError = () => notify("ذخیره روی سرور ناموفق بود — اتصال را بررسی کنید و دوباره امتحان کنید");
+    window.addEventListener("salon:save-error", onSaveError);
+    return () => window.removeEventListener("salon:save-error", onSaveError);
+  }, []);
+
   // Full staff dataset after a restored session or a fresh login.
   async function loadStaffData(isCancelled = () => false) {
     const d = await fetchStaffData();
