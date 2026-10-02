@@ -17,7 +17,7 @@ import { SmsTab } from "./SmsTab";
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
    ============================================================ */
-export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange }) {
+export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange, onReminderHoursSaved }) {
   const [subTab, setSubTab] = useState("dashboard");
   const [pendingSmsSegment, setPendingSmsSegment] = useState(null);
   const currentStylist = stylists.find((s) => s.id === currentStylistId) || null;
@@ -140,6 +140,8 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           notify={notify}
           presetSegment={pendingSmsSegment}
           onConsumePresetSegment={() => setPendingSmsSegment(null)}
+          reminderHours={automation?.reminder_hours_before ?? 3}
+          onReminderHoursSaved={onReminderHoursSaved}
         />
       )}
       {subTab === "loyalty" && (

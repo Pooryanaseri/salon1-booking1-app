@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Eye, MessageSquareText, TrendingUp, History, Users, Zap, Send, Loader2, AlertTriangle, RefreshCw } from "lucide-react";
+import { Eye, MessageSquareText, TrendingUp, History, Users, Zap, Send, Loader2, AlertTriangle, RefreshCw, Clock } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { fetchSmsLog, fetchCustomers, fetchRfmSegments, logCampaignSend, updateCampaignLogResult, fetchCampaignPerformance, createCampaign, addCampaignTargets } from "../lib/api";
+import { fetchSmsLog, fetchCustomers, fetchRfmSegments, logCampaignSend, updateCampaignLogResult, fetchCampaignPerformance, createCampaign, addCampaignTargets, setReminderHours } from "../lib/api";
 import { sendBulkSms, renderTemplate, smsParts, SMS_PLACEHOLDERS } from "../lib/sms";
 import { toFa, jalaliLabel, formatClock, dateKey, parseDateKey } from "../lib/format";
 import { AUDIENCES } from "./LoyaltyTab";
@@ -15,7 +15,65 @@ export const SMS_SEGMENTS = [
   { id: "log", label: "تاریخچه", Icon: History, color: "var(--color-info)" },
 ];
 
-export function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegment, onConsumePresetSegment }) {
+// v2.39 — when the customer's reminder SMS goes out, for the whole salon.
+const REMINDER_HOUR_OPTIONS = [0, 1, 2, 3, 6, 12, 24];
+function ReminderTimingCard({ hours, onSaved, notify }) {
+  const [value, setValue] = useState(hours);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setValue(hours); }, [hours]);
+  async function change(h) {
+    const prev = value;
+    setValue(h); setSaving(true);
+    const res = await setReminderHours(h);
+    setSaving(false);
+    if (!res?.ok) { setValue(prev); notify(res?.error || "ذخیرهٔ زمان یادآوری ناموفق بود"); return; }
+    onSaved?.(h);
+    notify(h === 0
+      ? "پیامک یادآوری خاموش شد"
+      : `یادآوری ${toFa(h)} ساعت قبل از نوبت ارسال می‌شود${res.requeued ? ` — ${toFa(res.requeued)} یادآوری با زمان جدید تنظیم شد` : ""}`);
+  }
+  const exampleStart = 18 * 60;
+  return (
+    <div className="card mb-4" style={{ padding: 14 }}>
+      <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
+        <Clock size={15} color="var(--color-accent-500)" /> زمان پیامک یادآوری به مشتری
+      </p>
+      <p className="muted" style={{ fontSize: 11.5, marginTop: 2, marginBottom: 10, lineHeight: 1.8 }}>
+        برای همهٔ نوبت‌های تاییدشده خودکار ارسال می‌شود (همراه لینک «می‌آیم / نمی‌توانم بیایم»). تغییر آن، یادآوری نوبت‌های آینده را هم با زمان جدید تنظیم می‌کند.
+      </p>
+      <div className="flex gap-1.5 flex-wrap" role="radiogroup" aria-label="زمان یادآوری">
+        {REMINDER_HOUR_OPTIONS.map((h) => {
+          const active = value === h;
+          return (
+            <button
+              key={h}
+              role="radio"
+              aria-checked={active}
+              disabled={saving}
+              onClick={() => !active && change(h)}
+              className="tap tabular"
+              style={{
+                padding: "7px 12px", minHeight: 36, borderRadius: "var(--radius-full)", fontSize: 12.5, fontWeight: 700,
+                border: `1px solid ${active ? "var(--color-accent-500)" : "var(--color-border)"}`,
+                background: active ? "var(--color-accent-500)" : "var(--color-surface)",
+                color: active ? "white" : "var(--color-body)",
+              }}
+            >
+              {h === 0 ? "خاموش" : `${toFa(h)} ساعت قبل`}
+            </button>
+          );
+        })}
+      </div>
+      <p className="muted tabular" style={{ fontSize: 11.5, marginTop: 10 }}>
+        {value === 0
+          ? "پیامک یادآوری ارسال نمی‌شود."
+          : `مثال: برای نوبت ساعت ${formatClock(exampleStart)}، یادآوری ساعت ${formatClock(((exampleStart - value * 60) % 1440 + 1440) % 1440)}${value * 60 > exampleStart ? " روز قبل" : ""} ارسال می‌شود.`}
+      </p>
+    </div>
+  );
+}
+
+export function SmsTab({ bookings, services, stylists, smsTemplates, notify, presetSegment, onConsumePresetSegment, reminderHours = 3, onReminderHoursSaved }) {
   const [segment, setSegment] = useState("quick");
   const [audience, setAudience] = useState("today");
   const [templateId, setTemplateId] = useState("");
@@ -53,6 +111,8 @@ export function SmsTab({ bookings, services, stylists, smsTemplates, notify, pre
     setSegment("quick");
     setHighlightSegment(presetSegment);
     onConsumePresetSegment?.();
+    // only when a new preset arrives — the callback is a fresh arrow each render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetSegment]);
 
   async function sendSmartCampaign(segmentKey) {
@@ -283,6 +343,7 @@ export function SmsTab({ bookings, services, stylists, smsTemplates, notify, pre
   return (
     <div className="fade-in flex flex-col gap-3">
       <PanelSectionHeader Icon={MessageSquareText} title="پیامک" subtitle="کمپین‌های هوشمند، ارسال دستی، و تاریخچهٔ پیامک‌ها" color="var(--color-tab-panel)" />
+      <ReminderTimingCard hours={reminderHours} onSaved={onReminderHoursSaved} notify={notify} />
 
       {/* Segment switcher — three clear, organized sections instead of one long scroll */}
       <div className="flex gap-2">
