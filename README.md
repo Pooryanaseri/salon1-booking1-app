@@ -35,3 +35,4 @@ supabase/
     send-sms/              ارسال و صف‌گذاری
     cron-reminders/        ارسال یادآوری‌های سررسیده
 ```
+<!-- deploy trigger -->
