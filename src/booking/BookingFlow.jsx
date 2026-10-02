@@ -155,7 +155,16 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     const wh = whForId(stId, date);
     if (!wh || wh.is_closed) return "closed";
     if (isTimeOffForId(stId, date)) return "timeoff";
-    if (!isApproved(date)) return "notApproved";
+    if (!isApproved(date)) {
+      // With auto-open on, every day inside the window is open unless the
+      // salon closed it — so a missing day there means "closed", not "soon".
+      if (automation?.auto_open_days) {
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const ahead = Math.round((new Date(date).setHours(0, 0, 0, 0) - today.getTime()) / 86400000);
+        if (ahead < (automation.booking_window_days || 30)) return "closed";
+      }
+      return "notApproved";
+    }
     return null;
   }
   function dayBookingsForId(stId, date) {

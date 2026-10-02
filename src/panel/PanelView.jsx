@@ -178,7 +178,10 @@ export function StaffTab({ stylists, addStylist, updateStylist, removeStylist, n
       updateStylist(data.id, data);
       notify("مشخصات آرایشگر ویرایش شد");
     } else {
-      addStylist(makeSeedStylist(data));
+      // data.id is `undefined` for a new stylist — spreading it over the
+      // generated id left the record id-less, so the insert never persisted.
+      const { id: _unused, ...fields } = data;
+      addStylist(makeSeedStylist(fields));
     }
     setEditing(null);
   }
@@ -612,7 +615,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                   </div>
                 </div>
                 {!["completed", "cancelled", "cancelled_by_salon", "no_show", "archived_unconfirmed"].includes(b.status) && (
-                  <button onClick={() => setMenuFor(menuFor === b.id ? null : b.id)} className="tap" style={{ width: 32, height: 32, borderRadius: "var(--radius-sm)" }}>
+                  <button onClick={() => setMenuFor(menuFor === b.id ? null : b.id)} className="tap" aria-label={`عملیات نوبت ${b.customer_name || ""}`} aria-expanded={menuFor === b.id} style={{ width: 32, height: 32, borderRadius: "var(--radius-sm)" }}>
                     <MoreVertical size={16} style={{ margin: "auto" }} />
                   </button>
                 )}

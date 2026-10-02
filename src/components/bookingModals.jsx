@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey } from "../lib/format";
 import { DateStrip, Modal } from "./ui";
 import { fitsWithoutOverlap, isOccupied, occupiedEndFor, schemaDayOf } from "../app/shared";
@@ -31,8 +31,9 @@ export function ReferralVerifyModal({ booking, onClose, onConfirm }) {
   );
 }
 
+// The sheet itself is the confirmation step — a second "I understand"
+// checkbox on top of it was just one more tap.
 export function CancelModal({ booking, onClose, onConfirm, variant = "staff" }) {
-  const [confirmed, setConfirmed] = useState(false);
   return (
     <Modal title="لغو نوبت" onClose={onClose} danger>
       <p style={{ fontSize: 13.5, marginBottom: 14 }}>
@@ -43,20 +44,15 @@ export function CancelModal({ booking, onClose, onConfirm, variant = "staff" }) 
           </>
         ) : (
           <>
-            نوبت <b>{booking.customer_name}</b> ساعت <span className="tabular">{formatClock(booking.start_min)}</span> لغو می‌شود و پیامک اطلاع‌رسانی همراه با لینک رزرو مجدد برای مشتری ارسال خواهد شد.
+            نوبت <b>{booking.customer_name}</b> ساعت <span className="tabular">{formatClock(booking.start_min)}</span> لغو می‌شود و به مشتری پیامک اطلاع‌رسانی ارسال می‌شود.
           </>
         )}
       </p>
-      <label className="flex items-center gap-2" style={{ fontSize: 13, marginBottom: 16 }}>
-        <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} style={{ width: 16, height: 16 }} />
-        متوجه شدم و تایید می‌کنم
-      </label>
       <div className="flex gap-2">
         <button className="tap ghost-btn flex-1" style={{ padding: 12, fontWeight: 700 }} onClick={onClose}>بازگشت</button>
         <button
-          disabled={!confirmed}
           className="tap flex-1"
-          style={{ padding: 12, fontWeight: 700, borderRadius: "var(--radius-md)", background: "var(--color-danger)", color: "white", opacity: confirmed ? 1 : 0.5 }}
+          style={{ padding: 12, fontWeight: 700, borderRadius: "var(--radius-md)", background: "var(--color-danger)", color: "white" }}
           onClick={onConfirm}
         >
           بله، لغو کن
@@ -112,8 +108,10 @@ export function RescheduleModal({ booking, services, bookings, workingHours, sta
     return null;
   }
 
-  const dayBookings = useMemo(() => {
-    const dKey = dateKey(date);
+  // Per-date versions, so the strip can tell which days still have room and
+  // the sheet can open on one of them.
+  function dayBookingsFor(d) {
+    const dKey = dateKey(d);
     const sameDay = bookings.filter((b) => b.date === dKey && b.id !== booking.id && (b.status === "confirmed" || b.status === "pending" || b.status === "rescheduled" || b.status === "reschedule_proposed"));
     const scoped = booking.staff_id
       ? sameDay.filter((b) => b.staff_id === booking.staff_id)
@@ -125,22 +123,19 @@ export function RescheduleModal({ booking, services, bookings, workingHours, sta
       .filter((t) => t.date === dKey && t.start_min != null)
       .map((t) => ({ start_min: t.start_min, end_min: t.end_min, buffer_minutes: 0 }));
     return [...scoped, ...partialClosures];
-  }, [date, bookings, booking.id, booking.staff_id, booking.customer_gender, effectiveTimeOff]);
-
-  const wh = whFor(date);
-  const whClosed = !!unavailableReason(date);
-
-  const slotTicks = useMemo(() => {
-    if (whClosed) return [];
+  }
+  function ticksFor(d) {
+    if (!service || unavailableReason(d)) return [];
+    const wh = whFor(d);
     const start = hhmmToMin(wh.start_time);
     const end = hhmmToMin(wh.end_time);
-    const dKey = dateKey(date);
-    const isToday = dKey === dateKey(new Date());
+    const dayB = dayBookingsFor(d);
+    const isToday = dateKey(d) === dateKey(new Date());
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
 
     const candidates = new Set();
     for (let t = start; t + service.duration_minutes <= end; t += 15) candidates.add(t);
-    for (const b of dayBookings) {
+    for (const b of dayB) {
       const freeAt = occupiedEndFor(b);
       if (freeAt >= start && freeAt + service.duration_minutes <= end) candidates.add(freeAt);
     }
@@ -148,14 +143,36 @@ export function RescheduleModal({ booking, services, bookings, workingHours, sta
     const out = [];
     for (const t of Array.from(candidates).sort((a, b) => a - b)) {
       if (isToday && t <= nowMin + 10) continue;
-      const occupied = isOccupied(t, dayBookings);
-      const fits = fitsWithoutOverlap(t, service.duration_minutes, dayBookings, service.buffer_minutes || 0);
+      const occupied = isOccupied(t, dayB);
+      const fits = fitsWithoutOverlap(t, service.duration_minutes, dayB, service.buffer_minutes || 0);
       out.push({ t, occupied, fits });
     }
     return out;
-  }, [whClosed, wh, date, dayBookings, service]);
+  }
 
+  const dayBookings = useMemo(() => dayBookingsFor(date), // eslint-disable-next-line react-hooks/exhaustive-deps
+    [date, bookings, booking.id, booking.staff_id, booking.customer_gender, effectiveTimeOff]);
+  const whClosed = !!unavailableReason(date);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const slotTicks = useMemo(() => ticksFor(date), [date, dayBookings, service, workingHours, staffWorkingHours, timeOff, approvedDates]);
   const slots = useMemo(() => slotTicks.filter((x) => x.fits).map((x) => x.t), [slotTicks]);
+
+  const dayHasFree = useMemo(() => {
+    const map = {};
+    for (const d of days) map[dateKey(d)] = ticksFor(d).some((x) => x.fits);
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days, bookings, service, workingHours, staffWorkingHours, timeOff, approvedDates]);
+
+  // Open on the booking's own day only if it's still in range and has room;
+  // otherwise on the nearest day that does (it used to open on a past or
+  // closed day and leave the user to hunt).
+  useEffect(() => {
+    if (dayHasFree[dateKey(date)]) return;
+    const first = days.find((d) => dayHasFree[dateKey(d)]);
+    if (first) setDate(first);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (confirming) {
     return (
@@ -195,6 +212,7 @@ export function RescheduleModal({ booking, services, bookings, workingHours, sta
         onSelect={(d) => { setDate(d); setSlot(null); }}
         isClosedFn={(d) => !!unavailableReason(d)}
         reasonFn={unavailableReason}
+        isFullFn={(d) => !dayHasFree[dateKey(d)]}
         compact
       />
 
@@ -215,7 +233,7 @@ export function RescheduleModal({ booking, services, bookings, workingHours, sta
               : "سالن در این روز تعطیل است"}
           </p>
         )}
-        {!whClosed && slotTicks.length === 0 && <p className="muted" style={{ fontSize: 12.5, gridColumn: "1/-1" }}>زمانی برای این روز باقی نمانده</p>}
+        {!whClosed && slots.length === 0 && <p className="muted" style={{ fontSize: 12.5, gridColumn: "1/-1" }}>زمان خالی در این روز نیست — روز دیگری را انتخاب کنید</p>}
         {slotTicks.map(({ t, occupied, fits }) => (
           <button
             key={t}

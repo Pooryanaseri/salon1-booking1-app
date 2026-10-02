@@ -37,6 +37,17 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
+-- 0) The salon's own calendar date. The database runs in UTC, so between
+--    00:00 and 03:30 Tehran time current_date is still "yesterday".
+--    Override with: alter database postgres set app.timezone = '...';
+-- ----------------------------------------------------------------------------
+create or replace function public.salon_today() returns date
+language sql stable as $$
+  select (now() at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))::date
+$$;
+grant execute on function public.salon_today() to anon, authenticated;
+
+-- ----------------------------------------------------------------------------
 -- 1) Settings
 -- ----------------------------------------------------------------------------
 alter table public.app_settings add column if not exists auto_confirm_bookings boolean not null default true;
@@ -78,7 +89,7 @@ update public.appointments a
  where s.salon_id = a.salon_id
    and s.auto_confirm_bookings
    and a.status = 'pending'
-   and a.date >= current_date;
+   and a.date >= public.salon_today();
 
 -- ----------------------------------------------------------------------------
 -- 3) Rolling booking window
@@ -89,7 +100,7 @@ language plpgsql security definer set search_path = public as $fn$
 declare v_added int;
 begin
   insert into public.approved_dates (salon_id, date)
-  select s.salon_id, (current_date + g.i)::date
+  select s.salon_id, (public.salon_today() + g.i)::date
     from public.app_settings s
     join public.salons sa on sa.id = s.salon_id and sa.active
     cross join lateral generate_series(0, s.booking_window_days - 1) as g(i)
@@ -139,7 +150,7 @@ language sql immutable as $$
   select public.fa_digits(lpad((p_min / 60)::text, 2, '0') || ':' || lpad((p_min % 60)::text, 2, '0'))
 $$;
 
-create or replace function public.queue_daily_digests(p_date date default current_date)
+create or replace function public.queue_daily_digests(p_date date default public.salon_today())
 returns json
 language plpgsql security definer set search_path = public as $fn$
 declare
@@ -180,7 +191,7 @@ begin
         continue when exists (
           select 1 from public.sms_messages m
            where m.salon_id = v_set.salon_id and m.kind = 'daily_digest'
-             and m.to_phone = v_st.phone and m.created_at::date = current_date
+             and m.to_phone = v_st.phone and m.created_at > now() - interval '20 hours'
         );
 
         v_body := 'برنامهٔ امروز شما (' || public.fa_digits(v_count::text) || ' نوبت):' || E'\n' || v_lines
@@ -218,7 +229,7 @@ begin
           continue when exists (
             select 1 from public.sms_messages m
              where m.salon_id = v_set.salon_id and m.kind = 'daily_digest'
-               and m.to_phone = v_mgr.phone and m.created_at::date = current_date
+               and m.to_phone = v_mgr.phone and m.created_at > now() - interval '20 hours'
           );
           insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
           values (v_set.salon_id, v_mgr.phone, v_body, 'daily_digest', 'queued', now());

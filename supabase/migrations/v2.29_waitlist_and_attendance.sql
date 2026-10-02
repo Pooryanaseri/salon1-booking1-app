@@ -100,7 +100,7 @@ begin
   if new.status <> 'cancelled' or old.status not in ('pending', 'confirmed', 'rescheduled', 'reschedule_proposed') then
     return new;
   end if;
-  if new.date < current_date then
+  if new.date < public.salon_today() then
     return new;
   end if;
 
@@ -108,7 +108,7 @@ begin
   select name into v_salon_name from public.salons where id = new.salon_id;
 
   -- Same-day change: tell the stylist now (their morning digest is stale).
-  if new.date = current_date and new.staff_id is not null and coalesce(v_set.staff_daily_digest, false) then
+  if new.date = public.salon_today() and new.staff_id is not null and coalesce(v_set.staff_daily_digest, false) then
     select phone into v_staff_phone from public.stylists where id = new.staff_id and salon_id = new.salon_id;
     select name into v_service_name from public.services where id = new.service_id and salon_id = new.salon_id;
     if v_staff_phone ~ '^09[0-9]{9}$' then
@@ -253,7 +253,7 @@ language sql stable security definer set search_path = public as $fn$
       'start_min', a.start_min,
       'status', a.status,
       'customer_response', a.customer_response,
-      'active', a.status in ('pending', 'confirmed', 'rescheduled') and a.date >= current_date
+      'active', a.status in ('pending', 'confirmed', 'rescheduled') and a.date >= public.salon_today()
     )
   end
   from (select 1) as dummy
@@ -277,7 +277,7 @@ begin
   if v_appt.id is null then
     return json_build_object('ok', false, 'error', 'این لینک نامعتبر است');
   end if;
-  if v_appt.status not in ('pending', 'confirmed', 'rescheduled') or v_appt.date < current_date then
+  if v_appt.status not in ('pending', 'confirmed', 'rescheduled') or v_appt.date < public.salon_today() then
     return json_build_object('ok', false, 'error', 'این نوبت دیگر فعال نیست');
   end if;
 
