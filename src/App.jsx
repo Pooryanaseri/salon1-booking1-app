@@ -95,6 +95,26 @@ const FA_DIGITS = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
 function toFa(input) {
   return String(input).replace(/[0-9]/g, (d) => FA_DIGITS[+d]);
 }
+// Persian (۰-۹) and Arabic-Indic (٠-٩) keyboards type digits that /\D/ treats
+// as non-digits — without this, a customer typing their number on a Persian
+// keyboard sees nothing appear in the field. Converts them to ASCII first,
+// then keeps digits only.
+function digitsOnly(input, maxLen) {
+  const ascii = String(input)
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/\D/g, "");
+  return maxLen ? ascii.slice(0, maxLen) : ascii;
+}
+// Normalizes the common ways people write a mobile number (+98…, 0098…,
+// 9xxxxxxxxx) to the 09xxxxxxxxx form the rest of the app validates against.
+function normalizeMobile(input) {
+  let d = digitsOnly(input);
+  if (d.startsWith("0098") && d.length >= 13) d = "0" + d.slice(4);
+  else if (d.startsWith("98") && d.length >= 12) d = "0" + d.slice(2);
+  else if (d.startsWith("9") && d.length === 10) d = "0" + d;
+  return d.slice(0, 11);
+}
 function formatToman(n) {
   return toFa(Math.round(n).toLocaleString("en-US")) + " تومان";
 }
@@ -224,6 +244,10 @@ const TOKENS_CSS = `
   --color-body: oklch(88% 0.012 60);
   --color-heading: oklch(96% 0.008 60);
   --color-accent-500: oklch(73% 0.18 68);
+  /* Light tints used as backgrounds (e.g. the status banner) — without dark
+     versions they stayed near-white under light text and were unreadable. */
+  --color-accent-50: oklch(22% 0.04 65);
+  --color-accent-100: oklch(30% 0.06 65);
   --color-female-100: oklch(27% 0.05 10);
   --color-male-100: oklch(25% 0.035 225);
   --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.3);
@@ -231,7 +255,23 @@ const TOKENS_CSS = `
   --shadow-lg: 0 16px 32px -8px oklch(0% 0 0 / 0.55);
 }
 .salon-app * { font-family: var(--font-sans); box-sizing: border-box; }
+/* Button reset — without it, any button that doesn't set its own border/
+   background (e.g. the "بازگشت" links) shows the browser's default gray box.
+   :where() keeps specificity at zero so every class/inline style still wins. */
+.salon-app :where(button) { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 0; }
+.salon-app :where(button):disabled { cursor: not-allowed; }
+.salon-app :where(button, a, [role="tab"]):focus-visible { outline: 2px solid var(--color-accent-500); outline-offset: 2px; }
+/* iOS Safari zooms the whole page into any input under 16px on focus and
+   never zooms back out — keep form fields at 16px on phones. */
+@media (max-width: 640px) {
+  .salon-app input, .salon-app select, .salon-app textarea { font-size: 16px !important; }
+}
 .salon-app .tabular { font-variant-numeric: tabular-nums; }
+/* Primary action stays reachable at the bottom of long steps (time grid,
+   forms) instead of sitting below the fold. */
+.salon-app .sticky-cta {
+  position: sticky; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 20;
+}
 .salon-app .card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -743,6 +783,8 @@ function Toast({ message, onDone }) {
   if (!message) return null;
   return (
     <div
+      role="status"
+      aria-live="polite"
       className="fade-in tap"
       style={{
         position: "fixed", bottom: "calc(20px + env(safe-area-inset-bottom, 0px))", left: "50%", transform: "translateX(-50%)",
@@ -759,8 +801,22 @@ function Toast({ message, onDone }) {
 }
 
 function Modal({ title, onClose, children, danger, wide }) {
+  // Esc closes, and the page behind stops scrolling while the sheet is open.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={typeof title === "string" ? title : undefined}
       className="backdrop-in"
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 90 }}
       onClick={onClose}
@@ -779,7 +835,7 @@ function Modal({ title, onClose, children, danger, wide }) {
         <div className="sheet-handle" />
         <div className="flex items-center justify-between mb-4">
           <h3 style={{ fontSize: 17, color: danger ? "var(--color-danger)" : undefined }}>{title}</h3>
-          <button className="tap ghost-btn" style={{ width: 36, height: 36, padding: 0 }} onClick={onClose}>
+          <button className="tap ghost-btn" style={{ width: 36, height: 36, padding: 0 }} onClick={onClose} aria-label="بستن">
             <X size={18} style={{ margin: "auto" }} />
           </button>
         </div>
@@ -920,22 +976,38 @@ function DayTimeline({ startMin, endMin, blocks, selectedRange, compact }) {
 // Horizontal, RTL-aware date picker. Each day is a soft rounded card that lifts with a
 // tinted shadow when selected, dims and labels itself "تعطیل" when the salon is closed
 // that day, and shows a small dot under today's date when it isn't the active selection.
-function DateStrip({ days, selectedDate, onSelect, isClosedFn, reasonFn, accentColor = "var(--color-accent-500)", compact }) {
+function DateStrip({ days, selectedDate, onSelect, isClosedFn, reasonFn, isFullFn, accentColor = "var(--color-accent-500)", compact }) {
   const todayKey = dateKey(new Date());
   const size = compact ? 50 : 60;
+  const selectedKey = dateKey(selectedDate);
+  const stripRef = useRef(null);
+  // Keep the selected day in view — e.g. after jumping to the nearest open
+  // day, which may be well off-screen to the left.
+  useEffect(() => {
+    const el = stripRef.current?.querySelector(`[data-day="${selectedKey}"]`);
+    el?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }, [selectedKey]);
   return (
-    <div className="flex gap-2 scrollbar-none" style={{ overflowX: "auto", padding: "4px 2px 8px" }}>
-      {days.map((d) => {
+    <div ref={stripRef} className="flex gap-2 scrollbar-none" style={{ overflowX: "auto", padding: "4px 2px 8px" }}>
+      {days.map((d, i) => {
         const key = dateKey(d);
         const closed = isClosedFn(d);
+        const full = !closed && !!isFullFn?.(d);
         const reason = reasonFn ? reasonFn(d) : null;
-        const active = key === dateKey(selectedDate);
+        const active = key === selectedKey;
         const isToday = key === todayKey;
+        const { jd, jm } = gregorianToJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
+        // Month name on the first card and wherever a new Jalali month starts,
+        // so "۲" after "۳۰" doesn't read as going backwards.
+        const showMonth = i === 0 || jd === 1;
         return (
           <button
             key={key}
+            data-day={key}
             disabled={closed}
             onClick={() => onSelect(d)}
+            aria-pressed={active}
+            aria-label={`${jalaliLabel(d)}${closed ? " — تعطیل" : full ? " — پر" : ""}`}
             className="tap"
             style={{
               minWidth: size, width: size, flexShrink: 0, textAlign: "center",
@@ -944,21 +1016,23 @@ function DateStrip({ days, selectedDate, onSelect, isClosedFn, reasonFn, accentC
               border: `1px solid ${active ? accentColor : "var(--color-border)"}`,
               background: active ? accentColor : "var(--color-surface)",
               color: active ? "white" : closed ? "var(--color-muted)" : "var(--color-heading)",
-              opacity: closed ? 0.5 : 1,
+              opacity: closed ? 0.5 : full && !active ? 0.6 : 1,
               boxShadow: active ? `0 8px 16px -6px color-mix(in oklch, ${accentColor} 60%, transparent)` : "none",
               transform: active ? "translateY(-2px)" : "none",
             }}
           >
             <div style={{ fontSize: compact ? 9.5 : 10.5, fontWeight: 700, opacity: active ? 0.9 : 0.7, letterSpacing: 0.3 }}>
-              {WEEKDAYS_FA_SHORT[d.getDay()]}
+              {isToday ? "امروز" : WEEKDAYS_FA_SHORT[d.getDay()]}
             </div>
             {closed ? (
               <div style={{ fontSize: compact ? 9 : 9.5, fontWeight: 700, marginTop: 5 }}>{reason === "notApproved" ? "به‌زودی" : "تعطیل"}</div>
             ) : (
               <div className="tabular" style={{ fontSize: compact ? 14 : 16, fontWeight: 800, marginTop: 3 }}>{toFa(jalaliDayNum(d))}</div>
             )}
-            {isToday && !active && !closed && (
-              <div style={{ width: 4, height: 4, borderRadius: "50%", background: accentColor, margin: "4px auto 0" }} />
+            {!closed && (full || showMonth) && (
+              <div style={{ fontSize: compact ? 8.5 : 9, fontWeight: 700, marginTop: 1, opacity: 0.85, whiteSpace: "nowrap" }}>
+                {full ? "پر" : MONTHS_FA[jm - 1]}
+              </div>
             )}
           </button>
         );
@@ -971,8 +1045,31 @@ function DateStrip({ days, selectedDate, onSelect, isClosedFn, reasonFn, accentC
    Main App
    ============================================================ */
 export default function App() {
-  const [theme, setTheme] = useState("light");
+  // Remembers the visitor's own choice; on a first visit, follows the
+  // device's light/dark setting instead of always starting light.
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem("salon:theme");
+      if (saved === "light" || saved === "dark") return saved;
+    } catch { /* storage blocked — fall through */ }
+    return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+  useEffect(() => {
+    try { localStorage.setItem("salon:theme", theme); } catch { /* ignore */ }
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#1c1714" : "#c2703a");
+    // Match the page behind the app (overscroll, short pages) to the theme.
+    document.documentElement.style.colorScheme = theme;
+    document.body.style.background = theme === "dark" ? "#0f0b08" : "#f5f2ee";
+  }, [theme]);
   const [tab, setTab] = useState("book"); // book | track | panel
+  // Phone carried over from a just-finished booking, so "پیگیری نوبت" opens
+  // the dashboard with the number already filled in.
+  const [trackPhone, setTrackPhone] = useState("");
+  function switchTab(id) {
+    setTab(id);
+    setActiveSection(null);
+    window.scrollTo({ top: 0 });
+  }
   const [toast, setToast] = useState("");
   const [panelAuthed, setPanelAuthed] = useState(false);
   const [currentStylistId, setCurrentStylistId] = useState(null); // null = salon owner/manager
@@ -1432,7 +1529,7 @@ export default function App() {
   ];
 
   return (
-    <div className="salon-app" data-theme={theme} style={{ minHeight: 640, paddingBottom: 24 }}>
+    <div className="salon-app" data-theme={theme} style={{ minHeight: "100dvh", paddingBottom: 24 }}>
       <style>{TOKENS_CSS}</style>
 
       {/* Header — sticky, blurred; tabs live here at the top */}
@@ -1475,7 +1572,7 @@ export default function App() {
                   key={t.id}
                   role="tab"
                   aria-selected={active}
-                  onClick={() => { setTab(t.id); setActiveSection(null); }}
+                  onClick={() => switchTab(t.id)}
                   className="tap flex items-center justify-center gap-1.5"
                   style={{
                     flex: 1, padding: "9px 4px", borderRadius: "var(--radius-md)", fontSize: 12.5, fontWeight: active ? 800 : 700,
@@ -1514,10 +1611,10 @@ export default function App() {
         )}
 
         {dataReady && tab === "book" && (
-          <BookingFlow services={services} stylists={stylists} bookings={bookings} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} addBooking={addBooking} waitlist={waitlist} addWaitlistEntry={addWaitlistEntry} notify={notify} onSectionChange={setActiveSection} />
+          <BookingFlow services={services} stylists={stylists} bookings={bookings} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} addBooking={addBooking} waitlist={waitlist} addWaitlistEntry={addWaitlistEntry} notify={notify} onSectionChange={setActiveSection} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} />
         )}
         {dataReady && tab === "track" && (
-          <TrackView bookings={bookings} services={services} stylists={stylists} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} updateBooking={updateBooking} notify={notify} />
+          <TrackView bookings={bookings} services={services} stylists={stylists} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} updateBooking={updateBooking} notify={notify} initialPhone={trackPhone} />
         )}
         {dataReady && tab === "panel" && !panelAuthed && (
           <LoginScreen
@@ -1670,13 +1767,20 @@ function OwnerAuthPanel({ ownerAccount, registerOwner, notify, onSuccess }) {
 
       <div className="flex flex-col gap-3">
         <input
-          dir="ltr" inputMode="numeric" value={phone}
-          onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 11)); setError(""); }}
+          dir="ltr" type="tel" inputMode="tel" autoComplete="tel" value={phone}
+          onChange={(e) => { setPhone(normalizeMobile(e.target.value)); setError(""); }}
           placeholder="09xxxxxxxxx (نام کاربری)" className="tabular" style={{ width: "100%", padding: "12px 14px", fontSize: 14, textAlign: "center" }}
         />
         <input
           type="password" value={password}
+          autoComplete={authMode === "login" ? "current-password" : "new-password"}
+          aria-label="رمز عبور"
+          enterKeyHint="go"
           onChange={(e) => { setPassword(e.target.value); setError(""); }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || busy || !phoneValid || password.trim().length < 4) return;
+            (authMode === "login" ? handleLogin : handleRegister)();
+          }}
           placeholder="رمز عبور" style={{ width: "100%", padding: "12px 14px", fontSize: 14, textAlign: "center" }}
         />
       </div>
@@ -1800,13 +1904,20 @@ function StylistAuthPanel({ stylists, addStylist, notify, onSuccess }) {
 
       <div className="flex flex-col gap-3">
         <input
-          dir="ltr" inputMode="numeric" value={phone}
-          onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 11)); setError(""); }}
+          dir="ltr" type="tel" inputMode="tel" autoComplete="tel" value={phone}
+          onChange={(e) => { setPhone(normalizeMobile(e.target.value)); setError(""); }}
           placeholder="09xxxxxxxxx" className="tabular" style={{ width: "100%", padding: "12px 14px", fontSize: 14, textAlign: "center" }}
         />
         <input
           type="password" value={password}
+          autoComplete={authMode === "login" ? "current-password" : "new-password"}
+          aria-label="رمز عبور"
+          enterKeyHint="go"
           onChange={(e) => { setPassword(e.target.value); setError(""); }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || busy || !phoneValid || password.trim().length < 4 || (authMode === "register" && !name.trim())) return;
+            (authMode === "login" ? handleLogin : handleRegister)();
+          }}
           placeholder="رمز عبور" style={{ width: "100%", padding: "12px 14px", fontSize: 14, textAlign: "center" }}
         />
       </div>
@@ -1869,8 +1980,8 @@ function WaitlistJoinCard({ onJoin, alreadyJoined }) {
       ) : (
         <div className="flex flex-col gap-2">
           <input
-            dir="ltr" inputMode="numeric" value={phone}
-            onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 11))}
+            dir="ltr" type="tel" inputMode="tel" autoComplete="tel" value={phone}
+            onChange={(e) => setPhone(normalizeMobile(e.target.value))}
             placeholder="09xxxxxxxxx" className="tabular"
             style={{ width: "100%", padding: "10px 14px", fontSize: 14, textAlign: "center" }}
           />
@@ -1892,7 +2003,46 @@ function WaitlistJoinCard({ onJoin, alreadyJoined }) {
   );
 }
 
-function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingHours, timeOff, approvedDates, addBooking, waitlist, addWaitlistEntry, notify, onSectionChange }) {
+const BOOKING_STEP_LABELS = { 2: "انتخاب خدمت", 3: "انتخاب آرایشگر", 4: "تاریخ و ساعت", 5: "اطلاعات تماس", 6: "تایید نهایی" };
+
+// Groups a day's time slots so a long grid of 40+ buttons reads as three
+// short, scannable rows instead of one wall of numbers.
+const DAY_PERIODS = [
+  { id: "morning", label: "صبح", Icon: Sun, test: (t) => t < 12 * 60 },
+  { id: "afternoon", label: "ظهر و بعدازظهر", Icon: Sun, test: (t) => t >= 12 * 60 && t < 17 * 60 },
+  { id: "evening", label: "عصر و شب", Icon: Moon, test: (t) => t >= 17 * 60 },
+];
+
+// Builds a one-event .ics file — opens straight into the phone's calendar
+// app (iOS/Android/Google/Outlook all accept it), so the customer gets the
+// device's own reminder on top of the SMS one. Floating local time on
+// purpose: salon and customer are always in the same timezone.
+function downloadBookingIcs({ title, date, startMin, endMin, description }) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = (mins) => `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}T${pad(Math.floor(mins / 60))}${pad(mins % 60)}00`;
+  const esc = (v) => String(v || "").replace(/\\/g, "\\\\").replace(/[,;]/g, (c) => "\\" + c).replace(/\n/g, "\\n");
+  const now = new Date();
+  const dtstamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}T${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}Z`;
+  const ics = [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//salon-booking//FA", "CALSCALE:GREGORIAN",
+    "BEGIN:VEVENT",
+    `UID:${uid()}@salon-booking`, `DTSTAMP:${dtstamp}`,
+    `DTSTART:${stamp(startMin)}`, `DTEND:${stamp(endMin)}`,
+    `SUMMARY:${esc(title)}`, `DESCRIPTION:${esc(description)}`, `LOCATION:${esc(SALON_NAME)}`,
+    "BEGIN:VALARM", "TRIGGER:-PT2H", "ACTION:DISPLAY", `DESCRIPTION:${esc(title)}`, "END:VALARM",
+    "END:VEVENT", "END:VCALENDAR",
+  ].join("\r\n");
+  const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "salon-booking.ics";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingHours, timeOff, approvedDates, addBooking, waitlist, addWaitlistEntry, notify, onSectionChange, onTrack }) {
   const [step, setStep] = useState(1); // 1 gender, 2 service, 3 stylist, 4 date/time, 5 phone, 6 confirm, 7 done
   const [gender, setGender] = useState(null);
   const [category, setCategory] = useState("all");
@@ -1917,7 +2067,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
   const visibleServices = category === "all" ? sectionServices : sectionServices.filter((s) => s.category === category);
   const service = services.find((s) => s.id === serviceId);
   const section = gender ? SECTION_META[gender] : null;
-  const sectionStaff = stylists.filter((s) => s.active && s.gender === gender);
+  const sectionStaff = useMemo(() => stylists.filter((s) => s.active && s.gender === gender), [stylists, gender]);
   const selectedStaff = stylists.find((s) => s.id === staffId) || null;
   // Once a time is picked under "فرقی ندارد", this holds whichever stylist actually
   // got assigned to it — see the slot-click handler below.
@@ -2036,6 +2186,39 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
 
   const slots = useMemo(() => slotTicks.filter((x) => x.fits).map((x) => x.t), [slotTicks]);
 
+  // Which of the next 30 days still have at least one bookable time for this
+  // service/stylist — drives the "پر" marker on the date strip and the
+  // jump to the nearest open day below.
+  const dayHasFreeSlot = useMemo(() => {
+    const map = {};
+    if (!service) return map;
+    const ids = staffId ? [staffId] : sectionStaff.map((st) => st.id);
+    for (const d of days) {
+      map[dateKey(d)] = ids.some((id) => slotTicksForId(id, d).some((x) => x.fits));
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [service, staffId, sectionStaff, days, bookings, workingHours, staffWorkingHours, timeOff, approvedDates]);
+
+  function nextOpenDay(after) {
+    const afterKey = after ? after.getTime() : -Infinity;
+    return days.find((d) => d.getTime() > afterKey && dayHasFreeSlot[dateKey(d)]) || null;
+  }
+  function pickDate(d) {
+    setSelectedDate(d); setSelectedSlot(null); setAssignedStaffId(null);
+  }
+
+  // Landing on the time step used to always open on today — even when today
+  // is a closed day or already full — leaving the customer to hunt for an
+  // open date themselves. Jump straight to the nearest day with free time.
+  useEffect(() => {
+    if (step !== 4 || !service) return;
+    if (dayHasFreeSlot[dateKey(selectedDate)]) return;
+    const first = nextOpenDay(null);
+    if (first) pickDate(first);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, serviceId, staffId]);
+
   // Picking a time under "فرقی ندارد" must resolve to one real stylist right away —
   // otherwise the booking would be created with no one actually assigned to do it.
   // Ties go to whoever has fewer bookings that day, for a simple fairness spread.
@@ -2055,11 +2238,16 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
   // real customer_loyalty() RPC, same source of truth the "داشبورد من" tab
   // already uses, so a real returning customer is correctly recognized and
   // doesn't need to re-type their name on every booking.
+  const phoneRef = useRef(phone);
+  phoneRef.current = phone;
   async function lookupPhone() {
     setLookedUp(true);
     setLookingUp(true);
     if (SUPABASE_ENABLED) {
-      const res = await fetchCustomerLoyalty(phone);
+      const asked = phone;
+      const res = await fetchCustomerLoyalty(phone).catch(() => null);
+      // The number was edited while this was in flight — drop the stale answer.
+      if (phoneRef.current !== asked) return;
       if (res?.found && res.name?.trim()) {
         setKnownCustomer(true);
         setKnownCustomerName(res.name.trim());
@@ -2086,6 +2274,12 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
   }
 
   const phoneValid = /^09\d{9}$/.test(phone);
+  const canContinueContact = lookedUp && !lookingUp && phoneValid && (knownCustomer || !!name.trim());
+  // Recognize returning customers as soon as the number is complete.
+  useEffect(() => {
+    if (step === 5 && phoneValid && !lookedUp && !lookingUp) lookupPhone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, phone]);
   const discount = service ? discountAmountFor(service) : 0;
   // Loyalty discount stacks AFTER the service's own discount (applied to
   // the already-discounted price) — the common, customer-friendly pattern,
@@ -2137,7 +2331,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
       // once we reach here: the booking itself is confirmed.
       setResult(booking);
       notify("نوبت شما ثبت شد");
-      setStep(7);
+      goTo(7);
     } catch (err) {
       console.error("[salon] confirmBooking failed unexpectedly:", err);
       notify("ثبت نوبت با خطا مواجه شد — لطفاً دوباره امتحان کنید");
@@ -2146,19 +2340,82 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
     }
   }
 
-  function reset() {
+  function resetState() {
     setStep(1); setGender(null); setServiceId(null); setStaffId(null); setSelectedSlot(null); setAssignedStaffId(null); setPhone(""); setLookedUp(false);
+    setKnownCustomer(false); setKnownCustomerName(""); setLoyaltyDiscountPct(0);
     setName(""); setReferralCode(""); setResult(null); setCopied(false); setCategory("all");
     onSectionChange(null);
   }
 
+  /* ---- navigation ---------------------------------------------------------
+     The phone's back button (and browser back) used to leave the page
+     entirely from the middle of a booking. Now one guard history entry is
+     pushed when the flow starts; popping it steps back one screen (and
+     re-arms the guard while there's still somewhere to go back to). */
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  const skipPopRef = useRef(false);
+  const hasGuard = () => !!window.history.state?.salonBookingFlow;
+
+  function applyBackStep(target) {
+    if (target <= 1) { setServiceId(null); onSectionChange(null); }
+    setStep(Math.max(1, target));
+  }
+  function goTo(n) {
+    if (n >= 2 && !hasGuard()) window.history.pushState({ salonBookingFlow: true }, "");
+    setStep(n);
+  }
+  function goBack() {
+    const target = step - 1;
+    if (target <= 1 && hasGuard()) { window.history.back(); return; } // popstate handler applies it
+    applyBackStep(target);
+  }
+  function reset() {
+    if (hasGuard()) { skipPopRef.current = true; window.history.back(); }
+    resetState();
+  }
+  const onPopRef = useRef(null);
+  onPopRef.current = () => {
+    if (skipPopRef.current) { skipPopRef.current = false; return; }
+    const cur = stepRef.current;
+    if (cur <= 1) return;
+    if (cur === 7) { resetState(); return; } // never step back into an already-submitted confirm screen
+    const target = cur - 1;
+    applyBackStep(target);
+    if (target > 1) window.history.pushState({ salonBookingFlow: true }, "");
+  };
+  useEffect(() => {
+    const handler = () => onPopRef.current?.();
+    window.addEventListener("popstate", handler);
+    return () => {
+      window.removeEventListener("popstate", handler);
+      // Leaving the booking tab mid-flow: drop the guard entry so the next
+      // back press isn't silently swallowed.
+      if (hasGuard()) window.history.back();
+    };
+  }, []);
+
+  // Every new step starts at the top — otherwise picking a service near the
+  // bottom of a long list lands the next screen already scrolled down.
+  const firstRenderRef = useRef(true);
+  useEffect(() => {
+    if (firstRenderRef.current) { firstRenderRef.current = false; return; }
+    window.scrollTo({ top: 0 });
+  }, [step]);
+
   return (
     <div className="fade-in">
       {step >= 2 && step <= 6 && (
-        <div className="flex items-center gap-1 mb-4">
-          {[2, 3, 4, 5, 6].map((n) => (
-            <div key={n} style={{ flex: 1, height: 4, borderRadius: 2, background: n <= step ? "var(--color-accent-500)" : "var(--color-border)" }} />
-          ))}
+        <div className="mb-4" role="progressbar" aria-valuemin={1} aria-valuemax={5} aria-valuenow={step - 1} aria-valuetext={`مرحله ${step - 1} از ۵ — ${BOOKING_STEP_LABELS[step]}`}>
+          <div className="flex items-center justify-between mb-1.5" style={{ fontSize: 11.5 }}>
+            <span style={{ fontWeight: 700, color: "var(--color-heading)" }}>{BOOKING_STEP_LABELS[step]}</span>
+            <span className="muted tabular">مرحله {toFa(step - 1)} از {toFa(5)}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            {[2, 3, 4, 5, 6].map((n) => (
+              <div key={n} style={{ flex: 1, height: 4, borderRadius: 2, background: n <= step ? (section ? section.color : "var(--color-accent-500)") : "var(--color-border)", transition: "background var(--duration-base) var(--ease-standard)" }} />
+            ))}
+          </div>
         </div>
       )}
 
@@ -2175,7 +2432,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
               return (
                 <button
                   key={g}
-                  onClick={() => { setGender(g); setCategory("all"); setStep(2); onSectionChange(g); }}
+                  onClick={() => { setGender(g); setCategory("all"); goTo(2); onSectionChange(g); }}
                   className="tap card"
                   style={{ padding: 18, display: "flex", alignItems: "center", gap: 14, textAlign: "right", borderColor: "var(--color-border)" }}
                 >
@@ -2200,7 +2457,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
           <button
             className="flex items-center gap-1.5 mb-3"
             style={{ fontSize: 12.5, fontWeight: 700, color: section.color }}
-            onClick={() => { setStep(1); setServiceId(null); onSectionChange(null); }}
+            onClick={goBack}
           >
             <section.Icon size={14} /> {section.label} <span className="muted" style={{ fontWeight: 400 }}>· تغییر بخش</span>
           </button>
@@ -2235,7 +2492,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
               return (
                 <button
                   key={s.id}
-                  onClick={() => { setServiceId(s.id); setStaffId(null); setStep(3); }}
+                  onClick={() => { setServiceId(s.id); setStaffId(null); goTo(3); }}
                   className="tap card"
                   style={{ padding: 14, display: "flex", alignItems: "center", gap: 12, textAlign: "right" }}
                 >
@@ -2272,7 +2529,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
 
       {step === 3 && service && section && (
         <div>
-          <button className="muted flex items-center gap-1 mb-3" style={{ fontSize: 13 }} onClick={() => setStep(2)}>
+          <button className="muted flex items-center gap-1 mb-3" style={{ fontSize: 13 }} onClick={goBack}>
             <ArrowRight size={14} /> بازگشت
           </button>
           <h2 style={{ fontSize: 18, marginBottom: 4 }}>انتخاب آرایشگر</h2>
@@ -2280,7 +2537,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
 
           <div className="flex flex-col gap-2">
             <button
-              onClick={() => { setStaffId(null); setSelectedSlot(null); setAssignedStaffId(null); setStep(4); }}
+              onClick={() => { setStaffId(null); setSelectedSlot(null); setAssignedStaffId(null); goTo(4); }}
               className="tap card"
               style={{ padding: 14, display: "flex", alignItems: "center", gap: 12, textAlign: "right", borderColor: staffId === null ? section.color : "var(--color-border)" }}
             >
@@ -2296,7 +2553,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             {sectionStaff.map((st) => (
               <button
                 key={st.id}
-                onClick={() => { setStaffId(st.id); setSelectedSlot(null); setAssignedStaffId(null); setStep(4); }}
+                onClick={() => { setStaffId(st.id); setSelectedSlot(null); setAssignedStaffId(null); goTo(4); }}
                 className="tap card"
                 style={{ padding: 14, display: "flex", alignItems: "center", gap: 12, textAlign: "right", borderColor: staffId === st.id ? section.color : "var(--color-border)" }}
               >
@@ -2320,7 +2577,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
 
       {step === 4 && service && section && (
         <div>
-          <button className="muted flex items-center gap-1 mb-3" style={{ fontSize: 13 }} onClick={() => setStep(3)}>
+          <button className="muted flex items-center gap-1 mb-3" style={{ fontSize: 13 }} onClick={goBack}>
             <ArrowRight size={14} /> بازگشت
           </button>
           <h2 style={{ fontSize: 18, marginBottom: 4 }}>انتخاب تاریخ و ساعت</h2>
@@ -2331,9 +2588,10 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
           <DateStrip
             days={days}
             selectedDate={selectedDate}
-            onSelect={(d) => { setSelectedDate(d); setSelectedSlot(null); setAssignedStaffId(null); }}
+            onSelect={pickDate}
             isClosedFn={(d) => !!unavailableReason(d)}
             reasonFn={unavailableReason}
+            isFullFn={(d) => !dayHasFreeSlot[dateKey(d)]}
             accentColor={section.color}
           />
 
@@ -2341,21 +2599,38 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             {jalaliLabel(selectedDate)}
           </p>
 
-          {slotTicks.length === 0 ? (
-            <div className="card" style={{ padding: 20, textAlign: "center" }}>
-              <p className="muted" style={{ fontSize: 13 }}>
-                {unavailableReason(selectedDate) === "timeoff"
-                  ? "سالن در این روز تعطیل موقت است"
-                  : unavailableReason(selectedDate) === "notApproved"
-                  ? "این روز هنوز توسط سالن برای رزرو باز نشده است"
-                  : unavailableReason(selectedDate) === "closed"
-                  ? "سالن در این روز تعطیل است"
-                  : "زمان خالی برای امروز باقی نمانده"}
-              </p>
-            </div>
-          ) : null}
+          {slots.length === 0 && (() => {
+            const reason = unavailableReason(selectedDate);
+            const next = nextOpenDay(selectedDate);
+            const isTodaySel = dateKey(selectedDate) === dateKey(new Date());
+            return (
+              <div className="card fade-in mb-3" style={{ padding: 20, textAlign: "center" }}>
+                <CalendarX size={22} color="var(--color-muted)" style={{ margin: "0 auto 8px" }} />
+                <p className="muted" style={{ fontSize: 13 }}>
+                  {reason === "timeoff"
+                    ? "سالن در این روز تعطیل موقت است"
+                    : reason === "notApproved"
+                    ? "این روز هنوز توسط سالن برای رزرو باز نشده است"
+                    : reason === "closed"
+                    ? "سالن در این روز تعطیل است"
+                    : isTodaySel
+                    ? "زمان خالی برای امروز باقی نمانده"
+                    : "همهٔ زمان‌های این روز رزرو شده است"}
+                </p>
+                {next && (
+                  <button
+                    className="tap ghost-btn mt-3"
+                    style={{ padding: "8px 16px", fontSize: 12.5, fontWeight: 700, color: section.color, borderColor: section.color }}
+                    onClick={() => pickDate(next)}
+                  >
+                    نزدیک‌ترین روز خالی: {jalaliLabel(next, { short: true })} ({WEEKDAYS_FA_FULL[next.getDay()]})
+                  </button>
+                )}
+              </div>
+            );
+          })()}
 
-          {slotTicks.length === 0 && !unavailableReason(selectedDate) && (
+          {slots.length === 0 && !unavailableReason(selectedDate) && (
             <WaitlistJoinCard
               key={dateKey(selectedDate)}
               alreadyJoined={waitlist.some(
@@ -2377,7 +2652,7 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             />
           )}
 
-          {slotTicks.length > 0 && (
+          {slots.length > 0 && (
             <>
               <div className="flex items-center gap-3 mb-2 flex-wrap">
                 <span className="flex items-center gap-1 muted" style={{ fontSize: 11 }}>
@@ -2390,31 +2665,49 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
                   <span style={{ width: 10, height: 10, borderRadius: 3, background: section.color, display: "inline-block" }} /> زمان انتخابی شما
                 </span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
-                {slotTicks.map(({ t, occupied, fits }) => (
-                  <button
-                    key={t}
-                    disabled={!fits}
-                    title={occupied ? "این زمان رزرو شده است" : !fits ? "زمان کافی برای این خدمت باقی نمانده" : undefined}
-                    onClick={() => selectSlot(t)}
-                    className="tap tabular"
-                    style={{
-                      padding: "10px 2px", borderRadius: "var(--radius-md)", fontSize: 13, fontWeight: 700,
-                      border: `1px solid ${occupied ? "var(--color-danger)" : !fits ? "var(--color-border)" : selectedSlot === t ? section.color : "var(--color-border)"}`,
-                      background: occupied
-                        ? "color-mix(in oklch, var(--color-danger) 12%, var(--color-surface))"
-                        : !fits ? "var(--color-surface-raised)"
-                        : selectedSlot === t ? section.color : "var(--color-surface)",
-                      color: occupied ? "var(--color-danger)" : !fits ? "var(--color-muted)" : selectedSlot === t ? "white" : "var(--color-body)",
-                      textDecoration: occupied ? "line-through" : "none",
-                      opacity: !fits ? (occupied ? 0.8 : 0.55) : 1,
-                      cursor: !fits ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    {formatClock(t)}
-                  </button>
-                ))}
-              </div>
+              {DAY_PERIODS.map((period) => {
+                const ticks = slotTicks.filter(({ t }) => period.test(t));
+                if (ticks.length === 0) return null;
+                const freeCount = ticks.filter((x) => x.fits).length;
+                return (
+                  <div key={period.id} className="mb-3">
+                    <div className="flex items-center justify-between mb-2" style={{ fontSize: 12 }}>
+                      <span className="flex items-center gap-1.5" style={{ fontWeight: 700, color: "var(--color-heading)" }}>
+                        <period.Icon size={13} color={section.color} /> {period.label}
+                      </span>
+                      <span className="muted tabular" style={{ fontSize: 11 }}>
+                        {freeCount > 0 ? `${toFa(freeCount)} زمان خالی` : "پر"}
+                      </span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+                      {ticks.map(({ t, occupied, fits }) => (
+                        <button
+                          key={t}
+                          disabled={!fits}
+                          title={occupied ? "این زمان رزرو شده است" : !fits ? "زمان کافی برای این خدمت باقی نمانده" : undefined}
+                          aria-pressed={selectedSlot === t}
+                          onClick={() => selectSlot(t)}
+                          className="tap tabular"
+                          style={{
+                            padding: "10px 2px", borderRadius: "var(--radius-md)", fontSize: 13, fontWeight: 700,
+                            border: `1px solid ${occupied ? "var(--color-danger)" : !fits ? "var(--color-border)" : selectedSlot === t ? section.color : "var(--color-border)"}`,
+                            background: occupied
+                              ? "color-mix(in oklch, var(--color-danger) 12%, var(--color-surface))"
+                              : !fits ? "var(--color-surface-raised)"
+                              : selectedSlot === t ? section.color : "var(--color-surface)",
+                            color: occupied ? "var(--color-danger)" : !fits ? "var(--color-muted)" : selectedSlot === t ? "white" : "var(--color-body)",
+                            textDecoration: occupied ? "line-through" : "none",
+                            opacity: !fits ? (occupied ? 0.8 : 0.55) : 1,
+                            cursor: !fits ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {formatClock(t)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </>
           )}
 
@@ -2438,34 +2731,57 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             </p>
           )}
 
-          <button disabled={selectedSlot == null} onClick={() => setStep(5)} className="tap accent-btn w-full mt-5" style={{ padding: "13px" }}>
-            ادامه
-          </button>
+          <div className="sticky-cta mt-5">
+            <button disabled={selectedSlot == null} onClick={() => goTo(5)} className="tap accent-btn w-full" style={{ padding: "13px" }}>
+              {selectedSlot == null
+                ? "یک ساعت را انتخاب کنید"
+                : `ادامه — ${jalaliLabel(selectedDate, { short: true })}، ساعت ${formatClock(selectedSlot)}`}
+            </button>
+          </div>
         </div>
       )}
 
       {step === 5 && service && (
         <div>
-          <button className="muted flex items-center gap-1 mb-3" style={{ fontSize: 13 }} onClick={() => setStep(4)}>
+          <button className="muted flex items-center gap-1 mb-3" style={{ fontSize: 13 }} onClick={goBack}>
             <ArrowRight size={14} /> بازگشت
           </button>
           <h2 style={{ fontSize: 18, marginBottom: 4 }}>شماره تماس</h2>
-          <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>برای پیگیری و اطلاع‌رسانی نوبت لازم است</p>
+          <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>پیامک تایید و یادآوری نوبت به این شماره ارسال می‌شود</p>
 
-          <div className="flex gap-2">
+          <form
+            onSubmit={(e) => { e.preventDefault(); if (canContinueContact) goTo(6); }}
+            noValidate
+          >
+          <label htmlFor="booking-phone" className="muted" style={{ fontSize: 12 }}>شماره موبایل</label>
+          <div style={{ position: "relative", marginTop: 4 }}>
             <input
+              id="booking-phone"
               dir="ltr"
-              inputMode="numeric"
+              type="tel" inputMode="tel" autoComplete="tel"
+              enterKeyHint="next"
+              autoFocus
               value={phone}
-              onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 11)); setLookedUp(false); setKnownCustomer(false); setKnownCustomerName(""); }}
+              onChange={(e) => { setPhone(normalizeMobile(e.target.value)); setLookedUp(false); setLookingUp(false); setKnownCustomer(false); setKnownCustomerName(""); }}
               placeholder="09xxxxxxxxx"
               className="tabular"
-              style={{ flex: 1, padding: "11px 14px", fontSize: 14, textAlign: "left" }}
+              aria-invalid={phone.length === 11 && !phoneValid}
+              style={{ width: "100%", padding: "11px 14px 11px 40px", fontSize: 14, textAlign: "left" }}
             />
-            <button disabled={!phoneValid || lookingUp} onClick={lookupPhone} className="tap ghost-btn" style={{ padding: "0 16px", fontSize: 13, fontWeight: 700 }}>
-              {lookingUp ? "..." : "بررسی"}
-            </button>
+            {/* Lookup now runs on its own the moment the number is complete —
+                no separate "بررسی" tap needed. */}
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", display: "flex" }} aria-hidden="true">
+              {lookingUp ? <Loader2 size={16} className="salon-spin" color="var(--color-muted)" />
+                : lookedUp && phoneValid ? <CheckCircle2 size={16} color="var(--color-success)" /> : null}
+            </span>
           </div>
+          {phone.length > 0 && !phoneValid && (
+            <p className="muted tabular" style={{ fontSize: 11.5, marginTop: 6 }}>
+              {phone.length === 11 || !phone.startsWith("09")
+                ? "شماره باید با ۰۹ شروع شود و ۱۱ رقم باشد"
+                : `${toFa(11 - phone.length)} رقم دیگر`}
+            </p>
+          )}
 
           {lookedUp && knownCustomer && (
             <div className="card fade-in mt-3" style={{ padding: 12, display: "flex", alignItems: "center", gap: 10 }}>
@@ -2477,12 +2793,13 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
           {lookedUp && !knownCustomer && phoneValid && (
             <div className="fade-in mt-3 flex flex-col gap-3">
               <div>
-                <label className="muted" style={{ fontSize: 12 }}>نام و نام‌خانوادگی</label>
-                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="مثلاً مریم کریمی" style={{ width: "100%", padding: "11px 14px", fontSize: 14, marginTop: 4 }} />
+                <label htmlFor="booking-name" className="muted" style={{ fontSize: 12 }}>نام و نام‌خانوادگی</label>
+                <input id="booking-name" autoComplete="name" enterKeyHint="next" value={name} onChange={(e) => setName(e.target.value)} placeholder="مثلاً مریم کریمی" style={{ width: "100%", padding: "11px 14px", fontSize: 14, marginTop: 4 }} />
               </div>
               <div>
-                <label className="muted" style={{ fontSize: 12 }}>کد معرفی (اختیاری)</label>
+                <label htmlFor="booking-referral" className="muted" style={{ fontSize: 12 }}>کد معرفی (اختیاری)</label>
                 <input
+                  id="booking-referral" autoComplete="off" autoCapitalize="characters" enterKeyHint="done"
                   dir="ltr" value={referralCode} onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
                   placeholder="مثلاً A1B2C3" className="tabular"
                   style={{ width: "100%", padding: "11px 14px", fontSize: 14, marginTop: 4, textAlign: "left" }}
@@ -2491,20 +2808,23 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             </div>
           )}
 
-          <button
-            disabled={!lookedUp || !phoneValid || (!knownCustomer && !name.trim())}
-            onClick={() => setStep(6)}
-            className="tap accent-btn w-full mt-5"
-            style={{ padding: "13px" }}
-          >
-            ادامه
-          </button>
+          <div className="sticky-cta mt-5">
+            <button
+              type="submit"
+              disabled={!canContinueContact}
+              className="tap accent-btn w-full"
+              style={{ padding: "13px" }}
+            >
+              ادامه
+            </button>
+          </div>
+          </form>
         </div>
       )}
 
       {step === 6 && service && (
         <div>
-          <button className="muted flex items-center gap-1 mb-3" style={{ fontSize: 13 }} onClick={() => setStep(5)}>
+          <button className="muted flex items-center gap-1 mb-3" style={{ fontSize: 13 }} onClick={goBack}>
             <ArrowRight size={14} /> بازگشت
           </button>
           <h2 style={{ fontSize: 18, marginBottom: 14 }}>تایید نهایی</h2>
@@ -2527,9 +2847,17 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             {hasPrice(service) && <Row label="مبلغ نهایی" value={formatToman(finalPrice)} bold />}
           </div>
 
-          <button onClick={confirmBooking} disabled={confirming} className="tap accent-btn w-full mt-5" style={{ padding: "13px" }}>
-            {confirming ? "در حال ثبت..." : "ثبت نهایی نوبت"}
-          </button>
+          <p className="muted flex items-center gap-1.5 mt-3" style={{ fontSize: 11.5, lineHeight: 1.7 }}>
+            <Info size={13} style={{ flexShrink: 0 }} />
+            تا قبل از نوبت می‌توانید از تب «داشبورد من» آن را لغو یا جابه‌جا کنید.
+          </p>
+
+          <div className="sticky-cta mt-5">
+            <button onClick={confirmBooking} disabled={confirming} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: "13px" }}>
+              {confirming && <Loader2 size={15} className="salon-spin" />}
+              {confirming ? "در حال ثبت..." : "ثبت نهایی نوبت"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -2570,7 +2898,32 @@ function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingH
             </p>
           </div>
 
-          <button onClick={reset} className="tap ghost-btn w-full mt-5" style={{ padding: "12px", fontWeight: 700 }}>
+          <div className="flex gap-2 mt-5">
+            <button
+              onClick={() => downloadBookingIcs({
+                title: `${service.name} — ${SALON_NAME}`,
+                date: selectedDate,
+                startMin: selectedSlot,
+                endMin: selectedSlot + service.duration_minutes,
+                description: result.staff_name ? `آرایشگر: ${result.staff_name}` : "",
+              })}
+              className="tap ghost-btn flex-1 flex items-center justify-center gap-1.5"
+              style={{ padding: "11px 8px", fontSize: 13, fontWeight: 700 }}
+            >
+              <CalendarPlus size={15} /> افزودن به تقویم
+            </button>
+            {onTrack && (
+              <button
+                onClick={() => onTrack(phone)}
+                className="tap ghost-btn flex-1 flex items-center justify-center gap-1.5"
+                style={{ padding: "11px 8px", fontSize: 13, fontWeight: 700 }}
+              >
+                <LayoutDashboard size={15} /> پیگیری نوبت
+              </button>
+            )}
+          </div>
+
+          <button onClick={reset} className="tap accent-btn w-full mt-3" style={{ padding: "12px", fontWeight: 700 }}>
             رزرو نوبت جدید
           </button>
         </div>
@@ -2604,8 +2957,8 @@ function avatarColorFor(key) {
   return AVATAR_PALETTE[h];
 }
 
-function TrackView({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, updateBooking, notify }) {
-  const [phone, setPhone] = useState("");
+function TrackView({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, updateBooking, notify, initialPhone = "" }) {
+  const [phone, setPhone] = useState(initialPhone);
   const [searched, setSearched] = useState(false);
   const [actionFor, setActionFor] = useState(null); // { id, type: "cancel" | "reschedule" }
   const [segment, setSegment] = useState("bookings");
@@ -2754,9 +3107,12 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
             <div className="flex gap-2">
               <input
                 dir="ltr"
-                inputMode="numeric"
+                type="tel" inputMode="tel" autoComplete="tel"
                 value={phone}
-                onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 11)); setOtpError(""); }}
+                onChange={(e) => { setPhone(normalizeMobile(e.target.value)); setOtpError(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter" && phoneValid && !otpRequesting) requestCode(); }}
+                enterKeyHint="send"
+                aria-label="شماره موبایل"
                 placeholder="09xxxxxxxxx"
                 className="tabular"
                 style={{ flex: 1, padding: "11px 14px", fontSize: 14, textAlign: "left" }}
@@ -2782,9 +3138,13 @@ function TrackView({ bookings, services, stylists, workingHours, staffWorkingHou
             <div className="flex gap-2">
               <input
                 dir="ltr"
-                inputMode="numeric"
+                inputMode="numeric" autoComplete="one-time-code"
                 value={otpCode}
-                onChange={(e) => { setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6)); setOtpError(""); }}
+                onChange={(e) => { setOtpCode(digitsOnly(e.target.value, 6)); setOtpError(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter" && codeValid && !otpVerifying) verifyCode(); }}
+                enterKeyHint="done"
+                autoFocus
+                aria-label="کد تایید"
                 placeholder="۶ رقم"
                 className="tabular"
                 style={{ flex: 1, padding: "11px 14px", fontSize: 16, textAlign: "center", letterSpacing: "0.3em" }}
@@ -3398,8 +3758,8 @@ function StylistEditModal({ stylist, onClose, onSave }) {
         <div>
           <label className="muted" style={{ fontSize: 12 }}>شماره موبایل (برای ورود به پنل)</label>
           <input
-            dir="ltr" inputMode="numeric" value={phone}
-            onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 11))}
+            dir="ltr" type="tel" inputMode="tel" autoComplete="off" value={phone}
+            onChange={(e) => setPhone(normalizeMobile(e.target.value))}
             placeholder="09xxxxxxxxx" className="tabular" style={{ width: "100%", padding: "10px 14px", fontSize: 14, marginTop: 4, textAlign: "left" }}
           />
         </div>
