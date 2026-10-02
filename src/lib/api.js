@@ -298,12 +298,16 @@ export async function fetchPublicSlots() {
   return (data || []).map(map.appointments.fromRow);
 }
 
+const STYLIST_PUBLIC_COLUMNS = "id, salon_id, name, gender, active, reminder_hours_before, created_at";
+
 export async function bootstrap() {
   if (!SUPABASE_ENABLED) return null;
 
   const [svc, sty, appt, off, wh, appr, exp, wait] = await Promise.all([
     supabase.from("services").select("*").order("id"),
-    supabase.from("stylists").select("*").order("id"),
+    // Public columns only — a stylist's personal phone is staff-only (v2.32
+    // column grant); staff get the full rows from fetchStaffData().
+    supabase.from("stylists").select(STYLIST_PUBLIC_COLUMNS).order("id"),
     // v2.16: the PII-free slots view, not the raw table — this runs before
     // we know if the caller is staff or an anonymous visitor, and the
     // public booking flow only ever needs occupied-slot data here (who's
@@ -345,6 +349,29 @@ export async function bootstrap() {
     approvedDates: (appr.data || []).map((r) => isoToKey(r.date)),
     expenses: (exp.data || []).map(map.expenses.fromRow),
     waitlist: (wait.data || []).map(map.waitlist.fromRow),
+  };
+}
+
+/** Everything a logged-in staff member sees beyond the public bootstrap:
+ *  full appointments (with customer details), stylists incl. phone,
+ *  expenses and the waitlist — all RLS-scoped to their role. Called after a
+ *  restored session AND right after a fresh login (before, a fresh login
+ *  kept showing the anonymous data — no customer names, no expenses —
+ *  until the page was reloaded). Missing pieces come back as null. */
+export async function fetchStaffData() {
+  if (!SUPABASE_ENABLED) return null;
+  const [appt, sty, exp, wait] = await Promise.all([
+    supabase.from("appointments").select("*").order("date"),
+    supabase.from("stylists").select("*").order("id"),
+    supabase.from("expenses").select("*").order("date", { ascending: false }),
+    supabase.from("waitlist").select("*"),
+  ]);
+  const pick = (res, where, mapRow) => (res.error ? (fail(where, res.error), null) : (res.data || []).map(mapRow));
+  return {
+    bookings: pick(appt, "staff.appointments", map.appointments.fromRow),
+    stylists: pick(sty, "staff.stylists", map.stylists.fromRow),
+    expenses: pick(exp, "staff.expenses", map.expenses.fromRow),
+    waitlist: pick(wait, "staff.waitlist", map.waitlist.fromRow),
   };
 }
 
@@ -892,5 +919,15 @@ export async function respondAttendance(token, response) {
   if (!SUPABASE_ENABLED) return { ok: false, error: "این قابلیت به اتصال دیتابیس نیاز دارد" };
   const { data, error } = await supabase.rpc("respond_attendance", { p_token: token || "", p_response: response });
   if (error) { fail("respond_attendance", error); return { ok: false, error: "ثبت پاسخ ناموفق بود — دوباره امتحان کنید" }; }
+  return data;
+}
+
+// v2.32 — the customer's own full loyalty record (points, history, referral
+// code, referrals), only after OTP verification. The anonymous
+// customer_loyalty(phone) now returns just {found, discount_percent}.
+export async function fetchMyLoyaltyWithToken(token) {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase.rpc("get_my_loyalty_with_token", { p_token: token || "" });
+  if (error) { fail("get_my_loyalty_with_token", error); return null; }
   return data;
 }

@@ -321,10 +321,13 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
       const res = await fetchCustomerLoyalty(phone).catch(() => null);
       // The number was edited while this was in flight — drop the stale answer.
       if (phoneRef.current !== asked) return;
-      if (res?.found && res.name?.trim()) {
+      // v2.32: the public lookup only says whether this number is a known
+      // customer (no name — that would leak who owns a number). The server
+      // fills in the name on file when the booking is sent without one.
+      if (res?.found) {
         setKnownCustomer(true);
-        setKnownCustomerName(res.name.trim());
-        setName(res.name.trim());
+        setKnownCustomerName(res.name?.trim() || "");
+        setName(res.name?.trim() || "");
         setLoyaltyDiscountPct(res.discount_percent || 0);
       } else {
         setKnownCustomer(false);
@@ -860,7 +863,11 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           {lookedUp && knownCustomer && (
             <div className="card fade-in mt-3" style={{ padding: 12, display: "flex", alignItems: "center", gap: 10 }}>
               <User size={18} color="var(--color-accent-500)" />
-              <p style={{ fontSize: 13 }}>خوش برگشتید، <b style={{ color: "var(--color-heading)" }}>{knownCustomerName}</b> عزیز</p>
+              <p style={{ fontSize: 13 }}>
+                {knownCustomerName
+                  ? <>خوش برگشتید، <b style={{ color: "var(--color-heading)" }}>{knownCustomerName}</b> عزیز</>
+                  : <>خوش برگشتید! نوبت با همان نامی که قبلاً ثبت کرده‌اید ذخیره می‌شود.</>}
+              </p>
             </div>
           )}
 
@@ -909,7 +916,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             {effectiveStaff && <Row label="آرایشگر" value={effectiveStaff.name} />}
             <Row label="تاریخ" value={jalaliLabel(selectedDate, { short: true })} />
             <Row label="ساعت" value={formatClock(selectedSlot)} />
-            <Row label="مشتری" value={knownCustomer ? knownCustomerName : name} />
+            {(knownCustomer ? knownCustomerName : name) && <Row label="مشتری" value={knownCustomer ? knownCustomerName : name} />}
             <Row label="شماره تماس" value={<span dir="ltr">{toFa(phone)}</span>} />
             <div style={{ borderTop: "1px dashed var(--color-border)", margin: "10px 0" }} />
             {!hasPrice(service) && <Row label="مبلغ" value={priceLabel(service)} bold />}

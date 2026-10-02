@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Sparkles, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName } from "./lib/tenant";
-import { bootstrap, subscribeAppointments, fetchFullAppointments, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, DEFAULT_AUTOMATION } from "./lib/api";
+import { bootstrap, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, DEFAULT_AUTOMATION } from "./lib/api";
 import { signOut as authSignOut, restoreSession } from "./lib/auth";
 import { sendSms, scheduleReminder, renderTemplate } from "./lib/sms";
 import { jalaliLabel, formatClock, dateKey, parseDateKey } from "./lib/format";
@@ -208,10 +208,9 @@ export default function App() {
         setPanelAuthed(true);
         setCurrentRole(session.role);
         setCurrentStylistId(session.stylistId ?? null);
-        // bootstrap() only loaded the PII-free slots view (safe for the
-        // anonymous booking flow) — staff need the real dataset, RLS-scoped
-        // to their role.
-        fetchFullAppointments().then((full) => { if (!cancelled && full.length) setBookings(full); });
+        // bootstrap() only loaded the public data (safe for the anonymous
+        // booking flow) — staff need the real dataset, RLS-scoped to their role.
+        loadStaffData(() => cancelled);
       }
 
       armAll();
@@ -251,6 +250,16 @@ export default function App() {
       if (slots.length) setBookings(slots);
     });
   }, [panelAuthed]);
+
+  // Full staff dataset after a restored session or a fresh login.
+  async function loadStaffData(isCancelled = () => false) {
+    const d = await fetchStaffData();
+    if (!d || isCancelled()) return;
+    if (d.bookings) setBookings(d.bookings);
+    if (d.stylists && d.stylists.length) setStylists(d.stylists);
+    if (d.expenses) setExpenses(d.expenses);
+    if (d.waitlist) setWaitlist(d.waitlist);
+  }
 
   function notify(msg) {
     setToast(msg);
@@ -563,6 +572,7 @@ export default function App() {
               setPanelAuthed(true);
               setCurrentRole(role);
               setCurrentStylistId(stylistId ?? null);
+              loadStaffData();
             }}
           />
         )}

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Clock, Percent, Copy, TrendingUp, TrendingDown, ChevronLeft, CalendarCheck, UserPlus, Award, Crown, LayoutDashboard } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, revokeBookingToken, requestBookingOtpTestMode, fetchCustomerLoyalty } from "../lib/api";
+import { verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, revokeBookingToken, requestBookingOtpTestMode, fetchMyLoyaltyWithToken } from "../lib/api";
 import { requestBookingOtp } from "../lib/sms";
 import { toFa, digitsOnly, normalizeMobile, formatToman, jalaliLabel, formatClock, parseDateKey } from "../lib/format";
 import { Badge, Row } from "../components/ui";
@@ -155,15 +155,17 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
   }
 
   useEffect(() => {
-    if (!searched || !phoneValid || !SUPABASE_ENABLED) { setLoyalty(null); return; }
+    if (!searched || !accessToken || !SUPABASE_ENABLED) { setLoyalty(null); return; }
     let cancelled = false;
     (async () => {
       setLoyaltyLoading(true);
-      const res = await fetchCustomerLoyalty(phone);
+      // v2.32: token-gated — the anonymous lookup no longer returns
+      // personal details (name, history, referrals) for an arbitrary phone.
+      const res = await fetchMyLoyaltyWithToken(accessToken);
       if (!cancelled) { setLoyalty(res); setLoyaltyLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [searched, phone, phoneValid]);
+  }, [searched, accessToken]);
 
   const hasAnything = matches.length > 0 || loyalty?.found;
 
