@@ -20,8 +20,19 @@ npm run dev
 
 ```
 src/
-  App.jsx                  کل UI (کامپوننت‌ها دست‌نخورده از نسخهٔ ۱ + تب پیامک)
-  main.jsx
+  App.jsx                  پوستهٔ برنامه: state اصلی، همگام‌سازی با دیتابیس، تب‌ها
+  main.jsx                 مسیریابی صفحه‌ها، تشخیص سالن، ErrorBoundary
+  app/shared.js            ثابت‌ها، دادهٔ نمونه، قیمت‌گذاری و منطق تداخل نوبت‌ها
+  components/
+    ui.jsx                 اجزای پایه: Modal، Toast، DateStrip، StatCard، …
+    bookingModals.jsx      لغو / جابه‌جایی / تایید معرفی نوبت
+    LoginScreen.jsx        ورود مدیر و آرایشگر
+  booking/BookingFlow.jsx  فرم رزرو مشتری
+  track/TrackView.jsx      «داشبورد من» (OTP، نوبت‌ها، امتیاز)
+  panel/                   پنل مدیریت — هر تب یک فایل
+    PanelView.jsx          ناوبری پنل + تب‌های نوبت‌ها و آرایشگرها
+    ServicesTab.jsx  ScheduleTab.jsx  AccountingTab.jsx  AIAnalysisTab.jsx
+    BITab.jsx  biCards.jsx  LoyaltyTab.jsx  SmsTab.jsx
   styles/
     tokens.js              متغیرهای CSS (روشن/تیره) و کلاس‌های پایه
   lib/
