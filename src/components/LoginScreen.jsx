@@ -189,6 +189,7 @@ export function StylistAuthPanel({ stylists, addStylist, notify, onSuccess }) {
     if (SUPABASE_ENABLED) {
       const res = await authRegisterStylist({ phone, password, name: name.trim(), gender, stylistId: s.id });
       setBusy(false);
+      if (res.pending) { notify(res.error); setAuthMode("login"); setPassword(""); return; }
       if (!res.ok) { setError(res.error || "ثبت‌نام ناموفق بود"); return; }
       notify("ثبت‌نام با موفقیت انجام شد");
       onSuccess(res.stylistId);

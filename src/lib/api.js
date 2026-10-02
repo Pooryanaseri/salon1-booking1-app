@@ -65,6 +65,7 @@ const map = {
       id: r.id, name: r.name, gender: r.gender, phone: r.phone || "",
       active: r.active,
       reminder_hours_before: r.reminder_hours_before ?? 3,
+      self_registered: !!r.self_registered, // v2.35: signed up themselves, waits for approval while inactive
     }),
     toRow: (s) => ({
       id: s.id, name: s.name ?? "", gender: s.gender ?? "female", phone: s.phone ?? "",

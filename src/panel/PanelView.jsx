@@ -170,6 +170,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
    same as services. Customers pick from this list during booking.
    ============================================================ */
 export function StaffTab({ stylists, addStylist, updateStylist, removeStylist, notify }) {
+  const [deleting, setDeleting] = useState(null);
   const [editing, setEditing] = useState(null); // stylist object or 'new'
   const [genderFilter, setGenderFilter] = useState("all");
 
@@ -224,13 +225,19 @@ export function StaffTab({ stylists, addStylist, updateStylist, removeStylist, n
                 <span style={{ fontWeight: 700, fontSize: 13.5, color: "var(--color-heading)" }}>{s.name}</span>
                 <GenderBadge gender={s.gender} />
               </div>
-              <div className="muted" style={{ fontSize: 11.5, marginTop: 1 }}>{s.active ? "فعال" : "غیرفعال"}</div>
+              {!s.active && s.self_registered ? (
+                <div style={{ fontSize: 11.5, marginTop: 1, color: "var(--color-warning)", fontWeight: 700 }}>
+                  منتظر تایید شما — با روشن کردن کلید فعال می‌شود
+                </div>
+              ) : (
+                <div className="muted" style={{ fontSize: 11.5, marginTop: 1 }}>{s.active ? "فعال" : "غیرفعال"}</div>
+              )}
             </div>
             <Switch checked={s.active} onChange={() => updateStylist(s.id, { active: !s.active })} />
             <button className="tap ghost-btn" style={{ width: 32, height: 32, padding: 0 }} onClick={() => setEditing(s)}>
               <Pencil size={14} style={{ margin: "auto" }} />
             </button>
-            <button className="tap ghost-btn" style={{ width: 32, height: 32, padding: 0, color: "var(--color-danger)" }} onClick={() => removeStylist(s.id)}>
+            <button className="tap ghost-btn" aria-label={`حذف ${s.name}`} style={{ width: 32, height: 32, padding: 0, color: "var(--color-danger)" }} onClick={() => setDeleting(s)}>
               <Trash2 size={14} style={{ margin: "auto" }} />
             </button>
           </div>
@@ -243,6 +250,24 @@ export function StaffTab({ stylists, addStylist, updateStylist, removeStylist, n
       </div>
 
       {editing && <StylistEditModal stylist={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={saveStylist} />}
+      {deleting && (
+        <Modal title="حذف آرایشگر" onClose={() => setDeleting(null)} danger>
+          <p style={{ fontSize: 13.5, marginBottom: 16, lineHeight: 1.9 }}>
+            «{deleting.name}» و ساعات کاری‌اش حذف می‌شود. نوبت‌های گذشته‌اش باقی می‌مانند.
+            اگر فقط نمی‌خواهید فعلاً نوبت بگیرد، به‌جای حذف کلیدش را خاموش کنید.
+          </p>
+          <div className="flex gap-2">
+            <button className="tap ghost-btn flex-1" style={{ padding: 12, fontWeight: 700 }} onClick={() => setDeleting(null)}>بازگشت</button>
+            <button
+              className="tap flex-1"
+              style={{ padding: 12, fontWeight: 700, borderRadius: "var(--radius-md)", background: "var(--color-danger)", color: "white" }}
+              onClick={() => { removeStylist(deleting.id); setDeleting(null); }}
+            >
+              حذف شود
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
