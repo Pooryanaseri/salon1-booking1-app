@@ -2,9 +2,11 @@
 --  زمان‌بندی یادآوری پیامکی — بعد از deploy کردن Edge Functions اجرا کن
 --  Supabase Studio -> SQL Editor
 --
---  دو مقدار زیر را جایگزین کن:
---    <PROJECT_REF>   شناسه پروژه (مثلاً abcdefghijklmnop)
---    <SERVICE_ROLE>  کلید service_role از Project Settings -> API
+--  سه مقدار زیر را جایگزین کن:
+--    <PROJECT_REF>               شناسه پروژه (مثلاً abcdefghijklmnop)
+--    <SERVICE_ROLE>              کلید service_role از Project Settings -> API
+--    <INTERNAL_FUNCTION_SECRET>  همان مقداری که با supabase secrets set گذاشته‌اید
+--                                (بدون آن، Edge Functionها درخواست cron را رد می‌کنند)
 -- =============================================================================
 
 create extension if not exists pg_cron;
@@ -21,7 +23,8 @@ select cron.schedule(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/cron-reminders',
     headers := jsonb_build_object(
                  'Content-Type',  'application/json',
-                 'Authorization', 'Bearer <SERVICE_ROLE>'
+                 'Authorization', 'Bearer <SERVICE_ROLE>',
+                 'x-internal-secret', '<INTERNAL_FUNCTION_SECRET>'
                ),
     body    := '{}'::jsonb
   );
@@ -87,7 +90,8 @@ select cron.schedule(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/weekly-reconciliation',
     headers := jsonb_build_object(
                  'Content-Type',  'application/json',
-                 'Authorization', 'Bearer <SERVICE_ROLE>'
+                 'Authorization', 'Bearer <SERVICE_ROLE>',
+                 'x-internal-secret', '<INTERNAL_FUNCTION_SECRET>'
                ),
     body    := '{}'::jsonb
   );
@@ -104,7 +108,8 @@ select cron.schedule(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/predictive-rebooking-cron',
     headers := jsonb_build_object(
                  'Content-Type',  'application/json',
-                 'Authorization', 'Bearer <SERVICE_ROLE>'
+                 'Authorization', 'Bearer <SERVICE_ROLE>',
+                 'x-internal-secret', '<INTERNAL_FUNCTION_SECRET>'
                ),
     body    := '{}'::jsonb
   );

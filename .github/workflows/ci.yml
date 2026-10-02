@@ -21,7 +21,7 @@ jobs:
       - run: npm run build
 
   database:
-    name: Fresh install + DB tests (PostgreSQL 16)
+    name: DB install (${{ matrix.mode }}) + tests, PostgreSQL 16
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -37,6 +37,14 @@ jobs:
       PGPORT: 5432
       PGUSER: postgres
       PGPASSWORD: postgres
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [files, bundle, upgrade]   # see tests/db/run.sh
     steps:
       - uses: actions/checkout@v4
+      - name: SQL bundles are up to date
+        run: scripts/build-sql-bundles.sh && git diff --exit-code supabase/deploy
       - run: tests/db/run.sh
+        env:
+          MODE: ${{ matrix.mode }}

@@ -9,7 +9,8 @@ cp .env.example .env.local     # مقادیر Supabase را پر کن
 npm run dev
 ```
 
-- **راه‌اندازی کامل (دیتابیس، احراز هویت، پیامک، cron، دیپلوی):** [`DEPLOY.md`](./DEPLOY.md)
+- **اجرا روی سرور، گام‌به‌گام (نصب تازه یا ارتقا):** [`INSTALL.md`](./INSTALL.md)
+- جزئیات و تاریخچهٔ راه‌اندازی: [`DEPLOY.md`](./DEPLOY.md)
 - **فهرست تغییرات نسخهٔ ۲ و dependencies جدید:** [`CHANGES.md`](./CHANGES.md)
 - **بررسی کد:** `npm test` (Vitest)، `npm run lint` (ESLint با قوانین React Hooks)، و
   `npm run test:db` — نصب تازهٔ کامل دیتابیس (schema → seed → همهٔ migrationها) روی
