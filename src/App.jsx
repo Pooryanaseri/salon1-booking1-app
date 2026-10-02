@@ -546,6 +546,7 @@ const SMS_KIND_LABEL = {
   loyalty: "باشگاه مشتریان",
   feedback_request: "درخواست نظرسنجی",
   feedback_followup: "یادآوری نظرسنجی",
+  staff_new_booking: "اطلاع نوبت جدید به آرایشگر",
   custom: "پیام آزاد",
 };
 
@@ -1209,6 +1210,19 @@ export default function App() {
     await sendSms({ to: booking.customer_phone, body, kind, appointmentId: booking.id });
   }
 
+  // Previously, ONLY the customer was ever notified about a new booking —
+  // the assigned stylist had no idea a new appointment landed on their
+  // schedule until they opened the app. Fires once, on initial creation
+  // only (not on every later status change, unlike sendBookingSms).
+  async function notifyStaffOfNewBooking(booking) {
+    if (!booking.staff_id) return;
+    const stylist = (stylistsRef.current || []).find((s) => s.id === booking.staff_id);
+    if (!stylist || !/^09\d{9}$/.test(stylist.phone || "")) return;
+    const vars = bookingSmsVars(booking);
+    const body = `نوبت جدید برای شما ثبت شد:\n${vars.name} — ${vars.service}\n${vars.date} ساعت ${vars.time}`;
+    await sendSms({ to: stylist.phone, body, kind: "staff_new_booking", appointmentId: booking.id });
+  }
+
   // Reminder timing comes from the stylist's own reminder_hours_before field —
   // the one that already existed on every stylist record.
   async function queueReminder(booking) {
@@ -1294,6 +1308,11 @@ export default function App() {
     } catch (err) {
       console.error("[salon] booking confirmation SMS failed:", err);
       notify("نوبت ثبت شد، ولی ارسال پیامک تایید ناموفق بود");
+    }
+    try {
+      await notifyStaffOfNewBooking(booking);
+    } catch (err) {
+      console.error("[salon] staff new-booking notification failed:", err);
     }
     try {
       await queueReminder(booking);

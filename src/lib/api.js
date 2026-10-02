@@ -660,14 +660,14 @@ export async function fetchLoyaltySettings() {
   const key = "loyalty_settings";
   const cached = getCached(key);
   if (cached !== undefined) return cached;
-  const { data, error } = await supabase.from("loyalty_settings").select("*").eq("id", 1).maybeSingle();
+  const { data, error } = await supabase.from("loyalty_settings").select("*").eq("salon_id", getCurrentSalonId()).maybeSingle();
   if (error) { fail("loyalty_settings.fetch", error); return null; }
   return setCache(key, data);
 }
 
 export async function updateLoyaltySettings(patch) {
   if (!SUPABASE_ENABLED) return;
-  const { error } = await supabase.from("loyalty_settings").update(patch).eq("id", 1);
+  const { error } = await supabase.from("loyalty_settings").update(patch).eq("salon_id", getCurrentSalonId());
   invalidateCache("loyalty_settings");
   return fail("loyalty_settings.update", error);
 }
@@ -679,14 +679,14 @@ export async function fetchSegmentSettings() {
   const key = "segment_settings";
   const cached = getCached(key);
   if (cached !== undefined) return cached;
-  const { data, error } = await supabase.from("customer_segment_settings").select("*").eq("id", 1).maybeSingle();
+  const { data, error } = await supabase.from("customer_segment_settings").select("*").eq("salon_id", getCurrentSalonId()).maybeSingle();
   if (error) { fail("segment_settings.fetch", error); return null; }
   return setCache(key, data);
 }
 
 export async function updateSegmentSettings(payload) {
   if (!SUPABASE_ENABLED) return;
-  const { error } = await supabase.from("customer_segment_settings").update(payload).eq("id", 1);
+  const { error } = await supabase.from("customer_segment_settings").update(payload).eq("salon_id", getCurrentSalonId());
   invalidateCache("segment_settings");
   // Changing the thresholds changes who falls into which segment, so any
   // already-cached get_customer_rfm_segments() result is now stale too.
