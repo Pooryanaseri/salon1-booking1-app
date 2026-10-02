@@ -2,9 +2,12 @@
 project_id = "salon-booking"
 
 [functions.send-sms]
-verify_jwt = false      # anonymous customers need the confirmation SMS for their
-                        # own booking; the function authorizes internally by role
-                        # and rate-limits unauthenticated callers.
+verify_jwt = false      # anonymous pages may request a login OTP; everything else
+                        # requires a staff session — authorized inside by role.
+
+[functions.payment]
+verify_jwt = false      # anonymous customers pay their own deposit; the function
+                        # trusts only ids and verifies every payment with Zarinpal.
 
 [functions.cron-reminders]
 verify_jwt = false      # called by pg_cron with the service_role bearer token

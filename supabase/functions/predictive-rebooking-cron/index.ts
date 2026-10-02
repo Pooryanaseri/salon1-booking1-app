@@ -13,7 +13,6 @@
 //  of-day logic, only date-based windows) — see DEPLOY.md.
 // ============================================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { sendOne } from "../_shared/providers.ts";
 
 const admin = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -43,29 +42,7 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: "engine failed" }, 500);
   }
 
-  // Drain whatever the engine just queued (scheduled_for = now(), so it's
-  // immediately due) — same send/update pattern as cron-reminders' DRAIN.
-  const { data: due } = await admin
-    .from("sms_messages")
-    .select("id, to_phone, body")
-    .eq("status", "queued")
-    .eq("kind", "predictive_rebooking")
-    .lte("scheduled_for", new Date().toISOString())
-    .limit(500);
-
-  let sent = 0, failed = 0;
-  for (const msg of due ?? []) {
-    const r = await sendOne(msg.to_phone, msg.body);
-    await admin.from("sms_messages").update({
-      status: r.ok ? "sent" : "failed",
-      provider: r.provider,
-      provider_msg_id: r.providerMsgId ?? null,
-      error: r.ok ? null : r.error,
-      cost: r.cost ?? null,
-      sent_at: r.ok ? new Date().toISOString() : null,
-    }).eq("id", msg.id);
-    r.ok ? sent++ : failed++;
-  }
-
-  return json({ ok: true, candidates: candidateCount, sent, failed });
+  // v2.34: the queued messages are sent by cron-reminders' drain (claimed
+  // atomically there). Sending them here too could send them twice.
+  return json({ ok: true, candidates: candidateCount, queued: candidateCount });
 });

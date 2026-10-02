@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, Check, X, Loader2 } from "lucide-react";
 import { fetchReconciliationQueue, submitReconciliationBatch } from "./lib/api";
 
@@ -27,11 +27,13 @@ export default function ReconciliationPage({ token }) {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [expired, setExpired] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     fetchReconciliationQueue(token).then((rows) => {
       if (cancelled) return;
+      if (rows === null) { setExpired(true); setLoading(false); return; }
       setQueue(rows);
       setDecisions(Object.fromEntries(rows.map((r) => [r.id, "completed"]))); // default: approve all
       setLoading(false);
@@ -87,13 +89,27 @@ export default function ReconciliationPage({ token }) {
     );
   }
 
+  if (expired) {
+    return (
+      <div dir="rtl" style={wrap}>
+        <div style={{ ...card, textAlign: "center", padding: 32 }}>
+          <h2 style={{ fontSize: 17, marginBottom: 6 }}>این لینک منقضی شده است</h2>
+          <p style={{ fontSize: 13, color: "#888", lineHeight: 1.9 }}>
+            لینک‌های تایید ۷۲ ساعت اعتبار دارند. لینک تازه همراه گزارش هفتهٔ بعد پیامک می‌شود؛
+            تا آن موقع می‌توانید از پنل مدیریت ← نوبت‌های امروز تایید کنید.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!queue.length) {
     return (
       <div dir="rtl" style={wrap}>
         <div style={{ ...card, textAlign: "center", padding: 32 }}>
           <CheckCircle2 size={52} color="#4caf7d" style={{ margin: "0 auto 14px" }} />
           <h2 style={{ fontSize: 17, marginBottom: 6 }}>چیزی برای تایید نیست</h2>
-          <p style={{ fontSize: 13, color: "#888" }}>یا لینک منقضی شده، یا همه‌چیز از قبل تایید شده.</p>
+          <p style={{ fontSize: 13, color: "#888" }}>همهٔ نوبت‌ها از قبل تایید شده‌اند.</p>
         </div>
       </div>
     );

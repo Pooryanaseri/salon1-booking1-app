@@ -6,6 +6,7 @@
 import { supabase, SUPABASE_ENABLED, phoneToEmail } from "./supabase";
 
 const OWNER_BOOTSTRAP_PHONE = import.meta.env.VITE_OWNER_PHONE || "09120000000";
+const PENDING_APPROVAL_MSG = "ثبت‌نام انجام شد — بعد از تایید مدیر سالن می‌توانید وارد شوید (به مدیر پیامک رفت)";
 
 /**
  * @param {string} phone
@@ -45,7 +46,7 @@ export async function signIn(phone, password, roleHint = null) {
   }
   if (!profile.active) {
     await supabase.auth.signOut();
-    return { ok: false, error: "حساب شما غیرفعال شده — با مدیر سالن تماس بگیرید" };
+    return { ok: false, error: profile.role === "stylist" ? PENDING_APPROVAL_MSG : "حساب شما غیرفعال شده — با مدیر سالن تماس بگیرید" };
   }
   return { ok: true, role: profile.role, stylistId: profile.stylist_id, user: profile };
 }
@@ -185,13 +186,10 @@ export async function registerOwner(phone, password) {
 export async function registerStylist({ phone, password, name, gender, stylistId }) {
   if (!SUPABASE_ENABLED) return { ok: false, error: "OFFLINE" };
 
-  const { data: existing } = await supabase
-    .from("stylists")
-    .select("id")
-    .eq("phone", phone)
-    .maybeSingle();
-  if (existing) return { ok: false, error: "این شماره قبلاً ثبت شده — وارد شوید" };
-
+  // Sign up FIRST: an anonymous visitor can't read stylists' phone numbers
+  // (v2.32), and the normal case is a stylist the manager already added
+  // from the panel — that profile must be linked, not rejected as
+  // "already registered" (which left them with no way to get an account).
   const { data, error } = await supabase.auth.signUp({
     email: phoneToEmail(phone),
     password,
@@ -208,29 +206,58 @@ export async function registerStylist({ phone, password, name, gender, stylistId
     };
   }
 
-  // SECURITY: no `password` field here — the stylists table doesn't store one
-  // (dropped in the earlier security pass). Real credentials live only in
-  // Supabase Auth via the signUp() call above.
-  const { error: stylistError } = await supabase.from("stylists").insert({
-    id: stylistId,
-    name,
-    gender,
-    phone,
-    active: true,
-    reminder_hours_before: 3,
-  });
-  if (stylistError) return { ok: false, error: "ساخت پروفایل آرایشگر ناموفق بود" };
+  // Now signed in: is there already a stylist profile with this number?
+  const { data: existing } = await supabase
+    .from("stylists")
+    .select("id, name")
+    .eq("phone", phone)
+    .maybeSingle();
 
-  await supabase.from("users").insert({
+  let linkedId = existing?.id;
+  let displayName = existing?.name || name;
+  if (!existing) {
+    // SECURITY: no `password` field here — the stylists table doesn't store one
+    // (dropped in the earlier security pass). Real credentials live only in
+    // Supabase Auth via the signUp() call above.
+    const { error: stylistError } = await supabase.from("stylists").insert({
+      id: stylistId,
+      name,
+      gender,
+      phone,
+      active: true,
+      reminder_hours_before: 3,
+    });
+    if (stylistError) {
+      await supabase.auth.signOut();
+      return { ok: false, error: "ساخت پروفایل آرایشگر ناموفق بود" };
+    }
+    linkedId = stylistId;
+    displayName = name;
+  }
+
+  // The database checks this link (v2.33): same salon, same phone, and not
+  // already tied to another account.
+  const { error: userError } = await supabase.from("users").insert({
     id: userId,
     phone,
-    full_name: name,
+    full_name: displayName,
     role: "stylist",
-    stylist_id: stylistId,
+    stylist_id: linkedId,
     active: true,
   });
+  if (userError) {
+    await supabase.auth.signOut();
+    return { ok: false, error: "این شماره قبلاً به حساب دیگری وصل شده — وارد شوید یا با مدیر سالن تماس بگیرید" };
+  }
 
-  return { ok: true, role: "stylist", stylistId };
+  // v2.35: a self-registered stylist waits for the manager's approval.
+  const profile = await loadProfile(userId);
+  if (profile && !profile.active) {
+    await supabase.auth.signOut();
+    return { ok: false, pending: true, error: PENDING_APPROVAL_MSG };
+  }
+
+  return { ok: true, role: "stylist", stylistId: linkedId };
 }
 
 function translateAuthError(msg = "") {

@@ -31,6 +31,7 @@ const INTERNAL_SECRET = Deno.env.get("INTERNAL_FUNCTION_SECRET");
 // The salon's wall-clock offset. Appointments store a local date + minutes.
 // Iran is UTC+03:30 = 210 minutes (Iran dropped DST in 2022, so this is stable).
 const TZ_OFFSET_MIN = Number(Deno.env.get("SALON_TZ_OFFSET_MINUTES") ?? 210);
+// Fallback only — each reminder uses its own salon's name from public.salons.
 const SALON_NAME = Deno.env.get("SALON_NAME") ?? "آرایشگاه مانا";
 
 /* ------------------------------------------------- Jalali + Persian digits */
@@ -87,12 +88,10 @@ Deno.serve(async (req) => {
   const report = { drained: 0, drainFailed: 0, swept: 0, sweepFailed: 0 };
 
   /* ------------------------------------------------------------ 1. DRAIN --- */
-  const { data: due } = await admin
-    .from("sms_messages")
-    .select("id, to_phone, body, kind, appointment_id")
-    .eq("status", "queued")
-    .lte("scheduled_for", new Date(now).toISOString())
-    .limit(200);
+  // v2.34: claimed atomically — a row handed to this run is never handed
+  // to an overlapping run (or any other sender), so nothing goes out twice.
+  const { data: due, error: claimError } = await admin.rpc("claim_due_sms", { p_limit: 200 });
+  if (claimError) console.error("[cron-reminders] claim_due_sms failed:", claimError.message);
 
   for (const msg of due ?? []) {
     // v2.25: an appointment can change state (cancelled, no_show) in the
@@ -131,24 +130,31 @@ Deno.serve(async (req) => {
   const horizonISO = new Date(now + TZ_OFFSET_MIN * 60_000 + 3 * 86_400_000)
     .toISOString().slice(0, 10);
 
-  const [{ data: appts }, { data: stylists }, { data: services }, { data: tpl }] =
+  const [{ data: appts }, { data: stylists }, { data: services }, { data: tpls }, { data: salons }, { data: settings }] =
     await Promise.all([
       admin.from("appointments")
-        .select("id, customer_name, customer_phone, service_id, staff_id, staff_name, date, start_min, status, tracking_code, sms_sent_reminder")
+        .select("id, salon_id, customer_name, customer_phone, service_id, staff_id, staff_name, date, start_min, status, tracking_code, sms_sent_reminder")
         .in("status", ["confirmed", "rescheduled"])
         .eq("sms_sent_reminder", false)
         .gte("date", todayISO)
         .lte("date", horizonISO),
       admin.from("stylists").select("id, reminder_hours_before"),
       admin.from("services").select("id, name"),
-      admin.from("sms_templates").select("body").eq("kind", "reminder").eq("is_default", true).maybeSingle(),
+      // One default reminder template per salon (multi-tenant) — a single
+      // .maybeSingle() here errored as soon as a second salon existed.
+      admin.from("sms_templates").select("salon_id, body").eq("kind", "reminder").eq("is_default", true),
+      admin.from("salons").select("id, name"),
+      admin.from("app_settings").select("salon_id, attendance_confirmation"),
     ]);
 
   const reminderHours = new Map((stylists ?? []).map((s) => [s.id, s.reminder_hours_before ?? 3]));
   const serviceName = new Map((services ?? []).map((s) => [s.id, s.name]));
   const defaultHours = Number(Deno.env.get("DEFAULT_REMINDER_HOURS") ?? 3);
-  const templateBody = tpl?.body
-    ?? "{{name}} عزیز، یادآوری نوبت شما در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما هستیم.";
+  const templateBySalon = new Map((tpls ?? []).map((t) => [t.salon_id, t.body]));
+  const salonName = new Map((salons ?? []).map((s) => [s.id, s.name]));
+  const attendanceOn = new Set((settings ?? []).filter((s) => s.attendance_confirmation).map((s) => s.salon_id));
+  const fallbackTemplate =
+    "{{name}} عزیز، یادآوری نوبت شما در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما هستیم.";
 
   for (const a of appts ?? []) {
     if (!/^09\d{9}$/.test(a.customer_phone ?? "")) continue;
@@ -167,22 +173,30 @@ Deno.serve(async (req) => {
       .select("id", { count: "exact", head: true })
       .eq("appointment_id", a.id)
       .eq("kind", "reminder")
-      .in("status", ["queued", "sent", "delivered"]);
+      .in("status", ["queued", "sending", "sent", "delivered"]);
     if ((count ?? 0) > 0) continue;
 
-    const body = render(templateBody, {
+    let body = render(templateBySalon.get(a.salon_id) ?? fallbackTemplate, {
       name: a.customer_name || "مشتری",
       service: serviceName.get(a.service_id ?? "") ?? "خدمت",
       date: jalaliLabel(a.date),
       time: clockLabel(a.start_min),
       stylist: a.staff_name || "—",
       code: a.tracking_code ?? "",
-      salon: SALON_NAME,
+      salon: salonName.get(a.salon_id) || SALON_NAME,
     });
+
+    // v2.29: same "confirm / can't make it" link the queued reminders get
+    // from the DB trigger — this sweep path sends directly, so add it here.
+    if (attendanceOn.has(a.salon_id)) {
+      const { data: link } = await admin.rpc("issue_attendance_link", { p_appointment_id: a.id });
+      if (link) body += `\nتایید حضور یا لغو: ${link}`;
+    }
 
     const r = await sendOne(a.customer_phone, body);
 
     await admin.from("sms_messages").insert({
+      salon_id: a.salon_id, // NOT NULL since v2.24 — without it this audit row was rejected
       to_phone: a.customer_phone,
       body,
       kind: "reminder",

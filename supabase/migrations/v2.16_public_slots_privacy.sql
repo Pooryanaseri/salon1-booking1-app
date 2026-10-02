@@ -21,6 +21,10 @@
 --    querying role, so this exposes ALL rows to anon regardless of the
 --    base table's RLS — that's the point, scoped by column instead of by
 --    row.
+-- Column list differs from the version in schema.sql on a fresh install,
+-- which CREATE OR REPLACE VIEW can't rename — drop first (later migrations
+-- recreate it with salon scoping).
+drop view if exists public.appointments_public_slots;
 create or replace view public.appointments_public_slots as
 select id, staff_id, date, start_min, end_min, buffer_minutes, status
 from public.appointments;

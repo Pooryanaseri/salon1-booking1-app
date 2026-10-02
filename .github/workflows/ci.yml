@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web:
+    name: Lint, unit tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npx vitest run
+      - run: npm run build
+
+  database:
+    name: DB install (${{ matrix.mode }}) + tests, PostgreSQL 16
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [files, bundle, upgrade]   # see tests/db/run.sh
+    steps:
+      - uses: actions/checkout@v4
+      - name: SQL bundles are up to date
+        run: scripts/build-sql-bundles.sh && git diff --exit-code supabase/deploy
+      - run: tests/db/run.sh
+        env:
+          MODE: ${{ matrix.mode }}

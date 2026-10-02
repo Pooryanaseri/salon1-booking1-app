@@ -2,40 +2,52 @@
 --  زمان‌بندی یادآوری پیامکی — بعد از deploy کردن Edge Functions اجرا کن
 --  Supabase Studio -> SQL Editor
 --
---  دو مقدار زیر را جایگزین کن:
---    <PROJECT_REF>   شناسه پروژه (مثلاً abcdefghijklmnop)
---    <SERVICE_ROLE>  کلید service_role از Project Settings -> API
+--  سه مقدار زیر را جایگزین کن:
+--    <PROJECT_REF>               شناسه پروژه (مثلاً abcdefghijklmnop)
+--    <SERVICE_ROLE>              کلید service_role از Project Settings -> API
+--    <INTERNAL_FUNCTION_SECRET>  همان مقداری که با supabase secrets set گذاشته‌اید
+--                                (بدون آن، Edge Functionها درخواست cron را رد می‌کنند)
 -- =============================================================================
 
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
--- هر ۵ دقیقه: صف یادآوری‌ها را خالی می‌کند و نوبت‌های نزدیک را جارو می‌زند.
+-- هر دقیقه: صف پیامک‌ها را خالی می‌کند و نوبت‌های نزدیک را جارو می‌زند.
+-- از v2.31 پیامک تایید رزرو هم از همین صف ارسال می‌شود، پس فاصله کوتاه است
+-- تا مشتری تایید را ظرف حدود یک دقیقه بگیرد. (اجرای خالی هزینه‌ای ندارد.)
 select cron.schedule(
   'salon-sms-reminders',
-  '*/5 * * * *',
+  '* * * * *',
   $$
   select net.http_post(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/cron-reminders',
     headers := jsonb_build_object(
                  'Content-Type',  'application/json',
-                 'Authorization', 'Bearer <SERVICE_ROLE>'
+                 'Authorization', 'Bearer <SERVICE_ROLE>',
+                 'x-internal-secret', '<INTERNAL_FUNCTION_SECRET>'
                ),
     body    := '{}'::jsonb
   );
   $$
 );
 
--- هر شب ساعت ۳ بامداد: روزهای آیندهٔ باز را ۱۴ روز جلو می‌برد،
--- تا تقویم رزرو هیچ‌وقت خودش را تمام نکند.
+-- هر شب ساعت ۳ بامداد (UTC): برای هر سالنی که «باز بودن خودکار روزها» را
+-- روشن دارد، بازهٔ رزرو (پیش‌فرض ۳۰ روز) را جلو می‌برد (v2.28).
+-- نسخهٔ قبلی این job از v2.24 به بعد خطا می‌داد (بدون salon_id). همین نام
+-- را نگه داشته‌ایم تا اجرای دوبارهٔ این فایل job قبلی را جایگزین کند.
 select cron.schedule(
   'salon-roll-approved-dates',
   '0 3 * * *',
-  $$
-  insert into public.approved_dates (date)
-  select (current_date + i)::date from generate_series(0, 13) as g(i)
-  on conflict (date) do nothing;
-  $$
+  $$ select public.open_booking_window(); $$
+);
+
+-- هر روز ساعت ۰۴:۳۰ UTC (۸ صبح به وقت تهران): پیامک برنامهٔ روز برای هر
+-- آرایشگر و خلاصهٔ کوتاه برای مدیر را در صف می‌گذارد (v2.28). ارسال واقعی
+-- را همان cron-reminders (هر ۵ دقیقه) انجام می‌دهد.
+select cron.schedule(
+  'salon-daily-digests',
+  '30 4 * * *',
+  $$ select public.queue_daily_digests(); $$
 );
 
 -- =============================================================================
@@ -46,6 +58,14 @@ select cron.schedule(
 
 -- هر ۲۰ دقیقه: نوبت‌های «تایید‌شده/تغییرزمان‌یافته»ای که زمانشون گذشته
 -- رو به «در انتظار تایید نهایی» منتقل می‌کنه.
+-- هر ۵ دقیقه: نوبت‌هایی که منتظر پرداخت بیعانه بودند و ۲۰ دقیقه پرداخت نشدند
+-- آزاد می‌شوند (v2.37 — فقط وقتی پیش‌پرداخت آنلاین روشن باشد کاری انجام می‌دهد).
+select cron.schedule(
+  'salon-expire-unpaid-bookings',
+  '*/5 * * * *',
+  $$ select public.expire_unpaid_bookings(); $$
+);
+
 select cron.schedule(
   'salon-transition-elapsed-appointments',
   '*/20 * * * *',
@@ -70,7 +90,8 @@ select cron.schedule(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/weekly-reconciliation',
     headers := jsonb_build_object(
                  'Content-Type',  'application/json',
-                 'Authorization', 'Bearer <SERVICE_ROLE>'
+                 'Authorization', 'Bearer <SERVICE_ROLE>',
+                 'x-internal-secret', '<INTERNAL_FUNCTION_SECRET>'
                ),
     body    := '{}'::jsonb
   );
@@ -87,7 +108,8 @@ select cron.schedule(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/predictive-rebooking-cron',
     headers := jsonb_build_object(
                  'Content-Type',  'application/json',
-                 'Authorization', 'Bearer <SERVICE_ROLE>'
+                 'Authorization', 'Bearer <SERVICE_ROLE>',
+                 'x-internal-secret', '<INTERNAL_FUNCTION_SECRET>'
                ),
     body    := '{}'::jsonb
   );

@@ -65,6 +65,7 @@ const map = {
       id: r.id, name: r.name, gender: r.gender, phone: r.phone || "",
       active: r.active,
       reminder_hours_before: r.reminder_hours_before ?? 3,
+      self_registered: !!r.self_registered, // v2.35: signed up themselves, waits for approval while inactive
     }),
     toRow: (s) => ({
       id: s.id, name: s.name ?? "", gender: s.gender ?? "female", phone: s.phone ?? "",
@@ -80,6 +81,10 @@ const map = {
       staff_id: r.staff_id, staff_name: r.staff_name || "",
       date: isoToKey(r.date), start_min: r.start_min, end_min: r.end_min,
       buffer_minutes: r.buffer_minutes ?? 0, status: r.status,
+      customer_response: r.customer_response ?? null, // v2.29: 'confirmed' | 'declined' | null
+      deposit_amount: r.deposit_amount ?? null,        // v2.37: toman, when an online deposit applied
+      deposit_paid_at: r.deposit_paid_at ?? null,
+      deposit_ref: r.deposit_ref ?? null,
       // A staff-proposed reschedule awaiting customer response — null/null/null
       // once there's no pending proposal (the normal case).
       pending_date: r.pending_date ? isoToKey(r.pending_date) : null,
@@ -141,6 +146,17 @@ const map = {
 function fail(where, error) {
   if (error) console.error(`[salon/api] ${where}:`, error.message || error);
   return error || null;
+}
+
+// A failed WRITE must be visible: the UI updates optimistically, so a
+// silently failed save looked like it worked (that hid the missing
+// salon_id defaults from v2.24 to v2.33). App.jsx listens for this event
+// and shows a message.
+function failWrite(where, error) {
+  if (error && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("salon:save-error", { detail: { where, message: error.message || String(error) } }));
+  }
+  return fail(where, error);
 }
 
 const byId = (arr) => new Map((arr || []).map((x) => [x.id, x]));
@@ -207,11 +223,11 @@ export async function syncCollection(table, prev, next) {
   for (const id of before.keys()) if (!after.has(id)) deletes.push(id);
 
   const jobs = [];
-  if (inserts.length) jobs.push(supabase.from(table).upsert(inserts).then(({ error }) => fail(`${table}.insert`, error)));
+  if (inserts.length) jobs.push(supabase.from(table).upsert(inserts).then(({ error }) => failWrite(`${table}.insert`, error)));
   for (const row of updates) {
-    jobs.push(supabase.from(table).update(row).eq("id", row.id).then(({ error }) => fail(`${table}.update`, error)));
+    jobs.push(supabase.from(table).update(row).eq("id", row.id).then(({ error }) => failWrite(`${table}.update`, error)));
   }
-  if (deletes.length) jobs.push(supabase.from(table).delete().in("id", deletes).then(({ error }) => fail(`${table}.delete`, error)));
+  if (deletes.length) jobs.push(supabase.from(table).delete().in("id", deletes).then(({ error }) => failWrite(`${table}.delete`, error)));
   await Promise.all(jobs);
   invalidateCache(table);
 }
@@ -221,7 +237,7 @@ export async function insertOne(table, item) {
   if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from(table).upsert(map[table].toRow(item));
   invalidateCache(table);
-  return fail(`${table}.insertOne`, error);
+  return failWrite(`${table}.insertOne`, error);
 }
 
 export async function updateOne(table, id, patch) {
@@ -232,20 +248,19 @@ export async function updateOne(table, id, patch) {
   const slim = Object.fromEntries(Object.entries(row).filter(([k]) => allowed.has(k)));
   const { error } = await supabase.from(table).update(slim).eq("id", id);
   invalidateCache(table);
-  return fail(`${table}.updateOne`, error);
+  return failWrite(`${table}.updateOne`, error);
 }
 
 export async function deleteOne(table, id) {
   if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from(table).delete().eq("id", id);
   invalidateCache(table);
-  return fail(`${table}.deleteOne`, error);
+  return failWrite(`${table}.deleteOne`, error);
 }
 
 /* ------------------------------------------------- working hours (special) */
 // The app models these as a plain 7-element array with no ids, plus a
 // { [stylistId]: array } map of overrides. Persist as a full replace per owner.
-const WH_KEYS = ["day_of_week", "start_time", "end_time", "is_closed"];
 const whFromRow = (r) => ({
   day_of_week: r.day_of_week, start_time: r.start_time,
   end_time: r.end_time, is_closed: r.is_closed,
@@ -253,22 +268,22 @@ const whFromRow = (r) => ({
 
 export async function saveWorkingHours(staffId, hours) {
   if (!SUPABASE_ENABLED) return;
+  // v2.33: replaced server-side per salon — fixed ids like "wh-salon-0"
+  // collided between salons (working_hours.id is globally unique).
   const rows = (hours || []).map((h) => ({
-    id: `wh-${staffId || "salon"}-${h.day_of_week}`,
-    staff_id: staffId || null,
     day_of_week: h.day_of_week,
     start_time: h.start_time ?? "09:00",
     end_time: h.end_time ?? "21:00",
     is_closed: !!h.is_closed,
   }));
-  const { error } = await supabase.from("working_hours").upsert(rows, { onConflict: "id" });
-  return fail("working_hours.save", error);
+  const { error } = await supabase.rpc("save_working_hours", { p_staff_id: staffId || null, p_hours: rows });
+  return failWrite("working_hours.save", error);
 }
 
 export async function clearStaffWorkingHours(staffId) {
   if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from("working_hours").delete().eq("staff_id", staffId);
-  return fail("working_hours.clear", error);
+  return failWrite("working_hours.clear", error);
 }
 
 /* ------------------------------------------------ approved dates (special) */
@@ -279,8 +294,8 @@ export async function syncApprovedDates(prev, next) {
   const removed = [...before].filter((k) => !after.has(k)).map(keyToISO);
 
   const jobs = [];
-  if (added.length) jobs.push(supabase.from("approved_dates").upsert(added, { onConflict: "date" }).then(({ error }) => fail("approved_dates.add", error)));
-  if (removed.length) jobs.push(supabase.from("approved_dates").delete().in("date", removed).then(({ error }) => fail("approved_dates.remove", error)));
+  if (added.length) jobs.push(supabase.from("approved_dates").upsert(added, { onConflict: "salon_id,date" }).then(({ error }) => failWrite("approved_dates.add", error)));
+  if (removed.length) jobs.push(supabase.from("approved_dates").delete().in("date", removed).then(({ error }) => failWrite("approved_dates.remove", error)));
   await Promise.all(jobs);
 }
 
@@ -298,12 +313,16 @@ export async function fetchPublicSlots() {
   return (data || []).map(map.appointments.fromRow);
 }
 
+const STYLIST_PUBLIC_COLUMNS = "id, salon_id, name, gender, active, reminder_hours_before, created_at";
+
 export async function bootstrap() {
   if (!SUPABASE_ENABLED) return null;
 
   const [svc, sty, appt, off, wh, appr, exp, wait] = await Promise.all([
     supabase.from("services").select("*").order("id"),
-    supabase.from("stylists").select("*").order("id"),
+    // Public columns only — a stylist's personal phone is staff-only (v2.32
+    // column grant); staff get the full rows from fetchStaffData().
+    supabase.from("stylists").select(STYLIST_PUBLIC_COLUMNS).order("id"),
     // v2.16: the PII-free slots view, not the raw table — this runs before
     // we know if the caller is staff or an anonymous visitor, and the
     // public booking flow only ever needs occupied-slot data here (who's
@@ -345,6 +364,29 @@ export async function bootstrap() {
     approvedDates: (appr.data || []).map((r) => isoToKey(r.date)),
     expenses: (exp.data || []).map(map.expenses.fromRow),
     waitlist: (wait.data || []).map(map.waitlist.fromRow),
+  };
+}
+
+/** Everything a logged-in staff member sees beyond the public bootstrap:
+ *  full appointments (with customer details), stylists incl. phone,
+ *  expenses and the waitlist — all RLS-scoped to their role. Called after a
+ *  restored session AND right after a fresh login (before, a fresh login
+ *  kept showing the anonymous data — no customer names, no expenses —
+ *  until the page was reloaded). Missing pieces come back as null. */
+export async function fetchStaffData() {
+  if (!SUPABASE_ENABLED) return null;
+  const [appt, sty, exp, wait] = await Promise.all([
+    supabase.from("appointments").select("*").order("date"),
+    supabase.from("stylists").select("*").order("id"),
+    supabase.from("expenses").select("*").order("date", { ascending: false }),
+    supabase.from("waitlist").select("*"),
+  ]);
+  const pick = (res, where, mapRow) => (res.error ? (fail(where, res.error), null) : (res.data || []).map(mapRow));
+  return {
+    bookings: pick(appt, "staff.appointments", map.appointments.fromRow),
+    stylists: pick(sty, "staff.stylists", map.stylists.fromRow),
+    expenses: pick(exp, "staff.expenses", map.expenses.fromRow),
+    waitlist: pick(wait, "staff.waitlist", map.waitlist.fromRow),
   };
 }
 
@@ -654,6 +696,52 @@ export async function addCampaignTargets(campaignId, phones) {
   return fail("campaign_targets.add", error);
 }
 
+/* ------------------------------------------------ v2.28: hands-off automation */
+// Per-salon switches that keep staff out of the app for routine work (see
+// supabase/migrations/v2.28_hands_off_automation.sql). Readable by anyone
+// on the salon's page (the booking flow needs auto_confirm_bookings),
+// writable by managers only (RLS on app_settings).
+export const DEFAULT_AUTOMATION = {
+  auto_confirm_bookings: true,
+  auto_open_days: true,
+  booking_window_days: 30,
+  staff_daily_digest: true,
+  manager_daily_digest: true,
+  waitlist_auto_offer: true,      // v2.29
+  attendance_confirmation: true,  // v2.29
+  deposit_percent: 0,             // v2.37 — 0 = no online deposit
+  deposit_min_price: 0,           // v2.37 — toman; deposit only for services at/above this
+};
+const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).join(", ");
+
+export async function fetchAutomationSettings() {
+  if (!SUPABASE_ENABLED) return { ...DEFAULT_AUTOMATION };
+  const { data, error } = await supabase.from("app_settings").select(AUTOMATION_COLUMNS).eq("salon_id", getCurrentSalonId()).maybeSingle();
+  // Before v2.28 is applied these columns don't exist yet — fall back to the
+  // old manual behavior rather than claiming automation that isn't running.
+  if (error || !data) {
+    if (error) fail("app_settings.fetchAutomation", error);
+    return Object.fromEntries(Object.entries(DEFAULT_AUTOMATION).map(([k, v]) => [k, typeof v === "boolean" ? false : v]));
+  }
+  return { ...DEFAULT_AUTOMATION, ...data };
+}
+
+/** Saves the patch; when the booking window is (re)enabled or resized, opens
+ *  the new days right away and returns the refreshed approved date keys. */
+export async function updateAutomationSettings(patch) {
+  if (!SUPABASE_ENABLED) return { error: null, approvedDates: null };
+  const { error } = await supabase.from("app_settings").update(patch).eq("salon_id", getCurrentSalonId());
+  if (error) return { error: fail("app_settings.updateAutomation", error), approvedDates: null };
+  let approvedDates = null;
+  if (patch.auto_open_days === true || patch.booking_window_days != null) {
+    const { error: rpcErr } = await supabase.rpc("open_my_booking_window");
+    if (rpcErr) fail("open_my_booking_window", rpcErr);
+    const { data } = await supabase.from("approved_dates").select("date");
+    if (data) approvedDates = data.map((r) => isoToKey(r.date));
+  }
+  return { error: null, approvedDates };
+}
+
 /* --------------------------------------------------------- phase 4: loyalty */
 export async function fetchLoyaltySettings() {
   if (!SUPABASE_ENABLED) return null;
@@ -730,8 +818,12 @@ export async function reportAppointmentNoShow(bookingId) {
 // v2.25 — the owner's weekly reconciliation page, reached via the SMS
 // magic link's token (no login needed, same bearer-token trust model as
 // the customer OTP/token flow).
+/** Pending visits for the manager's one-tap link, or null when the link is
+ *  expired/invalid (so the page doesn't claim "nothing to confirm"). */
 export async function fetchReconciliationQueue(token) {
   if (!SUPABASE_ENABLED) return [];
+  const { data: salonId } = await supabase.rpc("resolve_reconciliation_token", { p_token: token || "" });
+  if (!salonId) return null;
   const { data, error } = await supabase.rpc("get_reconciliation_queue", { p_token: token });
   if (error) { fail("get_reconciliation_queue", error); return []; }
   return data || [];
@@ -834,4 +926,90 @@ export async function broadcastSlotChange() {
   supabase.removeChannel(channel);
 }
 
+/* ---------------------------------------------- v2.37: online deposit (Zarinpal) */
+/** {enabled, percent, min_price} for this salon — safe for the public page. */
+export async function fetchDepositTerms() {
+  if (!SUPABASE_ENABLED) return { enabled: false, percent: 0, min_price: 0 };
+  const { data, error } = await supabase.rpc("deposit_terms");
+  if (error) { fail("deposit_terms", error); return { enabled: false, percent: 0, min_price: 0 }; }
+  return data || { enabled: false, percent: 0, min_price: 0 };
+}
 
+/** Manager only (RLS): the salon's Zarinpal merchant ID. */
+export async function fetchPaymentSettings() {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase.from("salon_payment_settings").select("zarinpal_merchant_id").eq("salon_id", getCurrentSalonId()).maybeSingle();
+  if (error) { fail("salon_payment_settings.fetch", error); return null; }
+  return data || { zarinpal_merchant_id: "" };
+}
+export async function savePaymentSettings(merchantId) {
+  if (!SUPABASE_ENABLED) return null;
+  const { error } = await supabase.from("salon_payment_settings").upsert(
+    { salon_id: getCurrentSalonId(), zarinpal_merchant_id: (merchantId || "").trim(), updated_at: new Date().toISOString() },
+    { onConflict: "salon_id" },
+  );
+  return failWrite("salon_payment_settings.save", error);
+}
+
+async function invokePayment(body) {
+  try {
+    const { data, error } = await supabase.functions.invoke("payment", { body });
+    if (error) {
+      // a non-2xx response still carries our JSON error message
+      const ctx = await error.context?.json?.().catch(() => null);
+      return { ok: false, error: ctx?.error || "اتصال به درگاه پرداخت ناموفق بود" };
+    }
+    return data;
+  } catch {
+    return { ok: false, error: "اتصال به درگاه پرداخت ناموفق بود" };
+  }
+}
+/** → { ok, url } — send the customer to Zarinpal. */
+export function startDepositPayment(appointmentId) {
+  if (!SUPABASE_ENABLED) return Promise.resolve({ ok: false, error: "دمو — پرداخت آنلاین فعال نیست" });
+  return invokePayment({ action: "request", appointment_id: appointmentId });
+}
+/** → { ok, paid, refund?, appointment } after Zarinpal redirects back. */
+export function verifyDepositPayment(authority, status) {
+  if (!SUPABASE_ENABLED) return Promise.resolve({ ok: false, error: "دمو — پرداخت آنلاین فعال نیست" });
+  return invokePayment({ action: "verify", authority, status });
+}
+
+/* ------------------------------------------------- v2.36: client error log */
+export async function fetchClientErrors(limit = 20) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase
+    .from("client_errors")
+    .select("id, kind, message, url, occurrences, first_seen, last_seen")
+    .order("last_seen", { ascending: false })
+    .limit(limit);
+  if (error) { fail("client_errors.fetch", error); return []; }
+  return data || [];
+}
+
+/* ------------------------------------------- v2.29: attendance confirmation */
+// Reached from the link in the reminder SMS (/confirm?token=…). The token is
+// the only credential; both RPCs are granted to anon.
+export async function fetchAttendance(token) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "این قابلیت به اتصال دیتابیس نیاز دارد" };
+  const { data, error } = await supabase.rpc("get_attendance", { p_token: token || "" });
+  if (error) { fail("get_attendance", error); return { ok: false, error: "دریافت اطلاعات نوبت ناموفق بود" }; }
+  return data;
+}
+
+export async function respondAttendance(token, response) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "این قابلیت به اتصال دیتابیس نیاز دارد" };
+  const { data, error } = await supabase.rpc("respond_attendance", { p_token: token || "", p_response: response });
+  if (error) { fail("respond_attendance", error); return { ok: false, error: "ثبت پاسخ ناموفق بود — دوباره امتحان کنید" }; }
+  return data;
+}
+
+// v2.32 — the customer's own full loyalty record (points, history, referral
+// code, referrals), only after OTP verification. The anonymous
+// customer_loyalty(phone) now returns just {found, discount_percent}.
+export async function fetchMyLoyaltyWithToken(token) {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase.rpc("get_my_loyalty_with_token", { p_token: token || "" });
+  if (error) { fail("get_my_loyalty_with_token", error); return null; }
+  return data;
+}

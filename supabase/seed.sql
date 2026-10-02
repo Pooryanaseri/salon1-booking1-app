@@ -5,10 +5,11 @@
 -- =============================================================================
 
 -- ---- STYLISTS (verbatim from SEED_STYLISTS in App.jsx) ----------------------
-insert into public.stylists (id, name, gender, phone, password, active, reminder_hours_before) values
-  ('st1', 'مهسا کریمی',    'female', '09121110001', '1234', true, 3),
-  ('st2', 'نیلوفر صادقی',  'female', '09121110002', '1234', true, 3),
-  ('st3', 'رضا احمدی',     'male',   '09121110003', '1234', true, 3)
+-- (no password column: credentials live only in Supabase Auth since v2.2)
+insert into public.stylists (id, name, gender, phone, active, reminder_hours_before) values
+  ('st1', 'مهسا کریمی',    'female', '09121110001', true, 3),
+  ('st2', 'نیلوفر صادقی',  'female', '09121110002', true, 3),
+  ('st3', 'رضا احمدی',     'male',   '09121110003', true, 3)
 on conflict (id) do nothing;
 
 -- ---- SERVICES (verbatim from SEED_SERVICES) ---------------------------------

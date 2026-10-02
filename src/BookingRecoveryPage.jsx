@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, Loader2, Calendar } from "lucide-react";
 import { resolveRebookingToken, fetchRebookingSlots, createBookingFromRebookingToken } from "./lib/api";
 
@@ -44,6 +44,11 @@ export default function BookingRecoveryPage({ token }) {
     resolveRebookingToken(token).then((res) => {
       if (!res.ok) { setState("invalid"); return; }
       setOffer(res);
+      // v2.29 waitlist offers point at the exact day that just freed up.
+      if (res.preferred_date) {
+        const [y, m, d] = String(res.preferred_date).split("-").map(Number);
+        setSelectedDate(new Date(y, m - 1, d));
+      }
       setState("picking");
     });
   }, [token]);
@@ -119,6 +124,11 @@ export default function BookingRecoveryPage({ token }) {
         <p style={{ fontSize: 12.5, color: "#888" }}>
           {offer?.salon_name} · {offer?.service_name}{offer?.staff_name ? ` · ${offer.staff_name}` : ""}
         </p>
+        {offer?.reason === "waitlist" && (
+          <p style={{ fontSize: 13, color: "#3a8f5c", fontWeight: 700, marginTop: 8 }}>
+            نوبتی که منتظرش بودید خالی شد — هر کس زودتر رزرو کند، نوبت مال اوست.
+          </p>
+        )}
       </div>
 
       <div style={{ ...card, marginBottom: 12 }}>

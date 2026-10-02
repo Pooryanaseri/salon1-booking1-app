@@ -56,9 +56,9 @@ async function authorize(req: Request): Promise<{ ok: boolean; role?: string; er
 
   const { data, error } = await admin.auth.getUser(token);
   if (error || !data.user) {
-    // Unauthenticated customers still need the confirmation SMS for their own
-    // booking. Those come through with action="send" + kind in this allowlist,
-    // and are rate-limited per phone below.
+    // Anonymous visitors (the public booking pages) get a restricted role:
+    // OTP requests and withdrawing feedback follow-ups only — see
+    // ANON_CANCELLABLE_KINDS and the anon check before "schedule"/"send".
     return { ok: true, role: "anon" };
   }
 
@@ -69,19 +69,15 @@ async function authorize(req: Request): Promise<{ ok: boolean; role?: string; er
   return { ok: true, role: profile.role };
 }
 
-const ANON_ALLOWED_KINDS = new Set(["confirmation", "cancellation", "reschedule"]);
+// v2.31: anonymous callers can no longer send or schedule anything — the
+// booking confirmation, stylist notice and reminder are queued by the
+// database itself (supabase/migrations/v2.31_server_owned_booking_sms.sql).
+// Accepting a caller-chosen recipient and text here made this endpoint an
+// open SMS relay on the salon's sender and credit. What an anonymous page
+// may still do: request a login OTP for its own number, and withdraw the
+// feedback follow-up after the customer has answered (FeedbackPage).
+const ANON_CANCELLABLE_KINDS = ["feedback_request", "feedback_followup"];
 
-/** Cheap abuse guard: max N messages per phone per hour for unauthenticated callers. */
-async function anonRateLimitOk(phone: string): Promise<boolean> {
-  const limit = Number(Deno.env.get("SMS_ANON_HOURLY_LIMIT") ?? 5);
-  const since = new Date(Date.now() - 3600_000).toISOString();
-  const { count } = await admin
-    .from("sms_messages")
-    .select("id", { count: "exact", head: true })
-    .eq("to_phone", phone)
-    .gte("created_at", since);
-  return (count ?? 0) < limit;
-}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -102,11 +98,13 @@ Deno.serve(async (req) => {
   /* ------------------------------------------------------------- cancel ---- */
   if (action === "cancel") {
     if (!payload.appointment_id) return json({ ok: false, error: "appointment_id لازم است" }, 400);
-    const { error, count } = await admin
+    let query = admin
       .from("sms_messages")
       .delete({ count: "exact" })
       .eq("appointment_id", payload.appointment_id)
       .eq("status", "queued");
+    if (auth.role === "anon") query = query.in("kind", ANON_CANCELLABLE_KINDS);
+    const { error, count } = await query;
     if (error) { console.error("[send-sms/cancel] db error:", error.message); return json({ ok: false, error: "لغو ناموفق بود" }, 500); }
     return json({ ok: true, cancelled: count ?? 0 });
   }
@@ -146,6 +144,10 @@ Deno.serve(async (req) => {
     // own phone, never to anyone else.
     const devOtp = Deno.env.get("SMS_DRY_RUN") === "true" ? data.otp : undefined;
     return json({ ok: true, expires_in_seconds: data.expires_in_seconds, ...(devOtp ? { dev_otp: devOtp } : {}) });
+  }
+
+  if (auth.role === "anon") {
+    return json({ ok: false, error: "برای ارسال پیامک باید وارد شوید" }, 403);
   }
 
   const messages: any[] = Array.isArray(payload.messages) ? payload.messages : [];
@@ -189,17 +191,6 @@ Deno.serve(async (req) => {
   }
 
   /* --------------------------------------------------------------- send ---- */
-  if (auth.role === "anon") {
-    const bad = messages.find((m) => !ANON_ALLOWED_KINDS.has(m.kind ?? "custom"));
-    if (bad) return json({ ok: false, error: "برای این نوع پیام دسترسی ندارید" }, 403);
-    if (messages.length > 2) return json({ ok: false, error: "درخواست بیش از حد" }, 429);
-    for (const m of messages) {
-      if (!(await anonRateLimitOk(normalizePhone(m.to)))) {
-        return json({ ok: false, error: "تعداد پیامک‌ها به این شماره زیاد بود" }, 429);
-      }
-    }
-  }
-
   const results = [];
   const auditRows = [];
 
