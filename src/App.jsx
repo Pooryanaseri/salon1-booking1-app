@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Sparkles, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName } from "./lib/tenant";
-import { bootstrap, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, fetchDepositTerms, DEFAULT_AUTOMATION } from "./lib/api";
+import { bootstrap, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, fetchDepositTerms, joinWaitlist, DEFAULT_AUTOMATION } from "./lib/api";
 import { signOut as authSignOut, restoreSession } from "./lib/auth";
 import { sendSms, scheduleReminder, renderTemplate } from "./lib/sms";
 import { jalaliLabel, formatClock, dateKey, parseDateKey } from "./lib/format";
@@ -441,9 +441,19 @@ export default function App() {
     notify("هزینه حذف شد");
   }
 
-  function addWaitlistEntry(entry) {
+  // v2.41: the public page joins through join_waitlist() (validated and
+  // de-duplicated server-side); visitors can't read the list, so the local
+  // copy only remembers this visitor's own entries for "already joined".
+  async function addWaitlistEntry(entry) {
+    if (SUPABASE_ENABLED) {
+      const res = await joinWaitlist({
+        date: entry.date, serviceId: entry.service_id, staffId: entry.staff_id,
+        name: entry.customer_name || "مشتری", phone: entry.customer_phone, gender: entry.customer_gender,
+      });
+      if (!res?.ok) return res;
+    }
     setWaitlist((prev) => [...prev, entry]);
-    insertOne("waitlist", entry);
+    return { ok: true };
   }
 
   function removeWaitlistEntry(id) {

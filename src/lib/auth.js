@@ -131,19 +131,16 @@ export function onAuthStateChange(callback) {
 }
 
 /**
- * Owner self-registration — only allowed while no owner exists (single-tenant,
- * same rule the app already enforced in OwnerAuthPanel).
+ * Owner self-registration — only while the salon has no manager, and (v2.41)
+ * only with the phone the platform admin bound to the salon. Checked before
+ * the auth account is created so a wrong number leaves nothing behind.
  */
 export async function registerOwner(phone, password) {
   if (!SUPABASE_ENABLED) return { ok: false, error: "OFFLINE" };
 
-  const { count } = await supabase
-    .from("users")
-    .select("id", { count: "exact", head: true })
-    .in("role", ["owner", "manager"]);
-  if (count && count > 0) {
-    return { ok: false, error: "برای این سالن قبلاً یک مدیر ثبت‌نام کرده — وارد شوید" };
-  }
+  const { data: allowed, error: checkError } = await supabase.rpc("can_register_manager", { p_phone: phone });
+  if (checkError) return { ok: false, error: "بررسی ثبت‌نام ناموفق بود — دوباره تلاش کنید" };
+  if (!allowed?.ok) return { ok: false, error: allowed?.error || "ثبت‌نام مجاز نیست" };
 
   const { data, error } = await supabase.auth.signUp({
     email: phoneToEmail(phone),
@@ -174,7 +171,9 @@ export async function registerOwner(phone, password) {
     full_name: "مدیر سالن",
     active: true,
   });
-  if (profileError) return { ok: false, error: "ساخت پروفایل ناموفق بود" };
+  if (profileError) {
+    return { ok: false, error: profileError.code === "42501" ? profileError.message : "ساخت پروفایل ناموفق بود" };
+  }
 
   return { ok: true, role: "owner", stylistId: null };
 }
@@ -267,4 +266,29 @@ function translateAuthError(msg = "") {
   if (m.includes("password")) return "رمز عبور باید حداقل ۶ کاراکتر باشد";
   if (m.includes("rate limit")) return "تعداد تلاش‌ها زیاد بود — کمی بعد دوباره امتحان کنید";
   return "ثبت‌نام ناموفق بود — دوباره تلاش کنید";
+}
+
+/* ------------------------------------------------ v2.41: platform admin -- */
+/** Sign in on /admin. Platform admins usually have no salon profile, so this
+ *  skips signIn()'s profile handling and only checks platform_admins. */
+export async function signInPlatformAdmin(phone, password) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { error } = await supabase.auth.signInWithPassword({ email: phoneToEmail(phone), password });
+  if (error) return { ok: false, error: "شماره یا رمز عبور اشتباه است" };
+  const { data: isAdmin } = await supabase.rpc("is_platform_admin");
+  if (isAdmin !== true) {
+    await supabase.auth.signOut();
+    return { ok: false, error: "این حساب مدیر کل نیست", notAdmin: true };
+  }
+  return { ok: true };
+}
+
+/** Creates the login for a would-be platform admin; access is granted
+ *  separately with one SQL line (see INSTALL.md) — never from the browser. */
+export async function registerPlatformAdmin(phone, password) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { error } = await supabase.auth.signUp({ email: phoneToEmail(phone), password });
+  if (error) return { ok: false, error: translateAuthError(error.message) };
+  await supabase.auth.signOut();
+  return { ok: true, email: phoneToEmail(phone) };
 }

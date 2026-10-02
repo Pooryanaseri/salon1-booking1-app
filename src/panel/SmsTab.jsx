@@ -8,6 +8,7 @@ import { toFa, jalaliLabel, formatClock, dateKey, parseDateKey } from "../lib/fo
 import { AUDIENCES } from "./LoyaltyTab";
 import { FALLBACK_SMS_TEMPLATES, RFM_SMART_DRAFTS, SMS_KIND_LABEL, SMS_STATUS_META } from "../app/shared";
 import { PanelSectionHeader } from "../components/ui";
+import { SmsAccountCard } from "./SmsAccountCard";
 import { RFM_SEGMENT_META } from "./biCards";
 
 export const SMS_SEGMENTS = [
@@ -310,6 +311,7 @@ export function SmsTab({ bookings, services, stylists, smsTemplates, notify, pre
   return (
     <div className="fade-in flex flex-col gap-3">
       <PanelSectionHeader Icon={MessageSquareText} title="پیامک" subtitle="کمپین‌های هوشمند، ارسال دستی، و تاریخچهٔ پیامک‌ها" color="var(--color-tab-panel)" />
+      <SmsAccountCard notify={notify} />
       <ReminderTimingCard hours={reminderHours} onSaved={onReminderHoursSaved} notify={notify} />
 
       {/* Segment switcher — three clear, organized sections instead of one long scroll */}

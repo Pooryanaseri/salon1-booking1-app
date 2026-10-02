@@ -59,8 +59,7 @@ language sql stable security definer set search_path = public as $fn$
          else 'غیرفعال در این خط خدمت' end as line_status_fa
   from cat_stats
   where public.is_manager()
-  order by phone, category
-  limit 2000;
+  order by phone, category;
 $fn$;
 revoke all on function public.get_customer_category_matrix() from public, anon;
 grant execute on function public.get_customer_category_matrix() to authenticated;
