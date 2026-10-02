@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Sparkles, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName } from "./lib/tenant";
-import { bootstrap, subscribeAppointments, fetchFullAppointments, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates } from "./lib/api";
+import { bootstrap, subscribeAppointments, fetchFullAppointments, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, DEFAULT_AUTOMATION } from "./lib/api";
 import { signOut as authSignOut, restoreSession } from "./lib/auth";
 import { sendSms, scheduleReminder, cancelScheduledReminders, renderTemplate } from "./lib/sms";
 import { jalaliLabel, formatClock, dateKey, parseDateKey, bookingTimestamp } from "./lib/format";
@@ -73,7 +73,7 @@ export default function App() {
     const base = new Date();
     base.setHours(0, 0, 0, 0);
     const arr = [];
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < DEFAULT_AUTOMATION.booking_window_days; i++) {
       const d = new Date(base);
       d.setDate(base.getDate() + i);
       arr.push(dateKey(d));
@@ -135,6 +135,12 @@ export default function App() {
   // SMS templates, loaded from public.sms_templates (falls back to the constants).
   const [smsTemplates, setSmsTemplates] = useState([]);
 
+  // v2.28 per-salon automation switches (auto-confirm, rolling booking
+  // window, morning digests). Demo mode runs with the defaults.
+  const [automation, setAutomation] = useState(DEFAULT_AUTOMATION);
+  const automationRef = useRef(automation);
+  useEffect(() => { automationRef.current = automation; }, [automation]);
+
   /* --------------------------------------------------------------- live refs */
   // Read-your-writes without stale closures, and without touching child props.
   const bookingsRef = useRef(bookings);
@@ -171,10 +177,11 @@ export default function App() {
         return;
       }
 
-      const [session, data, templates] = await Promise.all([
+      const [session, data, templates, automationSettings] = await Promise.all([
         restoreSession(),
         bootstrap(),
         fetchSmsTemplates(),
+        fetchAutomationSettings(),
       ]);
       if (cancelled) return;
 
@@ -195,6 +202,7 @@ export default function App() {
       setExpenses(data.expenses || []);
       setWaitlist(data.waitlist || []);
       setSmsTemplates(templates || []);
+      setAutomation(automationSettings);
 
       if (session) {
         setPanelAuthed(true);
@@ -284,8 +292,13 @@ export default function App() {
   // the assigned stylist had no idea a new appointment landed on their
   // schedule until they opened the app. Fires once, on initial creation
   // only (not on every later status change, unlike sendBookingSms).
+  //
+  // v2.28: with the morning digest on, a booking for a later day is already
+  // covered by that day's digest SMS — only same-day bookings (which the
+  // digest has already gone out for) still get an immediate heads-up.
   async function notifyStaffOfNewBooking(booking) {
     if (!booking.staff_id) return;
+    if (automationRef.current.staff_daily_digest && booking.date !== dateKey(new Date())) return;
     const stylist = (stylistsRef.current || []).find((s) => s.id === booking.staff_id);
     if (!stylist || !/^09\d{9}$/.test(stylist.phone || "")) return;
     const vars = bookingSmsVars(booking);
@@ -334,6 +347,9 @@ export default function App() {
   /* ------------------------------------------------------------- mutations */
   async function addBooking(params, onInserted) {
     const finalStaff = stylists.find((s) => s.id === params.staffId) || null;
+    // Mirrors the server's auto-confirm trigger (v2.28) so the local copy
+    // matches what was actually stored.
+    const newBookingStatus = automationRef.current.auto_confirm_bookings ? "confirmed" : "pending";
     let booking;
 
     if (SUPABASE_ENABLED) {
@@ -348,7 +364,7 @@ export default function App() {
         customer_name: params.customerName, customer_phone: params.customerPhone, customer_gender: params.customerGender,
         service_id: params.serviceId, staff_id: params.staffId, staff_name: res.staff_name || (finalStaff ? finalStaff.name : ""),
         date: params.date, start_min: params.startMin, end_min: params.endMin, buffer_minutes: params.bufferMinutes,
-        status: "pending", original_price: res.original_price, final_price: res.final_price,
+        status: newBookingStatus, original_price: res.original_price, final_price: res.final_price,
         tracking_code: res.tracking_code, sms_sent_confirmation: true,
       });
     } else {
@@ -359,7 +375,7 @@ export default function App() {
         customer_name: params.customerName, customer_phone: params.customerPhone, customer_gender: params.customerGender,
         service_id: params.serviceId, staff_id: params.staffId, staff_name: finalStaff ? finalStaff.name : "",
         date: params.date, start_min: params.startMin, end_min: params.endMin, buffer_minutes: params.bufferMinutes,
-        status: "pending", original_price: params.originalPrice, discount_type: params.discountType,
+        status: newBookingStatus, original_price: params.originalPrice, discount_type: params.discountType,
         discount_value: params.discountValue, discount_reason: params.discountReason, final_price: params.finalPrice,
         sms_sent_confirmation: true,
       });
@@ -629,6 +645,11 @@ export default function App() {
             removeExpense={removeExpense}
             waitlist={waitlist}
             removeWaitlistEntry={removeWaitlistEntry}
+            automation={automation}
+            onAutomationChange={(next, approvedDates) => {
+              setAutomation(next);
+              if (approvedDates) approvedCtl.hydrate(approvedDates);
+            }}
             notify={notify}
             onLogout={handleLogout}
           />

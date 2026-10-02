@@ -191,6 +191,9 @@ export const TOKENS_CSS = `
 .salon-app .switch { width: 40px; height: 24px; border-radius: var(--radius-full); position: relative; transition: background var(--duration-fast) var(--ease-standard); flex-shrink: 0; }
 .salon-app .salon-spin { animation: salonSpin 900ms linear infinite; }
 @keyframes salonSpin { to { transform: rotate(360deg); } }
+/* .tap's 44px min-height (a touch-target rule for normal buttons) was
+   stretching the 24px switch into a tall oval. */
+.salon-app .switch.tap { min-height: 0; }
 .salon-app .switch-knob { width: 18px; height: 18px; border-radius: 50%; background: white; position: absolute; top: 3px; transition: transform var(--duration-fast) var(--ease-standard); }
 
 /* ---- Mobile-native shell: bottom tab bar + bottom sheets ---- */

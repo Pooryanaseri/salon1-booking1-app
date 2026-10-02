@@ -26,16 +26,23 @@ select cron.schedule(
   $$
 );
 
--- هر شب ساعت ۳ بامداد: روزهای آیندهٔ باز را ۱۴ روز جلو می‌برد،
--- تا تقویم رزرو هیچ‌وقت خودش را تمام نکند.
+-- هر شب ساعت ۳ بامداد (UTC): برای هر سالنی که «باز بودن خودکار روزها» را
+-- روشن دارد، بازهٔ رزرو (پیش‌فرض ۳۰ روز) را جلو می‌برد (v2.28).
+-- نسخهٔ قبلی این job از v2.24 به بعد خطا می‌داد (بدون salon_id). همین نام
+-- را نگه داشته‌ایم تا اجرای دوبارهٔ این فایل job قبلی را جایگزین کند.
 select cron.schedule(
   'salon-roll-approved-dates',
   '0 3 * * *',
-  $$
-  insert into public.approved_dates (date)
-  select (current_date + i)::date from generate_series(0, 13) as g(i)
-  on conflict (date) do nothing;
-  $$
+  $$ select public.open_booking_window(); $$
+);
+
+-- هر روز ساعت ۰۴:۳۰ UTC (۸ صبح به وقت تهران): پیامک برنامهٔ روز برای هر
+-- آرایشگر و خلاصهٔ کوتاه برای مدیر را در صف می‌گذارد (v2.28). ارسال واقعی
+-- را همان cron-reminders (هر ۵ دقیقه) انجام می‌دهد.
+select cron.schedule(
+  'salon-daily-digests',
+  '30 4 * * *',
+  $$ select public.queue_daily_digests(); $$
 );
 
 -- =============================================================================

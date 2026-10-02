@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useData } from "../hooks/useData";
-import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX } from "lucide-react";
-import { fetchClosures, announceClosure, revokeClosure } from "../lib/api";
+import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap } from "lucide-react";
+import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
 import { schemaDayOf, uid } from "../app/shared";
@@ -89,7 +89,84 @@ export function ClosuresCard({ notify }) {
   );
 }
 
-export function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, currentStylistId, currentStylist, updateStylist, timeOff, setTimeOff, approvedDates, setApprovedDates, notify }) {
+// v2.28 — the switches that keep the manager and stylists out of the app for
+// routine work. Everything here is on by default; each one can be turned
+// back to the old manual way.
+function AutomationCard({ automation, onAutomationChange, notify }) {
+  const [saving, setSaving] = useState(null);
+  async function save(key, value) {
+    const next = { ...automation, [key]: value };
+    setSaving(key);
+    const { error, approvedDates } = await updateAutomationSettings({ [key]: value });
+    setSaving(null);
+    if (error) { notify("ذخیرهٔ تنظیم ناموفق بود"); return; }
+    onAutomationChange?.(next, approvedDates);
+    notify("تنظیم ذخیره شد");
+  }
+  const rows = [
+    {
+      key: "auto_confirm_bookings", Icon: CheckCircle2,
+      title: "تایید خودکار نوبت‌ها",
+      on: "هر نوبتی که مشتری ثبت کند بلافاصله تایید می‌شود و پیامک تایید و یادآوری می‌گیرد.",
+      off: "هر نوبت جدید منتظر تایید دستی شما در «نوبت‌های امروز» می‌ماند.",
+    },
+    {
+      key: "auto_open_days", Icon: CalendarCheck,
+      title: "باز بودن خودکار روزها",
+      on: `همیشه ${toFa(automation.booking_window_days)} روز آینده بر اساس ساعات کاری برای رزرو باز است. برای بستن یک روز از «تعطیلی» یا «مرخصی» استفاده کنید.`,
+      off: "مشتری فقط روزهایی را می‌تواند رزرو کند که شما دستی باز کرده‌اید.",
+    },
+    {
+      key: "staff_daily_digest", Icon: Sun,
+      title: "برنامهٔ صبحگاهی آرایشگران",
+      on: "هر آرایشگر صبح یک پیامک با نوبت‌های همان روزش می‌گیرد؛ فقط نوبت‌های همان روز جداگانه اطلاع داده می‌شوند.",
+      off: "برای هر نوبت جدید جداگانه به آرایشگر پیامک می‌رود.",
+    },
+    {
+      key: "manager_daily_digest", Icon: MessageSquareText,
+      title: "خلاصهٔ صبحگاهی مدیر",
+      on: "صبح‌ها یک پیامک کوتاه: تعداد نوبت‌های روز و فقط مواردی که به شما نیاز دارند.",
+      off: "پیامک خلاصه‌ای برای مدیر ارسال نمی‌شود.",
+    },
+  ];
+  return (
+    <div className="card mb-6" style={{ padding: 14 }}>
+      <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
+        <Zap size={15} color="var(--color-accent-500)" /> خودکارسازی
+      </p>
+      <p className="muted" style={{ fontSize: 11.5, marginTop: 2, marginBottom: 6, lineHeight: 1.7 }}>
+        کارهای تکراری را به سیستم بسپارید تا شما و آرایشگرها فقط برای موارد ضروری سراغ برنامه بیایید.
+      </p>
+      {rows.map(({ key, Icon, title, on, off }) => (
+        <div key={key} className="flex items-start gap-3" style={{ padding: "10px 0", borderTop: "1px solid var(--color-border)" }}>
+          <Icon size={16} color={automation[key] ? "var(--color-accent-500)" : "var(--color-muted)"} style={{ marginTop: 3, flexShrink: 0 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--color-heading)" }}>{title}</div>
+            <div className="muted" style={{ fontSize: 11.5, marginTop: 2, lineHeight: 1.7 }}>{automation[key] ? on : off}</div>
+            {key === "auto_open_days" && automation.auto_open_days && (
+              <label className="flex items-center gap-2 mt-2 muted" style={{ fontSize: 11.5 }}>
+                بازهٔ رزرو:
+                <select
+                  value={automation.booking_window_days}
+                  disabled={saving != null}
+                  onChange={(e) => save("booking_window_days", Number(e.target.value))}
+                  style={{ padding: "4px 8px", fontSize: 12 }}
+                >
+                  {[14, 30, 60, 90].map((n) => <option key={n} value={n}>{toFa(n)} روز</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+          <div style={{ opacity: saving === key ? 0.5 : 1, pointerEvents: saving != null ? "none" : "auto" }} aria-label={title}>
+            <Switch checked={!!automation[key]} onChange={(v) => save(key, v)} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, currentStylistId, currentStylist, updateStylist, timeOff, setTimeOff, approvedDates, setApprovedDates, automation = DEFAULT_AUTOMATION, onAutomationChange, notify }) {
   const [newOffDate, setNewOffDate] = useState("");
   const [newOffReason, setNewOffReason] = useState("");
   const [newOffAllDay, setNewOffAllDay] = useState(true);
@@ -287,7 +364,9 @@ export function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, 
         </>
       )}
 
-      {!currentStylistId && (
+      {!currentStylistId && <AutomationCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
+
+      {!currentStylistId && !automation.auto_open_days && (
         <>
           <p className="muted" style={{ fontSize: 13, marginBottom: 4 }}>روزهای باز برای رزرو</p>
           <p className="muted" style={{ fontSize: 11.5, marginBottom: 10, lineHeight: 1.7 }}>

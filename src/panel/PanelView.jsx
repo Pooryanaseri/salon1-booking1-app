@@ -17,7 +17,7 @@ import { SmsTab } from "./SmsTab";
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
    ============================================================ */
-export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout }) {
+export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange }) {
   const [subTab, setSubTab] = useState("dashboard");
   const [pendingSmsSegment, setPendingSmsSegment] = useState(null);
   const currentStylist = stylists.find((s) => s.id === currentStylistId) || null;
@@ -126,6 +126,8 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           setTimeOff={setTimeOff}
           approvedDates={approvedDates}
           setApprovedDates={setApprovedDates}
+          automation={automation}
+          onAutomationChange={onAutomationChange}
           notify={notify}
         />
       )}

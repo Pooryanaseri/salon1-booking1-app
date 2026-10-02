@@ -653,6 +653,48 @@ export async function addCampaignTargets(campaignId, phones) {
   return fail("campaign_targets.add", error);
 }
 
+/* ------------------------------------------------ v2.28: hands-off automation */
+// Per-salon switches that keep staff out of the app for routine work (see
+// supabase/migrations/v2.28_hands_off_automation.sql). Readable by anyone
+// on the salon's page (the booking flow needs auto_confirm_bookings),
+// writable by managers only (RLS on app_settings).
+export const DEFAULT_AUTOMATION = {
+  auto_confirm_bookings: true,
+  auto_open_days: true,
+  booking_window_days: 30,
+  staff_daily_digest: true,
+  manager_daily_digest: true,
+};
+const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).join(", ");
+
+export async function fetchAutomationSettings() {
+  if (!SUPABASE_ENABLED) return { ...DEFAULT_AUTOMATION };
+  const { data, error } = await supabase.from("app_settings").select(AUTOMATION_COLUMNS).eq("salon_id", getCurrentSalonId()).maybeSingle();
+  // Before v2.28 is applied these columns don't exist yet — fall back to the
+  // old manual behavior rather than claiming automation that isn't running.
+  if (error || !data) {
+    if (error) fail("app_settings.fetchAutomation", error);
+    return { ...DEFAULT_AUTOMATION, auto_confirm_bookings: false, auto_open_days: false, staff_daily_digest: false, manager_daily_digest: false };
+  }
+  return { ...DEFAULT_AUTOMATION, ...data };
+}
+
+/** Saves the patch; when the booking window is (re)enabled or resized, opens
+ *  the new days right away and returns the refreshed approved date keys. */
+export async function updateAutomationSettings(patch) {
+  if (!SUPABASE_ENABLED) return { error: null, approvedDates: null };
+  const { error } = await supabase.from("app_settings").update(patch).eq("salon_id", getCurrentSalonId());
+  if (error) return { error: fail("app_settings.updateAutomation", error), approvedDates: null };
+  let approvedDates = null;
+  if (patch.auto_open_days === true || patch.booking_window_days != null) {
+    const { error: rpcErr } = await supabase.rpc("open_my_booking_window");
+    if (rpcErr) fail("open_my_booking_window", rpcErr);
+    const { data } = await supabase.from("approved_dates").select("date");
+    if (data) approvedDates = data.map((r) => isoToKey(r.date));
+  }
+  return { error: null, approvedDates };
+}
+
 /* --------------------------------------------------------- phase 4: loyalty */
 export async function fetchLoyaltySettings() {
   if (!SUPABASE_ENABLED) return null;
