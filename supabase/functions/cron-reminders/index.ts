@@ -132,7 +132,7 @@ Deno.serve(async (req) => {
   const horizonISO = new Date(now + TZ_OFFSET_MIN * 60_000 + 3 * 86_400_000)
     .toISOString().slice(0, 10);
 
-  const [{ data: appts }, { data: stylists }, { data: services }, { data: tpls }, { data: salons }] =
+  const [{ data: appts }, { data: stylists }, { data: services }, { data: tpls }, { data: salons }, { data: settings }] =
     await Promise.all([
       admin.from("appointments")
         .select("id, salon_id, customer_name, customer_phone, service_id, staff_id, staff_name, date, start_min, status, tracking_code, sms_sent_reminder")
@@ -146,6 +146,7 @@ Deno.serve(async (req) => {
       // .maybeSingle() here errored as soon as a second salon existed.
       admin.from("sms_templates").select("salon_id, body").eq("kind", "reminder").eq("is_default", true),
       admin.from("salons").select("id, name"),
+      admin.from("app_settings").select("salon_id, attendance_confirmation"),
     ]);
 
   const reminderHours = new Map((stylists ?? []).map((s) => [s.id, s.reminder_hours_before ?? 3]));
@@ -153,6 +154,7 @@ Deno.serve(async (req) => {
   const defaultHours = Number(Deno.env.get("DEFAULT_REMINDER_HOURS") ?? 3);
   const templateBySalon = new Map((tpls ?? []).map((t) => [t.salon_id, t.body]));
   const salonName = new Map((salons ?? []).map((s) => [s.id, s.name]));
+  const attendanceOn = new Set((settings ?? []).filter((s) => s.attendance_confirmation).map((s) => s.salon_id));
   const fallbackTemplate =
     "{{name}} عزیز، یادآوری نوبت شما در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما هستیم.";
 
@@ -176,7 +178,7 @@ Deno.serve(async (req) => {
       .in("status", ["queued", "sent", "delivered"]);
     if ((count ?? 0) > 0) continue;
 
-    const body = render(templateBySalon.get(a.salon_id) ?? fallbackTemplate, {
+    let body = render(templateBySalon.get(a.salon_id) ?? fallbackTemplate, {
       name: a.customer_name || "مشتری",
       service: serviceName.get(a.service_id ?? "") ?? "خدمت",
       date: jalaliLabel(a.date),
@@ -185,6 +187,13 @@ Deno.serve(async (req) => {
       code: a.tracking_code ?? "",
       salon: salonName.get(a.salon_id) || SALON_NAME,
     });
+
+    // v2.29: same "confirm / can't make it" link the queued reminders get
+    // from the DB trigger — this sweep path sends directly, so add it here.
+    if (attendanceOn.has(a.salon_id)) {
+      const { data: link } = await admin.rpc("issue_attendance_link", { p_appointment_id: a.id });
+      if (link) body += `\nتایید حضور یا لغو: ${link}`;
+    }
 
     const r = await sendOne(a.customer_phone, body);
 

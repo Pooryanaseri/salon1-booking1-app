@@ -13,7 +13,7 @@ import { DateStrip, Row } from "../components/ui";
    ============================================================ */
 // Shown when a customer's chosen day has no open slots left — lets them leave a
 // phone number instead of just turning them away. Staff see these in the panel.
-export function WaitlistJoinCard({ onJoin, alreadyJoined }) {
+export function WaitlistJoinCard({ onJoin, alreadyJoined, autoOffer }) {
   const [open, setOpen] = useState(false);
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
@@ -25,7 +25,9 @@ export function WaitlistJoinCard({ onJoin, alreadyJoined }) {
       <div className="card fade-in" style={{ padding: 18, textAlign: "center" }}>
         <CheckCircle2 size={20} color="var(--color-success)" style={{ margin: "0 auto 6px" }} />
         <p style={{ fontSize: 13, fontWeight: 700, color: "var(--color-heading)" }}>در لیست انتظار این روز ثبت شدید</p>
-        <p className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>در صورت خالی شدن نوبت، سالن با شما تماس می‌گیرد</p>
+        <p className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>
+          {autoOffer ? "اگر نوبتی خالی شود، لینک رزرو برایتان پیامک می‌شود" : "در صورت خالی شدن نوبت، سالن با شما تماس می‌گیرد"}
+        </p>
       </div>
     );
   }
@@ -104,7 +106,7 @@ export function downloadBookingIcs({ title, date, startMin, endMin, description 
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingHours, timeOff, approvedDates, addBooking, waitlist, addWaitlistEntry, notify, onSectionChange, onTrack }) {
+export function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingHours, timeOff, approvedDates, addBooking, waitlist, addWaitlistEntry, notify, onSectionChange, onTrack, automation }) {
   const [step, setStep] = useState(1); // 1 gender, 2 service, 3 stylist, 4 date/time, 5 phone, 6 confirm, 7 done
   const [gender, setGender] = useState(null);
   const [category, setCategory] = useState("all");
@@ -695,6 +697,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           {slots.length === 0 && !unavailableReason(selectedDate) && (
             <WaitlistJoinCard
               key={dateKey(selectedDate)}
+              autoOffer={automation?.waitlist_auto_offer}
               alreadyJoined={waitlist.some(
                 (w) => w.date === dateKey(selectedDate) && w.service_id === service.id && (w.staff_id || null) === (staffId || null)
               )}

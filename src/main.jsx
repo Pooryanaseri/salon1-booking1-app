@@ -4,6 +4,7 @@ import App from "./App.jsx";
 import FeedbackPage from "./FeedbackPage.jsx";
 import ReconciliationPage from "./ReconciliationPage.jsx";
 import BookingRecoveryPage from "./BookingRecoveryPage.jsx";
+import AttendancePage from "./AttendancePage.jsx";
 import { SUPABASE_ENABLED } from "./lib/supabase.js";
 import { getSession, signOut } from "./lib/auth.js";
 import { slugFromLocation, resolveSalonFromSlug } from "./lib/tenant.js";
@@ -185,6 +186,8 @@ const reconcileMatch = window.location.pathname.match(/^\/[^/]+\/reconcile\/?$/)
 const reconcileToken = reconcileMatch ? new URLSearchParams(window.location.search).get("token") : null;
 const bookRecoveryMatch = window.location.pathname.match(/^\/book\/?$/);
 const bookRecoveryToken = bookRecoveryMatch ? new URLSearchParams(window.location.search).get("token") : null;
+const attendanceMatch = window.location.pathname.match(/^\/confirm\/?$/);
+const attendanceToken = attendanceMatch ? new URLSearchParams(window.location.search).get("token") : null;
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
@@ -195,6 +198,8 @@ ReactDOM.createRoot(document.getElementById("root")).render(
         <ReconciliationPage token={reconcileToken} />
       ) : bookRecoveryMatch ? (
         <BookingRecoveryPage token={bookRecoveryToken} />
+      ) : attendanceMatch ? (
+        <AttendancePage token={attendanceToken} />
       ) : (
         <TenantGate>
           <OfflineBanner />

@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useData } from "../hooks/useData";
-import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap } from "lucide-react";
+import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell } from "lucide-react";
 import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
@@ -115,6 +115,18 @@ function AutomationCard({ automation, onAutomationChange, notify }) {
       title: "باز بودن خودکار روزها",
       on: `همیشه ${toFa(automation.booking_window_days)} روز آینده بر اساس ساعات کاری برای رزرو باز است. برای بستن یک روز از «تعطیلی» یا «مرخصی» استفاده کنید.`,
       off: "مشتری فقط روزهایی را می‌تواند رزرو کند که شما دستی باز کرده‌اید.",
+    },
+    {
+      key: "attendance_confirmation", Icon: UserCheck,
+      title: "تایید حضور توسط مشتری",
+      on: "پیامک یادآوری یک لینک دارد: «می‌آیم» یا «نمی‌توانم بیایم». با لغو، نوبت خودکار آزاد می‌شود.",
+      off: "پیامک یادآوری فقط اطلاع‌رسانی است.",
+    },
+    {
+      key: "waitlist_auto_offer", Icon: Bell,
+      title: "پر کردن خودکار نوبت لغوشده",
+      on: "با لغو هر نوبت، برای افراد لیست انتظار همان روز لینک رزرو پیامک می‌شود؛ هر کس زودتر رزرو کند.",
+      off: "لیست انتظار فقط نمایش داده می‌شود و باید خودتان تماس بگیرید.",
     },
     {
       key: "staff_daily_digest", Icon: Sun,

@@ -80,6 +80,7 @@ const map = {
       staff_id: r.staff_id, staff_name: r.staff_name || "",
       date: isoToKey(r.date), start_min: r.start_min, end_min: r.end_min,
       buffer_minutes: r.buffer_minutes ?? 0, status: r.status,
+      customer_response: r.customer_response ?? null, // v2.29: 'confirmed' | 'declined' | null
       // A staff-proposed reschedule awaiting customer response — null/null/null
       // once there's no pending proposal (the normal case).
       pending_date: r.pending_date ? isoToKey(r.pending_date) : null,
@@ -664,6 +665,8 @@ export const DEFAULT_AUTOMATION = {
   booking_window_days: 30,
   staff_daily_digest: true,
   manager_daily_digest: true,
+  waitlist_auto_offer: true,      // v2.29
+  attendance_confirmation: true,  // v2.29
 };
 const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).join(", ");
 
@@ -674,7 +677,7 @@ export async function fetchAutomationSettings() {
   // old manual behavior rather than claiming automation that isn't running.
   if (error || !data) {
     if (error) fail("app_settings.fetchAutomation", error);
-    return { ...DEFAULT_AUTOMATION, auto_confirm_bookings: false, auto_open_days: false, staff_daily_digest: false, manager_daily_digest: false };
+    return Object.fromEntries(Object.entries(DEFAULT_AUTOMATION).map(([k, v]) => [k, typeof v === "boolean" ? false : v]));
   }
   return { ...DEFAULT_AUTOMATION, ...data };
 }
@@ -875,4 +878,19 @@ export async function broadcastSlotChange() {
   supabase.removeChannel(channel);
 }
 
+/* ------------------------------------------- v2.29: attendance confirmation */
+// Reached from the link in the reminder SMS (/confirm?token=…). The token is
+// the only credential; both RPCs are granted to anon.
+export async function fetchAttendance(token) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "این قابلیت به اتصال دیتابیس نیاز دارد" };
+  const { data, error } = await supabase.rpc("get_attendance", { p_token: token || "" });
+  if (error) { fail("get_attendance", error); return { ok: false, error: "دریافت اطلاعات نوبت ناموفق بود" }; }
+  return data;
+}
 
+export async function respondAttendance(token, response) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "این قابلیت به اتصال دیتابیس نیاز دارد" };
+  const { data, error } = await supabase.rpc("respond_attendance", { p_token: token || "", p_response: response });
+  if (error) { fail("respond_attendance", error); return { ok: false, error: "ثبت پاسخ ناموفق بود — دوباره امتحان کنید" }; }
+  return data;
+}

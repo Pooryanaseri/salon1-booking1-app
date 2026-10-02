@@ -25,7 +25,7 @@ import { supabase, SUPABASE_ENABLED, setCurrentSalonId } from "./supabase.js";
 export function slugFromLocation() {
   const seg = window.location.pathname.split("/").filter(Boolean)[0];
   if (!seg) return null;
-  if (seg === "feedback") return null; // FeedbackPage's own route, not a salon slug
+  if (seg === "feedback" || seg === "book" || seg === "confirm") return null; // standalone token pages, not salon slugs
   return seg;
 }
 

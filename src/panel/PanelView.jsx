@@ -591,7 +591,14 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                     <div className="muted" style={{ fontSize: 12, marginTop: 1, textDecoration: meta.strike ? "line-through" : "none" }}>
                       {service?.name}{b.staff_name ? ` · ${b.staff_name}` : ""}
                     </div>
-                    <div className="mt-1.5"><Badge status={b.status} /></div>
+                    <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                      <Badge status={b.status} />
+                      {b.customer_response === "confirmed" && ["confirmed", "rescheduled", "pending"].includes(b.status) && (
+                        <span className="badge" style={{ background: "color-mix(in oklch, var(--color-success) 15%, transparent)", color: "var(--color-success)" }}>
+                          <CheckCircle2 size={12} /> مشتری حضور را تایید کرد
+                        </span>
+                      )}
+                    </div>
                     {b.status === "reschedule_proposed" && (
                       <div className="flex items-center gap-1 tabular" style={{ fontSize: 10.5, marginTop: 3, color: "var(--color-warning)" }}>
                         <Clock size={11} /> پیشنهاد: {jalaliLabel(parseDateKey(b.pending_date), { short: true })} - {formatClock(b.pending_start_min)} — در انتظار پاسخ مشتری
