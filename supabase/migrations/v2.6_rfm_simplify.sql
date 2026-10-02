@@ -11,6 +11,9 @@
 --     they're closest to — the follow-up message was the same either way.
 -- ============================================================================
 
+-- Return type differs from the earlier version (and from schema.sql on a
+-- fresh install), which CREATE OR REPLACE can't change — drop first.
+drop function if exists public.get_customer_rfm_segments();
 create or replace function public.get_customer_rfm_segments()
 returns table (
   phone text, name text, sms_opt_out boolean,

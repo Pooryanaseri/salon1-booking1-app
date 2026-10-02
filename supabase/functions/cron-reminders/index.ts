@@ -88,12 +88,10 @@ Deno.serve(async (req) => {
   const report = { drained: 0, drainFailed: 0, swept: 0, sweepFailed: 0 };
 
   /* ------------------------------------------------------------ 1. DRAIN --- */
-  const { data: due } = await admin
-    .from("sms_messages")
-    .select("id, to_phone, body, kind, appointment_id")
-    .eq("status", "queued")
-    .lte("scheduled_for", new Date(now).toISOString())
-    .limit(200);
+  // v2.34: claimed atomically — a row handed to this run is never handed
+  // to an overlapping run (or any other sender), so nothing goes out twice.
+  const { data: due, error: claimError } = await admin.rpc("claim_due_sms", { p_limit: 200 });
+  if (claimError) console.error("[cron-reminders] claim_due_sms failed:", claimError.message);
 
   for (const msg of due ?? []) {
     // v2.25: an appointment can change state (cancelled, no_show) in the
@@ -175,7 +173,7 @@ Deno.serve(async (req) => {
       .select("id", { count: "exact", head: true })
       .eq("appointment_id", a.id)
       .eq("kind", "reminder")
-      .in("status", ["queued", "sent", "delivered"]);
+      .in("status", ["queued", "sending", "sent", "delivered"]);
     if ((count ?? 0) > 0) continue;
 
     let body = render(templateBySalon.get(a.salon_id) ?? fallbackTemplate, {

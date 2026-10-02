@@ -26,18 +26,23 @@
 
 ---
 
-## ارتقا به v2.30 تا v2.33 (رفع باگ و امنیت — الزامی)
+## ارتقا به v2.30 تا v2.34 (رفع باگ و امنیت — الزامی)
 
 1. **SQL Editor** → به ترتیب `v2.30_review_fixes.sql`، `v2.31_server_owned_booking_sms.sql`
-   ، `v2.32_function_privileges.sql` و `v2.33_salon_defaults_and_signup_guard.sql`
-   از پوشهٔ `supabase/migrations`.
+   ، `v2.32_function_privileges.sql`، `v2.33_salon_defaults_and_signup_guard.sql`
+   و `v2.34_sms_claim.sql` از پوشهٔ `supabase/migrations`.
    **v2.32 امنیتی و فوری است:** تا قبل از آن هر کسی با کلید عمومی سایت
    می‌توانست کد ورود هر مشتری را بگیرد و نوبت‌هایش را ببیند/لغو کند، لینک
    گزارش هفتگی مدیر را بسازد، و نام صاحب هر شمارهٔ موبایل را ببیند.
    **v2.33 هم فوری است:** هر کسی می‌توانست ثبت‌نام کند و خودش را «مدیر» هر
    سالنی کند؛ و از v2.24 هیچ چیزی از پنل (خدمت، آرایشگر، هزینه، مرخصی، …) واقعاً
    ذخیره نمی‌شد.
-2. `supabase functions deploy send-sms` — **امنیتی:** نسخهٔ قبلی به بازدیدکنندهٔ
+2. Edge Function ها را دوباره deploy کنید:
+   `supabase functions deploy send-sms`،
+   `supabase functions deploy cron-reminders --no-verify-jwt`،
+   `supabase functions deploy predictive-rebooking-cron --no-verify-jwt`،
+   `supabase functions deploy weekly-reconciliation --no-verify-jwt`.
+   دربارهٔ `send-sms` — **امنیتی:** نسخهٔ قبلی به بازدیدکنندهٔ
    ناشناس اجازه می‌داد متن و گیرندهٔ پیامک را خودش تعیین کند (ارسال پیامک دلخواه
    با خط و اعتبار سالن). از v2.31 پیامک‌های رزرو را خود دیتابیس می‌سازد.
 3. `supabase/cron.sql` را دوباره اجرا کنید (`cron-reminders` هر دقیقه اجرا می‌شود
@@ -114,10 +119,16 @@
 
 **SQL Editor → New query** و به‌ترتیب اجرا کن:
 
-1. `supabase/schema.sql` — جدول‌ها، ایندکس‌ها، تریگرها، RLS، و RPCها
-2. `supabase/seed.sql` — انتقال دادهٔ نمونهٔ فعلی (۱۴ خدمت، ۳ آرایشگر، ساعات کاری، قالب‌های پیامک)
+1. `supabase/schema.sql` — جدول‌ها، ایندکس‌ها، تریگرها، RLS، و RPCها (نسخهٔ پایه)
+2. `supabase/seed.sql` — دادهٔ نمونه (۱۴ خدمت، ۳ آرایشگر، ساعات کاری، قالب‌های پیامک)
+3. **همهٔ فایل‌های `supabase/migrations/v2.*.sql` به ترتیب شماره**
+   (`v2.1`، `v2.2`، … `v2.9`، `v2.10`، … تا آخرین). `schema.sql` به‌تنهایی نسخهٔ
+   قدیمی و تک‌سالنی است و بدون migrationها برنامه کار نمی‌کند («سالنی با این آدرس
+   پیدا نشد»). seed باید **قبل** از migrationها اجرا شود تا داده‌ها به سالن پیش‌فرض
+   وصل شوند. فایل `repair_owner_login.sql` جزو این ترتیب نیست (فقط برای ترمیم).
+4. `supabase/cron.sql` (بعد از جایگزینی `<PROJECT_REF>` و `<SERVICE_ROLE>`).
 
-هر دو **idempotent** هستند (`on conflict do nothing`) — اجرای دوباره چیزی را خراب نمی‌کند.
+این ترتیب روی PostgreSQL 16 از صفر تا آخر بدون خطا آزموده شده است.
 
 ## گام ۳ — ساخت حساب مدیر سالن
 

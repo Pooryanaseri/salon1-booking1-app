@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: "could not load salons" }, 500);
   }
 
-  const report = { salons: 0, reconciliationSent: 0, summarySent: 0, stylistsNotified: 0, failed: 0 };
+  const report = { salons: 0, reconciliationSent: 0, summarySent: 0, failed: 0 };
 
   for (const salon of salons ?? []) {
     report.salons++;
@@ -132,33 +132,9 @@ Deno.serve(async (req) => {
       // existing RBAC model everywhere else in this app). A stylist
       // resolves their own via the per-booking "انجام شد"/"عدم حضور"
       // menu already in the app.
-      const { data: stylists } = await admin
-        .from("users").select("phone, stylist_id")
-        .eq("salon_id", salon.id).eq("role", "stylist").eq("active", true)
-        .not("stylist_id", "is", null);
-
-      for (const stylist of stylists ?? []) {
-        if (!stylist.phone) continue;
-        const { count: myPendingCount } = await admin
-          .from("appointments")
-          .select("id", { count: "exact", head: true })
-          .eq("salon_id", salon.id)
-          .eq("staff_id", stylist.stylist_id)
-          .eq("status", "pending_verification");
-        if (!myPendingCount) continue;
-
-        const stylistBody = `${salon.name}: ${toFa(myPendingCount)} نوبت از شما منتظر تایید نهایی‌ست — برای بررسی وارد اپ شوید.`;
-        const r = await sendOne(stylist.phone, stylistBody);
-        await admin.from("sms_messages").insert({
-          salon_id: salon.id, to_phone: stylist.phone, body: stylistBody,
-          kind: "reconciliation_prompt",
-          status: r.ok ? "sent" : "failed",
-          provider: r.provider, provider_msg_id: r.providerMsgId ?? null,
-          error: r.ok ? null : r.error, cost: r.cost ?? null,
-          sent_at: r.ok ? new Date().toISOString() : null,
-        });
-        if (r.ok) report.stylistsNotified++; else report.failed++;
-      }
+      // Stylists are no longer asked to open the app for this: the manager
+      // resolves every pending visit from the one-tap link above (keeps
+      // stylists out of the app for routine work — see v2.28).
     } catch (err) {
       console.error(`[weekly-reconciliation] salon ${salon.slug} failed:`, err);
       report.failed++;
