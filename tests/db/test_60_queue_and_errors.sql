@@ -19,3 +19,9 @@ set role authenticated;
 select public.save_working_hours(null, '[{"day_of_week":0,"start_time":"10:00","end_time":"18:00","is_closed":false}]');
 reset role;
 select tst.ok((select start_time from public.working_hours where salon_id = '00000000-0000-0000-0000-000000000001' and staff_id is null and day_of_week = 0) = '10:00', 'working hours saved per salon');
+-- restore the full week for the tests after this one
+select tst.as_user('11111111-1111-1111-1111-111111111111');
+set role authenticated;
+select public.save_working_hours(null, (select jsonb_agg(jsonb_build_object('day_of_week', d, 'start_time', '09:00', 'end_time', '20:00', 'is_closed', false)) from generate_series(0, 6) d));
+reset role;
+select tst.ok((select count(*) from public.working_hours where salon_id = '00000000-0000-0000-0000-000000000001' and staff_id is null and not is_closed) = 7, 'full week restored');
