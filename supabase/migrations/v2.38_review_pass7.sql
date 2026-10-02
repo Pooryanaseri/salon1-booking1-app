@@ -251,3 +251,15 @@ begin
   return new;
 end;
 $fn$;
+
+-- 4) current_salon_id() cast request.headers to json directly. After a
+--    transaction-local set_config (how PostgREST passes headers) the setting
+--    reads back as '' — not NULL — on a reused connection, and ''::json
+--    raises, failing whatever called it (RLS checks, column defaults).
+create or replace function public.current_salon_id() returns uuid
+language sql stable security definer set search_path = public as $fn$
+  select coalesce(
+    (select salon_id from public.users where id = auth.uid()),
+    nullif(nullif(current_setting('request.headers', true), '')::json ->> 'x-salon-id', '')::uuid
+  );
+$fn$;

@@ -818,8 +818,12 @@ export async function reportAppointmentNoShow(bookingId) {
 // v2.25 — the owner's weekly reconciliation page, reached via the SMS
 // magic link's token (no login needed, same bearer-token trust model as
 // the customer OTP/token flow).
+/** Pending visits for the manager's one-tap link, or null when the link is
+ *  expired/invalid (so the page doesn't claim "nothing to confirm"). */
 export async function fetchReconciliationQueue(token) {
   if (!SUPABASE_ENABLED) return [];
+  const { data: salonId } = await supabase.rpc("resolve_reconciliation_token", { p_token: token || "" });
+  if (!salonId) return null;
   const { data, error } = await supabase.rpc("get_reconciliation_queue", { p_token: token });
   if (error) { fail("get_reconciliation_queue", error); return []; }
   return data || [];
