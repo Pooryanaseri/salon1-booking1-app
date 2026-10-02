@@ -1,9 +1,13 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Clock, Percent, Banknote, XCircle, TrendingUp, TrendingDown, ChevronLeft, Wallet, Users, UserPlus, Repeat2, Award, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import { gregorianToJalali, jalaliDayNum, MONTHS_FA, WEEKDAYS_FA_FULL, SCHEMA_DAY_LABELS, toFa, formatToman, jalaliLabel, hhmmToMin, dateKey, parseDateKey, bookingTimestamp } from "../lib/format";
 import { BookingHeatmap, CampaignPerformanceCard, CampaignReturnRateCard, FeedbackStatsCard, RevenueTrendChart, ServiceShareDonut } from "./biCards";
 import { GENDER_TYPE_LABEL, schemaDayOf } from "../app/shared";
 import { GenderBadge } from "../components/ui";
+import { fetchRfmSegments } from "../lib/api";
+import { segmentMembers } from "../lib/campaigns";
+import { buildBIInsights } from "./biInsights";
+import { BIInsightsCard } from "./BIInsightsCard";
 
 /* ============================================================
    Business Intelligence tab — owner-only (RBAC enforced by PanelView:
@@ -132,7 +136,7 @@ export const BI_KPIS = [
 
 const DONUT_COLORS = ["var(--color-accent-500)", "var(--color-info)", "var(--color-success)", "var(--color-warning)", "var(--color-tab-panel)"];
 
-export function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates }) {
+export function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, automation, onAutomationChange, onReminderHoursSaved, onNavigate, notify }) {
   const [range, setRange] = useState("30"); // default 30 days
   const [branchFilter, setBranchFilter] = useState("all");
   const [staffFilter, setStaffFilter] = useState("all");
@@ -365,6 +369,31 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
     return { newRevenue, returningRevenue, newCount, returningCount, total: newRevenue + returningRevenue || 1 };
   }, [periodPricedCompleted, baseFiltered, periodStart]);
 
+  // ---- v2.40: plain-language findings + one-tap actions (see biInsights.js) ----
+  const [rfmRows, setRfmRows] = useState([]);
+  useEffect(() => { fetchRfmSegments().then((rows) => setRfmRows(rows || [])); }, []);
+  const insights = useMemo(() => {
+    const kpiValues = (list, startTs) => Object.fromEntries(
+      BI_KPIS.map((k) => [k.id === "totalRevenue" ? "revenue" : k.id, k.compute(list, baseFiltered, startTs)])
+    );
+    const segmentCounts = Object.fromEntries(
+      ["at_risk", "new", "champions_vip"].map((key) => [key, segmentMembers(rfmRows, key).length])
+    );
+    return buildBIInsights({
+      spanDays,
+      cur: kpiValues(periodBookings, periodStart.getTime()),
+      prev: kpiValues(prevPeriodBookings, prevPeriodStart.getTime()),
+      periodBookings, prevPeriodBookings, services,
+      heatmapGrid, heatmapHours,
+      pareto: paretoData,
+      nextDays: demandForecast.days.map((d) => ({ ...d, label: jalaliLabel(d.date) })),
+      serviceShare: serviceShareSlices.filter((x) => x.name !== "سایر"),
+      stylistPerf,
+      automation,
+      segmentCounts,
+    });
+  }, [spanDays, periodBookings, prevPeriodBookings, baseFiltered, periodStart, prevPeriodStart, services, heatmapGrid, heatmapHours, paretoData, demandForecast, serviceShareSlices, stylistPerf, automation, rfmRows]);
+
   const activeKpi = drill ? BI_KPIS.find((k) => k.id === drill.kpiId) : null;
   const currentLevel = drill && drill.path.length < BI_DRILL_LEVELS.length ? BI_DRILL_LEVELS[drill.path.length] : null;
 
@@ -491,6 +520,20 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
               </button>
             );
           })}
+        </div>
+      )}
+
+      {!drill && (
+        <div style={{ marginTop: 12 }}>
+          <BIInsightsCard
+            insights={insights}
+            rfmRows={rfmRows}
+            automation={automation}
+            onAutomationChange={onAutomationChange}
+            onReminderHoursSaved={onReminderHoursSaved}
+            onNavigate={onNavigate}
+            notify={notify}
+          />
         </div>
       )}
 

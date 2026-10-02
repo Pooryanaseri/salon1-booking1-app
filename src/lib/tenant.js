@@ -54,6 +54,12 @@ export function getSalonName() {
   return currentSalon.name || DEFAULT_SALON_NAME;
 }
 
+/** Public booking page of the resolved salon, e.g. for links in campaign SMS. */
+export function getSalonBookingUrl() {
+  if (typeof window === "undefined" || !currentSalon.slug) return "";
+  return `${window.location.origin}/${currentSalon.slug}`;
+}
+
 function setCurrentSalon(salon) {
   currentSalon = { ...salon, name: (salon.name || "").trim() || DEFAULT_SALON_NAME };
   if (typeof document !== "undefined") document.title = `نوبت‌دهی ${currentSalon.name}`;
