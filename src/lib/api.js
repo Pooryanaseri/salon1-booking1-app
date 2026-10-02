@@ -82,6 +82,9 @@ const map = {
       date: isoToKey(r.date), start_min: r.start_min, end_min: r.end_min,
       buffer_minutes: r.buffer_minutes ?? 0, status: r.status,
       customer_response: r.customer_response ?? null, // v2.29: 'confirmed' | 'declined' | null
+      deposit_amount: r.deposit_amount ?? null,        // v2.37: toman, when an online deposit applied
+      deposit_paid_at: r.deposit_paid_at ?? null,
+      deposit_ref: r.deposit_ref ?? null,
       // A staff-proposed reschedule awaiting customer response — null/null/null
       // once there's no pending proposal (the normal case).
       pending_date: r.pending_date ? isoToKey(r.pending_date) : null,
@@ -706,6 +709,8 @@ export const DEFAULT_AUTOMATION = {
   manager_daily_digest: true,
   waitlist_auto_offer: true,      // v2.29
   attendance_confirmation: true,  // v2.29
+  deposit_percent: 0,             // v2.37 — 0 = no online deposit
+  deposit_min_price: 0,           // v2.37 — toman; deposit only for services at/above this
 };
 const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).join(", ");
 
@@ -915,6 +920,55 @@ export async function broadcastSlotChange() {
   await new Promise((resolve) => channel.subscribe((status) => status === "SUBSCRIBED" && resolve()));
   await channel.send({ type: "broadcast", event: "changed", payload: {} });
   supabase.removeChannel(channel);
+}
+
+/* ---------------------------------------------- v2.37: online deposit (Zarinpal) */
+/** {enabled, percent, min_price} for this salon — safe for the public page. */
+export async function fetchDepositTerms() {
+  if (!SUPABASE_ENABLED) return { enabled: false, percent: 0, min_price: 0 };
+  const { data, error } = await supabase.rpc("deposit_terms");
+  if (error) { fail("deposit_terms", error); return { enabled: false, percent: 0, min_price: 0 }; }
+  return data || { enabled: false, percent: 0, min_price: 0 };
+}
+
+/** Manager only (RLS): the salon's Zarinpal merchant ID. */
+export async function fetchPaymentSettings() {
+  if (!SUPABASE_ENABLED) return null;
+  const { data, error } = await supabase.from("salon_payment_settings").select("zarinpal_merchant_id").eq("salon_id", getCurrentSalonId()).maybeSingle();
+  if (error) { fail("salon_payment_settings.fetch", error); return null; }
+  return data || { zarinpal_merchant_id: "" };
+}
+export async function savePaymentSettings(merchantId) {
+  if (!SUPABASE_ENABLED) return null;
+  const { error } = await supabase.from("salon_payment_settings").upsert(
+    { salon_id: getCurrentSalonId(), zarinpal_merchant_id: (merchantId || "").trim(), updated_at: new Date().toISOString() },
+    { onConflict: "salon_id" },
+  );
+  return failWrite("salon_payment_settings.save", error);
+}
+
+async function invokePayment(body) {
+  try {
+    const { data, error } = await supabase.functions.invoke("payment", { body });
+    if (error) {
+      // a non-2xx response still carries our JSON error message
+      const ctx = await error.context?.json?.().catch(() => null);
+      return { ok: false, error: ctx?.error || "اتصال به درگاه پرداخت ناموفق بود" };
+    }
+    return data;
+  } catch {
+    return { ok: false, error: "اتصال به درگاه پرداخت ناموفق بود" };
+  }
+}
+/** → { ok, url } — send the customer to Zarinpal. */
+export function startDepositPayment(appointmentId) {
+  if (!SUPABASE_ENABLED) return Promise.resolve({ ok: false, error: "دمو — پرداخت آنلاین فعال نیست" });
+  return invokePayment({ action: "request", appointment_id: appointmentId });
+}
+/** → { ok, paid, refund?, appointment } after Zarinpal redirects back. */
+export function verifyDepositPayment(authority, status) {
+  if (!SUPABASE_ENABLED) return Promise.resolve({ ok: false, error: "دمو — پرداخت آنلاین فعال نیست" });
+  return invokePayment({ action: "verify", authority, status });
 }
 
 /* ------------------------------------------------- v2.36: client error log */

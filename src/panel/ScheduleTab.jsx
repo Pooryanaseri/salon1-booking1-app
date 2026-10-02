@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect } from "react";
 import { useData } from "../hooks/useData";
-import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity } from "lucide-react";
-import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors } from "../lib/api";
-import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey } from "../lib/format";
+import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity, CreditCard } from "lucide-react";
+import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors, fetchPaymentSettings, savePaymentSettings } from "../lib/api";
+import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey, digitsOnly } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
 import { schemaDayOf, uid } from "../app/shared";
 import { SUPABASE_ENABLED } from "../lib/supabase";
@@ -175,6 +175,63 @@ function AutomationCard({ automation, onAutomationChange, notify }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// v2.37 — optional online deposit through the salon's own Zarinpal account.
+function DepositCard({ automation, onAutomationChange, notify }) {
+  const [merchant, setMerchant] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [percent, setPercent] = useState(automation.deposit_percent || 0);
+  const [minPrice, setMinPrice] = useState(String(automation.deposit_min_price || 0));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetchPaymentSettings().then((r) => { if (!cancelled) { setMerchant(r?.zarinpal_merchant_id || ""); setLoaded(true); } });
+    return () => { cancelled = true; };
+  }, []);
+  const merchantOk = /^[0-9a-fA-F-]{36}$/.test(merchant.trim());
+  async function save() {
+    if (percent > 0 && !merchantOk) { notify("برای فعال کردن، مرچنت‌کد ۳۶ کاراکتری زرین‌پال را وارد کنید"); return; }
+    setSaving(true);
+    const errA = await savePaymentSettings(merchant);
+    const patch = { deposit_percent: Number(percent) || 0, deposit_min_price: Math.max(0, Number(digitsOnly(minPrice)) || 0) };
+    const { error: errB } = await updateAutomationSettings(patch);
+    setSaving(false);
+    if (errA || errB) { notify("ذخیرهٔ تنظیمات پرداخت ناموفق بود"); return; }
+    onAutomationChange?.({ ...automation, ...patch });
+    notify(patch.deposit_percent > 0 ? "پیش‌پرداخت آنلاین فعال شد" : "تنظیمات پرداخت ذخیره شد");
+  }
+  if (!loaded) return null;
+  return (
+    <div className="card mb-6" style={{ padding: 14 }}>
+      <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
+        <CreditCard size={15} color="var(--color-accent-500)" /> پیش‌پرداخت آنلاین (بیعانه)
+      </p>
+      <p className="muted" style={{ fontSize: 11.5, marginTop: 2, marginBottom: 10, lineHeight: 1.8 }}>
+        برای خدمات گران‌تر، مشتری بخشی از مبلغ را هنگام رزرو از درگاه زرین‌پال خود سالن می‌پردازد؛ نوبت فقط بعد از پرداخت قطعی می‌شود و نوبت پرداخت‌نشده بعد از ۲۰ دقیقه آزاد می‌شود. بازگرداندن وجه از پنل زرین‌پال انجام می‌شود.
+      </p>
+      <label className="muted" style={{ fontSize: 12 }}>مرچنت‌کد زرین‌پال</label>
+      <input dir="ltr" value={merchant} onChange={(e) => setMerchant(e.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        autoComplete="off" spellCheck={false}
+        style={{ width: "100%", padding: "9px 12px", fontSize: 13, marginTop: 4, textAlign: "left", fontFamily: "monospace" }} />
+      <div className="flex gap-2 mt-3">
+        <div style={{ flex: 1 }}>
+          <label className="muted" style={{ fontSize: 12 }}>درصد بیعانه</label>
+          <select value={percent} onChange={(e) => setPercent(Number(e.target.value))} style={{ width: "100%", padding: "9px 10px", fontSize: 13, marginTop: 4 }}>
+            {[0, 10, 20, 30, 50, 100].map((p) => <option key={p} value={p}>{p === 0 ? "خاموش" : `${toFa(p)}٪`}</option>)}
+          </select>
+        </div>
+        <div style={{ flex: 1 }}>
+          <label className="muted" style={{ fontSize: 12 }}>برای خدمات از (تومان)</label>
+          <input dir="ltr" inputMode="numeric" value={minPrice} onChange={(e) => setMinPrice(digitsOnly(e.target.value))}
+            style={{ width: "100%", padding: "9px 12px", fontSize: 13, marginTop: 4, textAlign: "left" }} />
+        </div>
+      </div>
+      <button disabled={saving} onClick={save} className="tap accent-btn w-full mt-3" style={{ padding: 11, fontSize: 13 }}>
+        {saving ? "در حال ذخیره…" : "ذخیره"}
+      </button>
     </div>
   );
 }
@@ -420,6 +477,7 @@ export function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, 
       )}
 
       {!currentStylistId && <AutomationCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
+      {!currentStylistId && SUPABASE_ENABLED && <DepositCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
       {!currentStylistId && SUPABASE_ENABLED && <AppHealthCard />}
 
       {!currentStylistId && !automation.auto_open_days && (

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, Loader2, Calendar } from "lucide-react";
 import { resolveRebookingToken, fetchRebookingSlots, createBookingFromRebookingToken } from "./lib/api";
 

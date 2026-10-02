@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Sparkles, Phone, Check, Sun, Moon, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard } from "lucide-react";
+import { Sparkles, Phone, Check, Sun, Moon, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { getSalonName } from "../lib/tenant";
-import { fetchCustomerLoyalty, applyReferral } from "../lib/api";
+import { fetchCustomerLoyalty, applyReferral, startDepositPayment } from "../lib/api";
 import { WEEKDAYS_FA_FULL, toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, dateKey } from "../lib/format";
-import { CATEGORY_LABEL, KNOWN_CUSTOMER, SECTION_META, SERVICE_ICONS, discountAmountFor, finalPriceFor, fitsWithoutOverlap, hasPrice, isOccupied, occupiedEndFor, priceLabel, schemaDayOf, uid } from "../app/shared";
+import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, SECTION_META, SERVICE_ICONS, discountAmountFor, finalPriceFor, fitsWithoutOverlap, hasPrice, isOccupied, occupiedEndFor, priceLabel, schemaDayOf, uid } from "../app/shared";
 import { DateStrip, Row } from "../components/ui";
 
 /* ============================================================
@@ -106,7 +106,7 @@ export function downloadBookingIcs({ title, date, startMin, endMin, description 
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingHours, timeOff, approvedDates, addBooking, waitlist, addWaitlistEntry, notify, onSectionChange, onTrack, automation }) {
+export function BookingFlow({ services, stylists, bookings, workingHours, staffWorkingHours, timeOff, approvedDates, addBooking, waitlist, addWaitlistEntry, notify, onSectionChange, onTrack, automation, depositTerms }) {
   const [step, setStep] = useState(1); // 1 gender, 2 service, 3 stylist, 4 date/time, 5 phone, 6 confirm, 7 done
   const [gender, setGender] = useState(null);
   const [category, setCategory] = useState("all");
@@ -124,7 +124,6 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const [name, setName] = useState("");
   const [referralCode, setReferralCode] = useState("");
   const [result, setResult] = useState(null);
-  const [copied, setCopied] = useState(false);
 
   const sectionServices = services.filter((s) => s.is_active && s.gender === gender);
   const categories = ["all", ...Array.from(new Set(sectionServices.map((s) => s.category)))];
@@ -172,7 +171,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     // A booking awaiting customer confirmation of a proposed reschedule still
     // occupies its ORIGINAL slot until resolved — include it in the occupied set.
     const realBookings = bookings.filter(
-      (b) => b.date === dKey && b.staff_id === stId && (b.status === "confirmed" || b.status === "pending" || b.status === "rescheduled" || b.status === "reschedule_proposed")
+      (b) => b.date === dKey && b.staff_id === stId && OCCUPYING_STATUSES.includes(b.status)
     );
     // Partial-hour closures block time exactly like a booking would — reuse
     // the same overlap-checking mechanics (fitsWithoutOverlap/isOccupied)
@@ -210,7 +209,6 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   // Backward-compatible aliases used by the date-strip / "closed today" messaging,
   // which still need a single yes/no per day — for "فرقی ندارد" a day only reads as
   // closed if it's closed for *every* stylist in the section, not just one.
-  function whFor(date) { return whForId(staffId, date); }
   function unavailableReason(date) {
     if (staffId) return unavailableReasonForId(staffId, date);
     if (sectionStaff.length === 0) return "closed";
@@ -369,6 +367,22 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     : 0;
   const finalPrice = servicePrice != null ? Math.max(0, servicePrice - loyaltyDiscountAmount) : null;
 
+  // v2.37 online deposit — what the server will ask for on this booking
+  // (mirrors hold_for_deposit; the server's answer is what actually counts).
+  const expectedDeposit = depositTerms?.enabled && service && hasPrice(service) && finalPrice != null
+    && finalPrice > 0 && finalPrice >= (depositTerms.min_price || 0)
+    ? Math.max(1000, Math.round((finalPrice * depositTerms.percent) / 100))
+    : 0;
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState("");
+  async function payDeposit(appointmentId) {
+    setPaying(true); setPayError("");
+    const r = await startDepositPayment(appointmentId);
+    if (r?.ok && r.url) { window.location.assign(r.url); return; } // leaves the page
+    setPaying(false);
+    setPayError(r?.error || "اتصال به درگاه پرداخت ناموفق بود — دوباره امتحان کنید");
+  }
+
   async function confirmBooking() {
     if (confirming) return;
     setConfirming(true);
@@ -402,10 +416,13 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           : null
       );
       if (!booking) return; // addBooking already notified the error
-      // Not "SMS sent" — addBooking already reports that specifically (and
-      // only on actual failure); this is the one thing that's always true
-      // once we reach here: the booking itself is confirmed.
       setResult(booking);
+      if (booking.status === "awaiting_payment") {
+        // v2.37: held for an online deposit — straight on to Zarinpal.
+        goTo(7);
+        await payDeposit(booking.id);
+        return;
+      }
       notify("نوبت شما ثبت شد");
       goTo(7);
     } catch (err) {
@@ -419,7 +436,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   function resetState() {
     setStep(1); setGender(null); setServiceId(null); setStaffId(null); setSelectedSlot(null); setAssignedStaffId(null); setPhone(""); setLookedUp(false);
     setKnownCustomer(false); setKnownCustomerName(""); setLoyaltyDiscountPct(0);
-    setName(""); setReferralCode(""); setResult(null); setCopied(false); setCategory("all");
+    setName(""); setReferralCode(""); setResult(null); setCategory("all");
     onSectionChange(null);
   }
 
@@ -926,6 +943,14 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               <Row label={`تخفیف باشگاه مشتریان (${toFa(loyaltyDiscountPct)}٪)`} value={"- " + formatToman(loyaltyDiscountAmount)} />
             )}
             {hasPrice(service) && <Row label="مبلغ نهایی" value={formatToman(finalPrice)} bold />}
+            {expectedDeposit > 0 && (
+              <>
+                <Row label="پیش‌پرداخت آنلاین (بیعانه)" value={formatToman(expectedDeposit)} bold />
+                <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.8, marginTop: 4 }}>
+                  نوبت پس از پرداخت بیعانه از درگاه زرین‌پال قطعی می‌شود و تا ۲۰ دقیقه برای شما نگه داشته می‌شود. باقی مبلغ در سالن پرداخت می‌شود.
+                </p>
+              </>
+            )}
           </div>
 
           <p className="muted flex items-center gap-1.5 mt-3" style={{ fontSize: 11.5, lineHeight: 1.7 }}>
@@ -936,13 +961,31 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           <div className="sticky-cta mt-5">
             <button onClick={confirmBooking} disabled={confirming} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: "13px" }}>
               {confirming && <Loader2 size={15} className="salon-spin" />}
-              {confirming ? "در حال ثبت..." : "ثبت نهایی نوبت"}
+              {confirming ? "در حال ثبت..." : expectedDeposit ? `ثبت و پرداخت بیعانه (${formatToman(expectedDeposit)})` : "ثبت نهایی نوبت"}
             </button>
           </div>
         </div>
       )}
 
-      {step === 7 && result && (
+      {step === 7 && result && result.status === "awaiting_payment" && (
+        <div className="fade-in" style={{ textAlign: "center", paddingTop: 12 }}>
+          <div style={{ width: 64, height: 64, borderRadius: "50%", background: "color-mix(in oklch, var(--color-warning) 18%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
+            {paying ? <Loader2 size={28} className="salon-spin" color="var(--color-warning)" /> : <CreditCard size={28} color="var(--color-warning)" />}
+          </div>
+          <h2 style={{ fontSize: 18 }}>{paying ? "در حال انتقال به درگاه پرداخت…" : "نوبت شما نگه داشته شد"}</h2>
+          <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.9 }}>
+            برای قطعی شدن نوبت، {formatToman(result.deposit_amount || expectedDeposit || 0)} بیعانه را تا ۲۰ دقیقه پرداخت کنید؛
+            در غیر این صورت زمان آزاد می‌شود.
+          </p>
+          {payError && <p style={{ color: "var(--color-danger)", fontSize: 12.5, marginTop: 10 }}>{payError}</p>}
+          <button disabled={paying} onClick={() => payDeposit(result.id)} className="tap accent-btn w-full mt-5 flex items-center justify-center gap-1.5" style={{ padding: "13px" }}>
+            <CreditCard size={15} /> پرداخت بیعانه
+          </button>
+          <button onClick={reset} className="tap ghost-btn w-full mt-3" style={{ padding: "12px", fontWeight: 700 }}>انصراف</button>
+        </div>
+      )}
+
+      {step === 7 && result && result.status !== "awaiting_payment" && (
         <div className="fade-in" style={{ textAlign: "center", paddingTop: 12 }}>
           <div style={{ width: 64, height: 64, borderRadius: "50%", background: "color-mix(in oklch, var(--color-success) 18%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
             <Check size={30} color="var(--color-success)" />

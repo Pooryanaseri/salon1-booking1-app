@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck } from "lucide-react";
+import { CreditCard, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -621,6 +621,11 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                     </div>
                     <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                       <Badge status={b.status} />
+                      {b.deposit_paid_at && (
+                        <span className="badge" style={{ background: "color-mix(in oklch, var(--color-info) 15%, transparent)", color: "var(--color-info)" }} title={b.deposit_ref ? `کد پیگیری زرین‌پال: ${b.deposit_ref}` : undefined}>
+                          <CreditCard size={12} /> بیعانه {formatToman(b.deposit_amount || 0)} پرداخت شد
+                        </span>
+                      )}
                       {b.customer_response === "confirmed" && ["confirmed", "rescheduled", "pending"].includes(b.status) && (
                         <span className="badge" style={{ background: "color-mix(in oklch, var(--color-success) 15%, transparent)", color: "var(--color-success)" }}>
                           <CheckCircle2 size={12} /> مشتری حضور را تایید کرد
@@ -652,8 +657,8 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                       CURRENT status are shown — not every action regardless
                       of state (e.g. "لغو نوبت" on an already-cancelled
                       booking, or "انجام شد" on an already-completed one). */}
-                  {b.status === "pending" && (
-                    <MenuItem positive label="تایید نوبت" onClick={() => { updateBooking(b.id, { status: "confirmed" }, "نوبت تایید شد؛ پیامک برای مشتری ارسال شد"); setMenuFor(null); }} />
+                  {(b.status === "pending" || b.status === "awaiting_payment") && (
+                    <MenuItem positive label={b.status === "awaiting_payment" ? "تایید بدون بیعانه" : "تایید نوبت"} onClick={() => { updateBooking(b.id, { status: "confirmed" }, "نوبت تایید شد؛ پیامک برای مشتری ارسال شد"); setMenuFor(null); }} />
                   )}
                   {["pending", "confirmed", "rescheduled"].includes(b.status) && (
                     <MenuItem label="تغییر زمان" onClick={() => { setAction({ type: "reschedule", booking: b }); setMenuFor(null); }} />
@@ -664,7 +669,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                   {["pending", "confirmed", "rescheduled", "pending_verification"].includes(b.status) && (
                     <MenuItem label="عدم حضور" onClick={() => { updateBooking(b.id, { status: "no_show" }, "وضعیت به «عدم حضور» تغییر کرد"); setMenuFor(null); }} />
                   )}
-                  {["pending", "confirmed", "rescheduled", "reschedule_proposed"].includes(b.status) && (
+                  {["pending", "confirmed", "rescheduled", "reschedule_proposed", "awaiting_payment"].includes(b.status) && (
                     <MenuItem danger label="لغو نوبت" onClick={() => { setAction({ type: "cancel", booking: b }); setMenuFor(null); }} />
                   )}
                 </div>

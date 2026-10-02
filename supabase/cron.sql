@@ -55,6 +55,14 @@ select cron.schedule(
 
 -- هر ۲۰ دقیقه: نوبت‌های «تایید‌شده/تغییرزمان‌یافته»ای که زمانشون گذشته
 -- رو به «در انتظار تایید نهایی» منتقل می‌کنه.
+-- هر ۵ دقیقه: نوبت‌هایی که منتظر پرداخت بیعانه بودند و ۲۰ دقیقه پرداخت نشدند
+-- آزاد می‌شوند (v2.37 — فقط وقتی پیش‌پرداخت آنلاین روشن باشد کاری انجام می‌دهد).
+select cron.schedule(
+  'salon-expire-unpaid-bookings',
+  '*/5 * * * *',
+  $$ select public.expire_unpaid_bookings(); $$
+);
+
 select cron.schedule(
   'salon-transition-elapsed-appointments',
   '*/20 * * * *',

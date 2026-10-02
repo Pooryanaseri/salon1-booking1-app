@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Sparkles, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName } from "./lib/tenant";
-import { bootstrap, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, DEFAULT_AUTOMATION } from "./lib/api";
+import { bootstrap, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, fetchDepositTerms, DEFAULT_AUTOMATION } from "./lib/api";
 import { signOut as authSignOut, restoreSession } from "./lib/auth";
 import { sendSms, scheduleReminder, renderTemplate } from "./lib/sms";
 import { jalaliLabel, formatClock, dateKey, parseDateKey } from "./lib/format";
@@ -138,6 +138,8 @@ export default function App() {
   // v2.28 per-salon automation switches (auto-confirm, rolling booking
   // window, morning digests). Demo mode runs with the defaults.
   const [automation, setAutomation] = useState(DEFAULT_AUTOMATION);
+  // v2.37 online deposit terms ({enabled, percent, min_price}); off in demo.
+  const [depositTerms, setDepositTerms] = useState({ enabled: false, percent: 0, min_price: 0 });
   const automationRef = useRef(automation);
   useEffect(() => { automationRef.current = automation; }, [automation]);
 
@@ -177,11 +179,12 @@ export default function App() {
         return;
       }
 
-      const [session, data, templates, automationSettings] = await Promise.all([
+      const [session, data, templates, automationSettings, deposit] = await Promise.all([
         restoreSession(),
         bootstrap(),
         fetchSmsTemplates(),
         fetchAutomationSettings(),
+        fetchDepositTerms(),
       ]);
       if (cancelled) return;
 
@@ -203,6 +206,7 @@ export default function App() {
       setWaitlist(data.waitlist || []);
       setSmsTemplates(templates || []);
       setAutomation(automationSettings);
+      setDepositTerms(deposit);
 
       if (session) {
         setPanelAuthed(true);
@@ -348,7 +352,10 @@ export default function App() {
         customer_name: params.customerName, customer_phone: params.customerPhone, customer_gender: params.customerGender,
         service_id: params.serviceId, staff_id: params.staffId, staff_name: res.staff_name || (finalStaff ? finalStaff.name : ""),
         date: params.date, start_min: params.startMin, end_min: params.endMin, buffer_minutes: params.bufferMinutes,
-        status: newBookingStatus, original_price: res.original_price, final_price: res.final_price,
+        // v2.37: the server reports what it actually stored (confirmed /
+        // pending / awaiting_payment when an online deposit applies).
+        status: res.status || newBookingStatus, deposit_amount: res.deposit_amount ?? null,
+        original_price: res.original_price, final_price: res.final_price,
         tracking_code: res.tracking_code, sms_sent_confirmation: true,
       });
     } else {
@@ -564,7 +571,7 @@ export default function App() {
         )}
 
         {dataReady && tab === "book" && (
-          <BookingFlow services={services} stylists={stylists} bookings={bookings} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} addBooking={addBooking} waitlist={waitlist} addWaitlistEntry={addWaitlistEntry} notify={notify} onSectionChange={setActiveSection} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} automation={automation} />
+          <BookingFlow services={services} stylists={stylists} bookings={bookings} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} addBooking={addBooking} waitlist={waitlist} addWaitlistEntry={addWaitlistEntry} notify={notify} onSectionChange={setActiveSection} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} automation={automation} depositTerms={depositTerms} />
         )}
         {dataReady && tab === "track" && (
           <TrackView bookings={bookings} services={services} stylists={stylists} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} updateBooking={updateBooking} notify={notify} initialPhone={trackPhone} />

@@ -5,6 +5,7 @@ import FeedbackPage from "./FeedbackPage.jsx";
 import ReconciliationPage from "./ReconciliationPage.jsx";
 import BookingRecoveryPage from "./BookingRecoveryPage.jsx";
 import AttendancePage from "./AttendancePage.jsx";
+import PaymentCallbackPage from "./PaymentCallbackPage.jsx";
 import { SUPABASE_ENABLED } from "./lib/supabase.js";
 import { getSession, signOut } from "./lib/auth.js";
 import { slugFromLocation, resolveSalonFromSlug } from "./lib/tenant.js";
@@ -192,6 +193,8 @@ const bookRecoveryMatch = window.location.pathname.match(/^\/book\/?$/);
 const bookRecoveryToken = bookRecoveryMatch ? new URLSearchParams(window.location.search).get("token") : null;
 const attendanceMatch = window.location.pathname.match(/^\/confirm\/?$/);
 const attendanceToken = attendanceMatch ? new URLSearchParams(window.location.search).get("token") : null;
+const paymentMatch = window.location.pathname.match(/^\/payment\/callback\/?$/);
+const paymentParams = paymentMatch ? new URLSearchParams(window.location.search) : null;
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
@@ -204,6 +207,8 @@ ReactDOM.createRoot(document.getElementById("root")).render(
         <BookingRecoveryPage token={bookRecoveryToken} />
       ) : attendanceMatch ? (
         <AttendancePage token={attendanceToken} />
+      ) : paymentMatch ? (
+        <PaymentCallbackPage authority={paymentParams.get("Authority")} status={paymentParams.get("Status")} />
       ) : (
         <TenantGate>
           <OfflineBanner />

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { Star, CheckCircle2 } from "lucide-react";
 import { submitFeedback, reportAppointmentNoShow } from "./lib/api";
 import { cancelScheduledReminders } from "./lib/sms";

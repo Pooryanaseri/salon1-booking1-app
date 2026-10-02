@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, XCircle, Loader2, CalendarClock } from "lucide-react";
 import { fetchAttendance, respondAttendance } from "./lib/api";
 import { jalaliLabel, formatClock, parseDateKey } from "./lib/format";

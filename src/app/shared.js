@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { Scissors, Palette, Sparkles, Hand, Eye, Droplet, Clock, Check, X, CheckCircle2, XCircle, RotateCcw, CalendarX, Hourglass, Home, Package, Users, Megaphone, Zap, Receipt } from "lucide-react";
+import { Scissors, Palette, Sparkles, Hand, Eye, Droplet, Clock, Check, X, CheckCircle2, XCircle, RotateCcw, CalendarX, Hourglass, Home, Package, Users, Megaphone, Zap, Receipt, CreditCard } from "lucide-react";
 import { syncCollection, syncApprovedDates, saveWorkingHours, clearStaffWorkingHours } from "../lib/api";
 import { formatToman, dateKey } from "../lib/format";
 
@@ -304,6 +304,11 @@ export const STATUS_META = {
   reschedule_proposed: { label: "پیشنهاد تغییر زمان", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: Clock, strike: false },
   completed: { label: "انجام شده", bg: "var(--color-success)", fg: "white", Icon: Check, strike: false },
   no_show: { label: "عدم حضور", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: X, strike: false },
+  awaiting_payment: { label: "در انتظار پرداخت بیعانه", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: CreditCard, strike: false },
   pending_verification: { label: "در انتظار تایید نهایی", bg: "var(--color-warning)", fg: "oklch(16% 0.02 70)", Icon: Hourglass, strike: false },
   archived_unconfirmed: { label: "بایگانی‌شده (تاییدنشده)", bg: "var(--color-muted)", fg: "white", Icon: CalendarX, strike: true },
 };
+
+// Statuses that hold a time slot — must match the appointments_no_overlap
+// constraint (v2.37): an unpaid deposit hold blocks the slot like a booking.
+export const OCCUPYING_STATUSES = ["pending", "confirmed", "rescheduled", "reschedule_proposed", "awaiting_payment"];

@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey } from "../lib/format";
 import { DateStrip, Modal } from "./ui";
-import { fitsWithoutOverlap, isOccupied, occupiedEndFor, schemaDayOf } from "../app/shared";
+import { OCCUPYING_STATUSES, fitsWithoutOverlap, isOccupied, occupiedEndFor, schemaDayOf } from "../app/shared";
 
 // Shown when marking a booking "انجام شد" (completed) if the customer has a
 // referrer on file. The referrer's reward is only awarded once staff
@@ -112,7 +112,7 @@ export function RescheduleModal({ booking, services, bookings, workingHours, sta
   // the sheet can open on one of them.
   function dayBookingsFor(d) {
     const dKey = dateKey(d);
-    const sameDay = bookings.filter((b) => b.date === dKey && b.id !== booking.id && (b.status === "confirmed" || b.status === "pending" || b.status === "rescheduled" || b.status === "reschedule_proposed"));
+    const sameDay = bookings.filter((b) => b.date === dKey && b.id !== booking.id && OCCUPYING_STATUSES.includes(b.status));
     const scoped = booking.staff_id
       ? sameDay.filter((b) => b.staff_id === booking.staff_id)
       : sameDay.filter((b) => b.customer_gender === booking.customer_gender);
