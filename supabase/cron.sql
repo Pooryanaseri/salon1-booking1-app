@@ -10,10 +10,12 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
--- هر ۵ دقیقه: صف یادآوری‌ها را خالی می‌کند و نوبت‌های نزدیک را جارو می‌زند.
+-- هر دقیقه: صف پیامک‌ها را خالی می‌کند و نوبت‌های نزدیک را جارو می‌زند.
+-- از v2.31 پیامک تایید رزرو هم از همین صف ارسال می‌شود، پس فاصله کوتاه است
+-- تا مشتری تایید را ظرف حدود یک دقیقه بگیرد. (اجرای خالی هزینه‌ای ندارد.)
 select cron.schedule(
   'salon-sms-reminders',
-  '*/5 * * * *',
+  '* * * * *',
   $$
   select net.http_post(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/cron-reminders',

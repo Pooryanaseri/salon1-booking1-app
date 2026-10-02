@@ -4,11 +4,11 @@ import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName } from "./lib/tenant";
 import { bootstrap, subscribeAppointments, fetchFullAppointments, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, DEFAULT_AUTOMATION } from "./lib/api";
 import { signOut as authSignOut, restoreSession } from "./lib/auth";
-import { sendSms, scheduleReminder, cancelScheduledReminders, renderTemplate } from "./lib/sms";
-import { jalaliLabel, formatClock, dateKey, parseDateKey, bookingTimestamp } from "./lib/format";
+import { sendSms, scheduleReminder, renderTemplate } from "./lib/sms";
+import { jalaliLabel, formatClock, dateKey, parseDateKey } from "./lib/format";
 import { TOKENS_CSS } from "./styles/tokens";
 import { BookingFlow } from "./booking/BookingFlow";
-import { DEFAULT_REMINDER_HOURS, FALLBACK_SMS_TEMPLATES, GENDER_TYPE_LABEL, KNOWN_CUSTOMER, SALON_GENDER_TYPE, SEED_SERVICES, SEED_STYLISTS, SEED_WORKING_HOURS, STAFF_PHONE, makeSeedBooking, makeSeedExpense, persistApproved, persistSalonHours, persistServices, persistStaffHours, persistTimeOff, usePersistedState } from "./app/shared";
+import { FALLBACK_SMS_TEMPLATES, GENDER_TYPE_LABEL, KNOWN_CUSTOMER, SALON_GENDER_TYPE, SEED_SERVICES, SEED_STYLISTS, SEED_WORKING_HOURS, STAFF_PHONE, makeSeedBooking, makeSeedExpense, persistApproved, persistSalonHours, persistServices, persistStaffHours, persistTimeOff, usePersistedState } from "./app/shared";
 import { LoginScreen } from "./components/LoginScreen";
 import { PanelView } from "./panel/PanelView";
 import { Toast } from "./components/ui";
@@ -288,43 +288,10 @@ export default function App() {
     await sendSms({ to: booking.customer_phone, body, kind, appointmentId: booking.id });
   }
 
-  // Previously, ONLY the customer was ever notified about a new booking —
-  // the assigned stylist had no idea a new appointment landed on their
-  // schedule until they opened the app. Fires once, on initial creation
-  // only (not on every later status change, unlike sendBookingSms).
-  //
-  // v2.28: with the morning digest on, a booking for a later day is already
-  // covered by that day's digest SMS — only same-day bookings (which the
-  // digest has already gone out for) still get an immediate heads-up.
-  async function notifyStaffOfNewBooking(booking) {
-    if (!booking.staff_id) return;
-    if (automationRef.current.staff_daily_digest && booking.date !== dateKey(new Date())) return;
-    const stylist = (stylistsRef.current || []).find((s) => s.id === booking.staff_id);
-    if (!stylist || !/^09\d{9}$/.test(stylist.phone || "")) return;
-    const vars = bookingSmsVars(booking);
-    const body = `نوبت جدید برای شما ثبت شد:\n${vars.name} — ${vars.service}\n${vars.date} ساعت ${vars.time}`;
-    await sendSms({ to: stylist.phone, body, kind: "staff_new_booking", appointmentId: booking.id });
-  }
-
-  // Reminder timing comes from the stylist's own reminder_hours_before field —
-  // the one that already existed on every stylist record.
-  async function queueReminder(booking) {
-    if (!SUPABASE_ENABLED) return;
-    if (!["pending", "confirmed", "rescheduled"].includes(booking.status)) return;
-    if (!/^09\d{9}$/.test(booking.customer_phone || "")) return;
-
-    const stylist = (stylistsRef.current || []).find((s) => s.id === booking.staff_id);
-    const hours = stylist?.reminder_hours_before ?? DEFAULT_REMINDER_HOURS;
-    const sendAt = bookingTimestamp(booking) - hours * 3600000;
-    if (sendAt <= Date.now()) return; // window already passed — the cron sweep handles it
-
-    await scheduleReminder({
-      to: booking.customer_phone,
-      body: renderTemplate(templateBody("reminder"), bookingSmsVars(booking)),
-      appointmentId: booking.id,
-      scheduledFor: new Date(sendAt).toISOString(),
-    });
-  }
+  // v2.31: the confirmation, the stylist's "new booking" SMS and the
+  // reminder are queued by the database itself for every booking path (see
+  // supabase/migrations/v2.31_server_owned_booking_sms.sql) — the browser no
+  // longer sends or schedules them.
 
   // v2.18 — a second, softer nudge 24h after the first feedback request,
   // in case the customer missed it or hasn't gotten to it yet. Cancelled
@@ -390,22 +357,6 @@ export default function App() {
     // already in the database; only notify about it, never let it
     // propagate and stall the UI on a booking that actually succeeded.
     try {
-      await sendBookingSms(booking, "confirmation");
-    } catch (err) {
-      console.error("[salon] booking confirmation SMS failed:", err);
-      notify("نوبت ثبت شد، ولی ارسال پیامک تایید ناموفق بود");
-    }
-    try {
-      await notifyStaffOfNewBooking(booking);
-    } catch (err) {
-      console.error("[salon] staff new-booking notification failed:", err);
-    }
-    try {
-      await queueReminder(booking);
-    } catch (err) {
-      console.error("[salon] scheduling the reminder failed:", err);
-    }
-    try {
       broadcastSlotChange();
     } catch (err) {
       console.error("[salon] slot-change broadcast failed:", err);
@@ -432,14 +383,13 @@ export default function App() {
       if (err) { notify("ذخیره‌ی تغییر روی سرور ناموفق بود"); return; }
       if (!after || !patch.status || patch.status === before.status) return;
 
+      // Reminders are (re)queued / dropped by the database on these status
+      // changes (v2.31); only the customer-facing notice is sent from here.
       if (patch.status === "cancelled") {
-        await cancelScheduledReminders(id);
         await sendBookingSms(after, "cancellation");
         broadcastSlotChange();
       } else if (patch.status === "rescheduled") {
-        await cancelScheduledReminders(id);
         await sendBookingSms(after, "reschedule");
-        await queueReminder(after);
         broadcastSlotChange();
       } else if (patch.status === "reschedule_proposed") {
         // The actual date/start_min haven't moved yet — only the pending_*
@@ -448,9 +398,6 @@ export default function App() {
         await sendBookingSms({ ...after, date: after.pending_date, start_min: after.pending_start_min }, "reschedule_proposed");
       } else if (patch.status === "confirmed") {
         await sendBookingSms(after, "confirmation");
-        await queueReminder(after);
-      } else if (patch.status === "no_show") {
-        await cancelScheduledReminders(id);
       } else if (patch.status === "completed") {
         await sendBookingSms(after, "feedback_request");
         await queueFeedbackFollowup(after);
