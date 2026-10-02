@@ -1,10 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useData } from "../hooks/useData";
-import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell } from "lucide-react";
-import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION } from "../lib/api";
+import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity } from "lucide-react";
+import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
 import { schemaDayOf, uid } from "../app/shared";
+import { SUPABASE_ENABLED } from "../lib/supabase";
 
 /* ============================================================
    Schedule management tab (working hours + time-off)
@@ -174,6 +175,48 @@ function AutomationCard({ automation, onAutomationChange, notify }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// v2.36 — errors the app hit on anyone's device (public pages included),
+// merged by message. Mostly for whoever maintains the app; a manager only
+// needs to notice "something keeps failing" and pass it on.
+const ERROR_KIND_LABEL = { render: "نمایش صفحه", runtime: "اجرای برنامه", promise: "درخواست ناتمام", save: "ذخیره روی سرور" };
+function AppHealthCard() {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchClientErrors(10).then((r) => { if (!cancelled) setRows(r); });
+    return () => { cancelled = true; };
+  }, []);
+  if (rows == null) return null;
+  return (
+    <div className="card mb-6" style={{ padding: 14 }}>
+      <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
+        <Activity size={15} color={rows.length ? "var(--color-warning)" : "var(--color-success)"} /> سلامت برنامه
+      </p>
+      {rows.length === 0 ? (
+        <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>در ۳۰ روز اخیر خطایی ثبت نشده است.</p>
+      ) : (
+        <>
+          <p className="muted" style={{ fontSize: 11.5, marginTop: 2, marginBottom: 8, lineHeight: 1.7 }}>
+            خطاهایی که برنامه روی دستگاه کاربران (مشتری‌ها یا پرسنل) با آن روبه‌رو شده — اگر تکرار می‌شود، این فهرست را برای پشتیبان برنامه بفرستید.
+          </p>
+          {rows.map((r) => (
+            <div key={r.id} style={{ padding: "8px 0", borderTop: "1px solid var(--color-border)" }}>
+              <div className="flex items-center justify-between gap-2" style={{ fontSize: 11 }}>
+                <span className="badge" style={{ background: "var(--color-surface-raised)", color: "var(--color-body)" }}>{ERROR_KIND_LABEL[r.kind] || r.kind}</span>
+                <span className="muted tabular">
+                  {toFa(r.occurrences)} بار · آخرین: {jalaliLabel(new Date(r.last_seen), { short: true })} {formatClock(new Date(r.last_seen).getHours() * 60 + new Date(r.last_seen).getMinutes())}
+                </span>
+              </div>
+              <div dir="ltr" style={{ fontSize: 11.5, marginTop: 4, color: "var(--color-heading)", wordBreak: "break-word", textAlign: "left" }}>{r.message}</div>
+              {r.url && <div dir="ltr" className="muted" style={{ fontSize: 10.5, textAlign: "left" }}>{r.url}</div>}
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -377,6 +420,7 @@ export function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, 
       )}
 
       {!currentStylistId && <AutomationCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
+      {!currentStylistId && SUPABASE_ENABLED && <AppHealthCard />}
 
       {!currentStylistId && !automation.auto_open_days && (
         <>

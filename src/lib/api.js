@@ -917,6 +917,18 @@ export async function broadcastSlotChange() {
   supabase.removeChannel(channel);
 }
 
+/* ------------------------------------------------- v2.36: client error log */
+export async function fetchClientErrors(limit = 20) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase
+    .from("client_errors")
+    .select("id, kind, message, url, occurrences, first_seen, last_seen")
+    .order("last_seen", { ascending: false })
+    .limit(limit);
+  if (error) { fail("client_errors.fetch", error); return []; }
+  return data || [];
+}
+
 /* ------------------------------------------- v2.29: attendance confirmation */
 // Reached from the link in the reminder SMS (/confirm?token=…). The token is
 // the only credential; both RPCs are granted to anon.

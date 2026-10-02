@@ -8,6 +8,9 @@ import AttendancePage from "./AttendancePage.jsx";
 import { SUPABASE_ENABLED } from "./lib/supabase.js";
 import { getSession, signOut } from "./lib/auth.js";
 import { slugFromLocation, resolveSalonFromSlug } from "./lib/tenant.js";
+import { reportError, installErrorReporting } from "./lib/errorLog.js";
+
+installErrorReporting();
 
 // ----------------------------------------------------------------------------
 //  v2.24 — multi-tenant: resolves which salon this URL belongs to before
@@ -122,6 +125,7 @@ class ErrorBoundary extends React.Component {
   }
   componentDidCatch(error, info) {
     console.error("[salon] Unhandled render error:", error, info);
+    reportError("render", { message: error?.message, stack: `${error?.stack || ""}\n--- component stack ---${info?.componentStack || ""}` });
   }
   render() {
     if (this.state.hasError) {
