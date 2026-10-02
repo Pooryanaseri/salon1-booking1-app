@@ -227,7 +227,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     return arr;
   }, []);
 
-  const dayBookings = useMemo(() => dayBookingsForId(staffId, selectedDate), [bookings, selectedDate, staffId]);
+  // Deps are the helper's inputs (it's re-created every render). timeOff was
+  // missing, so a changed partial-day closure didn't refresh the slots.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const dayBookings = useMemo(() => dayBookingsForId(staffId, selectedDate), [bookings, timeOff, selectedDate, staffId]);
 
   const slotTicks = useMemo(() => {
     if (!service) return [];
@@ -253,6 +256,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     return Array.from(merged.values())
       .sort((a, b) => a.t - b.t)
       .map((x) => ({ t: x.t, fits: x.fits, occupied: false, availableStaffIds: x.availableStaffIds }));
+    // listed deps are everything the per-render helpers read
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [service, selectedDate, staffId, sectionStaff, dayBookings, workingHours, staffWorkingHours, timeOff, approvedDates, bookings]);
 
   const slots = useMemo(() => slotTicks.filter((x) => x.fits).map((x) => x.t), [slotTicks]);

@@ -144,7 +144,7 @@ Deno.serve(async (req) => {
       // .maybeSingle() here errored as soon as a second salon existed.
       admin.from("sms_templates").select("salon_id, body").eq("kind", "reminder").eq("is_default", true),
       admin.from("salons").select("id, name"),
-      admin.from("app_settings").select("salon_id, attendance_confirmation"),
+      admin.from("app_settings").select("salon_id, attendance_confirmation, reminder_hours_before"),
     ]);
 
   const reminderHours = new Map((stylists ?? []).map((s) => [s.id, s.reminder_hours_before ?? 3]));
@@ -153,14 +153,18 @@ Deno.serve(async (req) => {
   const templateBySalon = new Map((tpls ?? []).map((t) => [t.salon_id, t.body]));
   const salonName = new Map((salons ?? []).map((s) => [s.id, s.name]));
   const attendanceOn = new Set((settings ?? []).filter((s) => s.attendance_confirmation).map((s) => s.salon_id));
+  // v2.39: salon-wide reminder timing from the SMS panel (0 = reminders off).
+  const salonReminderHours = new Map((settings ?? []).map((s) => [s.salon_id, s.reminder_hours_before ?? 3]));
   const fallbackTemplate =
     "{{name}} عزیز، یادآوری نوبت شما در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما هستیم.";
 
   for (const a of appts ?? []) {
     if (!/^09\d{9}$/.test(a.customer_phone ?? "")) continue;
 
-    // Per-stylist window — exactly the reminderHours field you already have.
-    const hours = a.staff_id ? (reminderHours.get(a.staff_id) ?? defaultHours) : defaultHours;
+    // Salon off switch first, then the stylist's own window, then the salon's.
+    const salonHours = salonReminderHours.get(a.salon_id) ?? defaultHours;
+    if (salonHours === 0) continue;
+    const hours = (a.staff_id && reminderHours.get(a.staff_id)) || salonHours;
     const startsAt = appointmentInstant(a.date, a.start_min);
     const windowOpens = startsAt - hours * 3_600_000;
 

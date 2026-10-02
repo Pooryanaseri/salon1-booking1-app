@@ -130,6 +130,8 @@ export const BI_KPIS = [
   },
 ];
 
+const DONUT_COLORS = ["var(--color-accent-500)", "var(--color-info)", "var(--color-success)", "var(--color-warning)", "var(--color-tab-panel)"];
+
 export function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates }) {
   const [range, setRange] = useState("30"); // default 30 days
   const [branchFilter, setBranchFilter] = useState("all");
@@ -167,24 +169,6 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
     () => baseFiltered.filter((b) => { const ts = bookingTimestamp(b); return ts >= prevPeriodStart.getTime() && ts < prevPeriodEnd.getTime(); }),
     [baseFiltered, prevPeriodStart, prevPeriodEnd]
   );
-
-  // ---- Peak hours: bookings per hour of day, 08:00–20:00 ----
-  const peakHours = useMemo(() => {
-    const buckets = new Map();
-    for (let h = 8; h < 20; h++) buckets.set(h, 0);
-    for (const b of periodBookings) {
-      const h = Math.floor(b.start_min / 60);
-      if (buckets.has(h)) buckets.set(h, buckets.get(h) + 1);
-    }
-    return Array.from(buckets.entries()).map(([hour, count]) => ({ hour, count }));
-  }, [periodBookings]);
-
-  // ---- Weekday distribution: بookings per weekday, شنبه..جمعه ----
-  const weekdayDist = useMemo(() => {
-    const counts = new Array(7).fill(0); // index = schemaDayOf(), 0 = شنبه
-    for (const b of periodBookings) counts[schemaDayOf(parseDateKey(b.date))] += 1;
-    return counts.map((count, i) => ({ label: SCHEMA_DAY_LABELS[i], count }));
-  }, [periodBookings]);
 
   // ---- v2.12: weekday × hour heatmap — same two dimensions as peakHours/
   // weekdayDist above, combined into one grid so an interaction like
@@ -353,7 +337,6 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
 
   // ---- v2.12: service revenue share for the donut — top 5 + یک سهم "سایر"
   // برای بقیه، تا مجموع سهم‌ها همیشه ۱۰۰٪ بمونه. ----
-  const DONUT_COLORS = ["var(--color-accent-500)", "var(--color-info)", "var(--color-success)", "var(--color-warning)", "var(--color-tab-panel)"];
   const serviceShareSlices = useMemo(() => {
     const map = new Map();
     for (const b of periodPricedCompleted) map.set(b.service_id, (map.get(b.service_id) || 0) + b.final_price);

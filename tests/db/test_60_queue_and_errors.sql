@@ -1,5 +1,5 @@
 -- v2.34 one sender per SMS, v2.36 client error log, v2.33 working hours.
-delete from public.sms_messages;
+delete from public.sms_messages; delete from public.client_errors;
 insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
 select '00000000-0000-0000-0000-000000000001', '0912000000' || g, 'm' || g, 'custom', 'queued', now() - interval '1 minute' from generate_series(1, 5) g;
 select tst.ok((select count(*) from public.claim_due_sms(3)) = 3, 'first claim');

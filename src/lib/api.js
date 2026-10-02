@@ -711,6 +711,7 @@ export const DEFAULT_AUTOMATION = {
   attendance_confirmation: true,  // v2.29
   deposit_percent: 0,             // v2.37 — 0 = no online deposit
   deposit_min_price: 0,           // v2.37 — toman; deposit only for services at/above this
+  reminder_hours_before: 3,       // v2.39 — customer reminder, hours before the visit (0 = off)
 };
 const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).join(", ");
 
@@ -924,6 +925,16 @@ export async function broadcastSlotChange() {
   await new Promise((resolve) => channel.subscribe((status) => status === "SUBSCRIBED" && resolve()));
   await channel.send({ type: "broadcast", event: "changed", payload: {} });
   supabase.removeChannel(channel);
+}
+
+/* ------------------------------------------- v2.39: reminder timing (SMS panel) */
+/** Salon-wide reminder timing; also applied to every stylist and to reminders
+ *  already queued for upcoming bookings. → { ok, hours, requeued } */
+export async function setReminderHours(hours) {
+  if (!SUPABASE_ENABLED) return { ok: true, hours, requeued: 0 };
+  const { data, error } = await supabase.rpc("set_reminder_hours", { p_hours: hours });
+  if (error) { failWrite("set_reminder_hours", error); return { ok: false, error: "ذخیرهٔ زمان یادآوری ناموفق بود" }; }
+  return data;
 }
 
 /* ---------------------------------------------- v2.37: online deposit (Zarinpal) */

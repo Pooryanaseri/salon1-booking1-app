@@ -618,6 +618,11 @@ export default function App() {
             waitlist={waitlist}
             removeWaitlistEntry={removeWaitlistEntry}
             automation={automation}
+            onReminderHoursSaved={(h) => {
+              setAutomation((a) => ({ ...a, reminder_hours_before: h }));
+              // the server applied it to every stylist; mirror that locally
+              if (h > 0) setStylists((prev) => prev.map((s) => ({ ...s, reminder_hours_before: h })));
+            }}
             onAutomationChange={(next, approvedDates) => {
               setAutomation(next);
               if (approvedDates) approvedCtl.hydrate(approvedDates);
