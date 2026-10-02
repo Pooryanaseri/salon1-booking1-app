@@ -11,7 +11,10 @@ npm run dev
 
 - **راه‌اندازی کامل (دیتابیس، احراز هویت، پیامک، cron، دیپلوی):** [`DEPLOY.md`](./DEPLOY.md)
 - **فهرست تغییرات نسخهٔ ۲ و dependencies جدید:** [`CHANGES.md`](./CHANGES.md)
-- **بررسی کد:** `npm test` (Vitest) و `npm run lint` (ESLint با قوانین React Hooks)
+- **بررسی کد:** `npm test` (Vitest)، `npm run lint` (ESLint با قوانین React Hooks)، و
+  `npm run test:db` — نصب تازهٔ کامل دیتابیس (schema → seed → همهٔ migrationها) روی
+  PostgreSQL 16 و اجرای تست‌های `tests/db` (اتصال با متغیرهای `PGHOST`/`PGUSER`/…).
+  هر سه در GitHub Actions (`.github/workflows/ci.yml`) روی هر PR اجرا می‌شوند.
 
 > بدون متغیرهای محیطی Supabase، برنامه در حالت دمو (حافظهٔ موقت) اجرا می‌شود و
 > یک نوار هشدار نشان می‌دهد — پس هیچ‌وقت با صفحهٔ سفید روبه‌رو نمی‌شوی.

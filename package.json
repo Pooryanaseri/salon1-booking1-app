@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "eslint src/ --ext .js,.jsx",
     "test": "vitest",
+    "test:db": "bash tests/db/run.sh",
     "analyze": "vite build --mode analyze",
     "db:push": "supabase db push",
     "db:backup": "supabase db dump --data-only > backup.sql",
