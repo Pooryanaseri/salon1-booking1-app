@@ -5,8 +5,7 @@
 //  and writes an audit row into public.sms_messages.
 // ============================================================================
 import { supabase, SUPABASE_ENABLED, getCurrentSalonId } from "./supabase";
-
-export const SALON_NAME_SMS = import.meta.env.VITE_SALON_NAME || "آرایشگاه مانا";
+import { getSalonName } from "./tenant";
 
 /* ------------------------------------------------------- template rendering */
 export const SMS_PLACEHOLDERS = [
@@ -23,7 +22,7 @@ export const SMS_PLACEHOLDERS = [
 ];
 
 export function renderTemplate(body, vars = {}) {
-  const all = { salon: SALON_NAME_SMS, ...vars };
+  const all = { salon: getSalonName(), ...vars };
   return String(body || "").replace(/\{\{(\w+)\}\}/g, (_, k) =>
     all[k] === undefined || all[k] === null ? "" : String(all[k])
   );

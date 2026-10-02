@@ -245,7 +245,6 @@ export async function deleteOne(table, id) {
 /* ------------------------------------------------- working hours (special) */
 // The app models these as a plain 7-element array with no ids, plus a
 // { [stylistId]: array } map of overrides. Persist as a full replace per owner.
-const WH_KEYS = ["day_of_week", "start_time", "end_time", "is_closed"];
 const whFromRow = (r) => ({
   day_of_week: r.day_of_week, start_time: r.start_time,
   end_time: r.end_time, is_closed: r.is_closed,

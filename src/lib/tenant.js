@@ -39,9 +39,30 @@ export function slugFromLocation() {
  * In demo mode (no Supabase configured) this always resolves to a single
  * fake salon so the existing demo flow keeps working unchanged.
  */
+// Display name used when no real salon row is available (demo mode) or a
+// salon's row has an empty name.
+export const DEFAULT_SALON_NAME = import.meta.env.VITE_SALON_NAME || "آرایشگاه و سالن زیبایی مانا";
+
+// The salon this page belongs to. Resolved once by TenantGate before the app
+// renders and never changes afterwards (a different salon means a different
+// URL and a full page load), so a plain module value is enough — same
+// pattern as setCurrentSalonId in supabase.js.
+let currentSalon = { id: "demo", name: DEFAULT_SALON_NAME, slug: "demo" };
+
+/** The resolved salon's display name, e.g. for the header, SMS and calendar files. */
+export function getSalonName() {
+  return currentSalon.name || DEFAULT_SALON_NAME;
+}
+
+function setCurrentSalon(salon) {
+  currentSalon = { ...salon, name: (salon.name || "").trim() || DEFAULT_SALON_NAME };
+  if (typeof document !== "undefined") document.title = `نوبت‌دهی ${currentSalon.name}`;
+}
+
 export async function resolveSalonFromSlug(slug) {
   if (!SUPABASE_ENABLED) {
-    return { ok: true, salon: { id: "demo", name: "دمو", slug: slug || "demo" } };
+    setCurrentSalon({ id: "demo", name: DEFAULT_SALON_NAME, slug: slug || "demo" });
+    return { ok: true, salon: currentSalon };
   }
   if (!slug) {
     return { ok: false, error: "آدرس سالن مشخص نیست" };
@@ -55,5 +76,6 @@ export async function resolveSalonFromSlug(slug) {
     return { ok: false, error: "سالنی با این آدرس پیدا نشد" };
   }
   setCurrentSalonId(data.id);
-  return { ok: true, salon: data };
+  setCurrentSalon(data);
+  return { ok: true, salon: currentSalon };
 }

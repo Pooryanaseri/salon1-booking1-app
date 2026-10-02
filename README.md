@@ -11,6 +11,7 @@ npm run dev
 
 - **راه‌اندازی کامل (دیتابیس، احراز هویت، پیامک، cron، دیپلوی):** [`DEPLOY.md`](./DEPLOY.md)
 - **فهرست تغییرات نسخهٔ ۲ و dependencies جدید:** [`CHANGES.md`](./CHANGES.md)
+- **بررسی کد:** `npm test` (Vitest) و `npm run lint` (ESLint با قوانین React Hooks)
 
 > بدون متغیرهای محیطی Supabase، برنامه در حالت دمو (حافظهٔ موقت) اجرا می‌شود و
 > یک نوار هشدار نشان می‌دهد — پس هیچ‌وقت با صفحهٔ سفید روبه‌رو نمی‌شوی.
@@ -21,7 +22,11 @@ npm run dev
 src/
   App.jsx                  کل UI (کامپوننت‌ها دست‌نخورده از نسخهٔ ۱ + تب پیامک)
   main.jsx
+  styles/
+    tokens.js              متغیرهای CSS (روشن/تیره) و کلاس‌های پایه
   lib/
+    format.js              تاریخ شمسی، اعداد فارسی، نرمال‌سازی شماره موبایل
+    tenant.js              تشخیص سالن از آدرس + نام سالن
     supabase.js            کلاینت
     auth.js                ورود با شماره موبایل، نقش‌ها
     api.js                 لایهٔ داده + diff-sync + realtime

@@ -31,6 +31,7 @@ const INTERNAL_SECRET = Deno.env.get("INTERNAL_FUNCTION_SECRET");
 // The salon's wall-clock offset. Appointments store a local date + minutes.
 // Iran is UTC+03:30 = 210 minutes (Iran dropped DST in 2022, so this is stable).
 const TZ_OFFSET_MIN = Number(Deno.env.get("SALON_TZ_OFFSET_MINUTES") ?? 210);
+// Fallback only — each reminder uses its own salon's name from public.salons.
 const SALON_NAME = Deno.env.get("SALON_NAME") ?? "آرایشگاه مانا";
 
 /* ------------------------------------------------- Jalali + Persian digits */
@@ -131,24 +132,29 @@ Deno.serve(async (req) => {
   const horizonISO = new Date(now + TZ_OFFSET_MIN * 60_000 + 3 * 86_400_000)
     .toISOString().slice(0, 10);
 
-  const [{ data: appts }, { data: stylists }, { data: services }, { data: tpl }] =
+  const [{ data: appts }, { data: stylists }, { data: services }, { data: tpls }, { data: salons }] =
     await Promise.all([
       admin.from("appointments")
-        .select("id, customer_name, customer_phone, service_id, staff_id, staff_name, date, start_min, status, tracking_code, sms_sent_reminder")
+        .select("id, salon_id, customer_name, customer_phone, service_id, staff_id, staff_name, date, start_min, status, tracking_code, sms_sent_reminder")
         .in("status", ["confirmed", "rescheduled"])
         .eq("sms_sent_reminder", false)
         .gte("date", todayISO)
         .lte("date", horizonISO),
       admin.from("stylists").select("id, reminder_hours_before"),
       admin.from("services").select("id, name"),
-      admin.from("sms_templates").select("body").eq("kind", "reminder").eq("is_default", true).maybeSingle(),
+      // One default reminder template per salon (multi-tenant) — a single
+      // .maybeSingle() here errored as soon as a second salon existed.
+      admin.from("sms_templates").select("salon_id, body").eq("kind", "reminder").eq("is_default", true),
+      admin.from("salons").select("id, name"),
     ]);
 
   const reminderHours = new Map((stylists ?? []).map((s) => [s.id, s.reminder_hours_before ?? 3]));
   const serviceName = new Map((services ?? []).map((s) => [s.id, s.name]));
   const defaultHours = Number(Deno.env.get("DEFAULT_REMINDER_HOURS") ?? 3);
-  const templateBody = tpl?.body
-    ?? "{{name}} عزیز، یادآوری نوبت شما در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما هستیم.";
+  const templateBySalon = new Map((tpls ?? []).map((t) => [t.salon_id, t.body]));
+  const salonName = new Map((salons ?? []).map((s) => [s.id, s.name]));
+  const fallbackTemplate =
+    "{{name}} عزیز، یادآوری نوبت شما در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما هستیم.";
 
   for (const a of appts ?? []) {
     if (!/^09\d{9}$/.test(a.customer_phone ?? "")) continue;
@@ -170,19 +176,20 @@ Deno.serve(async (req) => {
       .in("status", ["queued", "sent", "delivered"]);
     if ((count ?? 0) > 0) continue;
 
-    const body = render(templateBody, {
+    const body = render(templateBySalon.get(a.salon_id) ?? fallbackTemplate, {
       name: a.customer_name || "مشتری",
       service: serviceName.get(a.service_id ?? "") ?? "خدمت",
       date: jalaliLabel(a.date),
       time: clockLabel(a.start_min),
       stylist: a.staff_name || "—",
       code: a.tracking_code ?? "",
-      salon: SALON_NAME,
+      salon: salonName.get(a.salon_id) || SALON_NAME,
     });
 
     const r = await sendOne(a.customer_phone, body);
 
     await admin.from("sms_messages").insert({
+      salon_id: a.salon_id, // NOT NULL since v2.24 — without it this audit row was rejected
       to_phone: a.customer_phone,
       body,
       kind: "reminder",
