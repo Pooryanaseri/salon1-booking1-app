@@ -299,6 +299,43 @@ export async function syncApprovedDates(prev, next) {
   await Promise.all(jobs);
 }
 
+/* -------------------------------------------------------------- pagination */
+// Supabase's API returns at most 1000 rows per request (Project Settings →
+// API → Max rows). Every list that can grow past that — a salon's bookings,
+// customers, segments — is read page by page, or the newest rows silently
+// went missing once a busy salon passed 1000 bookings. makeQuery must build a
+// fresh query with a stable order (ending on a unique column).
+const PAGE = 1000;
+const PAGE_PARALLEL = 4;
+export async function fetchAllPages(makeQuery) {
+  // After the first page, the rest load 4 at a time until a short page — a
+  // salon with years of history doesn't wait for dozens of sequential calls.
+  const first = await makeQuery().range(0, PAGE - 1);
+  if (first.error) return { data: null, error: first.error };
+  const rows = [...(first.data || [])];
+  if (rows.length < PAGE) return { data: rows, error: null };
+  const pages = [];
+  for (let from = PAGE; ; from += PAGE) {
+    pages.push(from);
+    if (pages.length >= PAGE_PARALLEL) {
+      const results = await Promise.all(pages.map((f) => makeQuery().range(f, f + PAGE - 1)));
+      pages.length = 0;
+      for (const r of results) {
+        if (r.error) return { data: null, error: r.error };
+        rows.push(...(r.data || []));
+      }
+      if (results.some((r) => (r.data || []).length < PAGE)) return { data: rows, error: null };
+    }
+    if (from > 2_000_000) return { data: rows, error: null }; // hard stop
+  }
+}
+
+/** Public booking only needs slots from yesterday on (v2.42 view filter too). */
+function publicSlotsQuery() {
+  return supabase.from("appointments_public_slots").select("*")
+    .order("date").order("start_min").order("staff_id");
+}
+
 /* ---------------------------------------------------------------- bootstrap */
 /**
  * One parallel fetch of everything the app needs at startup.
@@ -308,8 +345,8 @@ export async function syncApprovedDates(prev, next) {
 // a slot-change broadcast without re-running the whole bootstrap().
 export async function fetchPublicSlots() {
   if (!SUPABASE_ENABLED) return [];
-  const { data, error } = await supabase.from("appointments_public_slots").select("*").order("date");
-  if (error) { fail("fetchPublicSlots", error); return []; }
+  const { data, error } = await fetchAllPages(publicSlotsQuery);
+  if (error) { fail("fetchPublicSlots", error); return null; } // null = keep what's shown
   return (data || []).map(map.appointments.fromRow);
 }
 
@@ -318,7 +355,7 @@ const STYLIST_PUBLIC_COLUMNS = "id, salon_id, name, gender, active, reminder_hou
 export async function bootstrap() {
   if (!SUPABASE_ENABLED) return null;
 
-  const [svc, sty, appt, off, wh, appr, exp, wait] = await Promise.all([
+  const [svc, sty, appt, off, wh, appr, exp] = await Promise.all([
     supabase.from("services").select("*").order("id"),
     // Public columns only — a stylist's personal phone is staff-only (v2.32
     // column grant); staff get the full rows from fetchStaffData().
@@ -328,15 +365,15 @@ export async function bootstrap() {
     // public booking flow only ever needs occupied-slot data here (who's
     // booked when, not who they are). Staff get the full dataset
     // separately via fetchFullAppointments() once a session is confirmed.
-    supabase.from("appointments_public_slots").select("*").order("date"),
-    supabase.from("time_offs").select("*"),
+    fetchAllPages(publicSlotsQuery),
+    fetchAllPages(() => supabase.from("time_offs").select("*").order("date").order("id")),
     supabase.from("working_hours").select("*").order("day_of_week"),
     supabase.from("approved_dates").select("date"),
     supabase.from("expenses").select("*").order("date", { ascending: false }),
-    supabase.from("waitlist").select("*"),
+    // (the waitlist is staff-only since v2.41 — fetchStaffData loads it)
   ]);
 
-  const firstError = [svc, sty, appt, off, wh, appr, exp, wait].find((r) => r.error)?.error;
+  const firstError = [svc, sty, appt, off, wh, appr, exp].find((r) => r.error)?.error;
   if (firstError) {
     fail("bootstrap", firstError);
     return null;
@@ -363,7 +400,7 @@ export async function bootstrap() {
     staffWorkingHours: staffHours,
     approvedDates: (appr.data || []).map((r) => isoToKey(r.date)),
     expenses: (exp.data || []).map(map.expenses.fromRow),
-    waitlist: (wait.data || []).map(map.waitlist.fromRow),
+    waitlist: [],
   };
 }
 
@@ -376,10 +413,10 @@ export async function bootstrap() {
 export async function fetchStaffData() {
   if (!SUPABASE_ENABLED) return null;
   const [appt, sty, exp, wait] = await Promise.all([
-    supabase.from("appointments").select("*").order("date"),
+    fetchAllPages(() => supabase.from("appointments").select("*").order("date").order("id")),
     supabase.from("stylists").select("*").order("id"),
-    supabase.from("expenses").select("*").order("date", { ascending: false }),
-    supabase.from("waitlist").select("*"),
+    fetchAllPages(() => supabase.from("expenses").select("*").order("date", { ascending: false }).order("id")),
+    fetchAllPages(() => supabase.from("waitlist").select("*").order("date").order("id")),
   ]);
   const pick = (res, where, mapRow) => (res.error ? (fail(where, res.error), null) : (res.data || []).map(mapRow));
   return {
@@ -396,7 +433,7 @@ export async function fetchStaffData() {
 // staff-only read.
 export async function fetchFullAppointments() {
   if (!SUPABASE_ENABLED) return [];
-  const { data, error } = await supabase.from("appointments").select("*").order("date");
+  const { data, error } = await fetchAllPages(() => supabase.from("appointments").select("*").order("date").order("id"));
   if (error) { fail("fetchFullAppointments", error); return []; }
   return (data || []).map(map.appointments.fromRow);
 }
@@ -478,9 +515,12 @@ export async function createPublicBooking({ serviceId, staffId, date, startMin, 
 /** Live-update the calendar when another device books. Returns an unsubscribe fn. */
 export function subscribeAppointments(onChange) {
   if (!SUPABASE_ENABLED) return () => {};
+  // v2.42: scoped to this salon — unfiltered, every change in every salon
+  // was pushed to (and RLS-checked for) every open panel.
+  const salonId = getCurrentSalonId();
   const channel = supabase
-    .channel("appointments-live")
-    .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, (payload) => {
+    .channel(`appointments-live:${salonId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "appointments", filter: `salon_id=eq.${salonId}` }, (payload) => {
       onChange({
         type: payload.eventType || payload.type,
         row: payload.new && Object.keys(payload.new).length
@@ -499,7 +539,7 @@ export async function fetchInactiveCustomers(days) {
   const key = `inactive_customers:${days}`;
   const cached = getCached(key);
   if (cached !== undefined) return cached;
-  const { data, error } = await supabase.rpc("inactive_customers", { p_days: days });
+  const { data, error } = await fetchAllPages(() => supabase.rpc("inactive_customers", { p_days: days }).order("phone"));
   if (error) { fail("inactive_customers", error); return []; }
   return setCache(key, data || []);
 }
@@ -509,7 +549,7 @@ export async function fetchRfmSegments() {
   const key = "rfm_segments";
   const cached = getCached(key);
   if (cached !== undefined) return cached;
-  const { data, error } = await supabase.rpc("get_customer_rfm_segments");
+  const { data, error } = await fetchAllPages(() => supabase.rpc("get_customer_rfm_segments").order("phone"));
   if (error) { fail("get_customer_rfm_segments", error); return []; }
   return setCache(key, data || []);
 }
@@ -522,7 +562,7 @@ export async function fetchCategoryMatrix() {
   const key = "category_matrix";
   const cached = getCached(key);
   if (cached !== undefined) return cached;
-  const { data, error } = await supabase.rpc("get_customer_category_matrix");
+  const { data, error } = await fetchAllPages(() => supabase.rpc("get_customer_category_matrix").order("phone").order("category"));
   if (error) { fail("get_customer_category_matrix", error); return []; }
   return setCache(key, data || []);
 }
@@ -532,11 +572,11 @@ export async function fetchCustomers() {
   const key = "customers";
   const cached = getCached(key);
   if (cached !== undefined) return cached;
-  const { data, error } = await supabase
+  const { data, error } = await fetchAllPages(() => supabase
     .from("customers")
     .select("*")
-    .order("last_booking_at", { ascending: false })
-    .limit(500);
+    .order("last_booking_at", { ascending: false, nullsFirst: false })
+    .order("phone"));
   if (error) { fail("customers", error); return []; }
   return setCache(key, data || []);
 }
@@ -910,10 +950,14 @@ export async function fetchFeedbackStats() {
 // content ever crosses this channel.
 const SLOT_CHANGE_CHANNEL = "salon-slot-changes";
 
+// One channel per salon: a booking at one salon must not make every open
+// booking page of every other salon refetch its slots (v2.42).
+const slotChannel = () => `${SLOT_CHANGE_CHANNEL}:${getCurrentSalonId()}`;
+
 export function subscribeSlotChanges(onChange) {
   if (!SUPABASE_ENABLED) return () => {};
   const channel = supabase
-    .channel(SLOT_CHANGE_CHANNEL)
+    .channel(slotChannel())
     .on("broadcast", { event: "changed" }, () => onChange())
     .subscribe();
   return () => supabase.removeChannel(channel);
@@ -921,7 +965,7 @@ export function subscribeSlotChanges(onChange) {
 
 export async function broadcastSlotChange() {
   if (!SUPABASE_ENABLED) return;
-  const channel = supabase.channel(SLOT_CHANGE_CHANNEL);
+  const channel = supabase.channel(slotChannel());
   await new Promise((resolve) => channel.subscribe((status) => status === "SUBSCRIBED" && resolve()));
   await channel.send({ type: "broadcast", event: "changed", payload: {} });
   supabase.removeChannel(channel);
@@ -1023,4 +1067,93 @@ export async function fetchMyLoyaltyWithToken(token) {
   const { data, error } = await supabase.rpc("get_my_loyalty_with_token", { p_token: token || "" });
   if (error) { fail("get_my_loyalty_with_token", error); return null; }
   return data;
+}
+
+/* ---------------------------------------------- v2.41: many salons -------- */
+/** Public "join waitlist" — validated and de-duplicated server-side. */
+export async function joinWaitlist({ date, serviceId, staffId, name, phone, gender }) {
+  if (!SUPABASE_ENABLED) return { ok: true };
+  const { data, error } = await supabase.rpc("join_waitlist", {
+    p_date: keyToISO(date), p_service_id: serviceId, p_staff_id: staffId || null,
+    p_name: name, p_phone: phone, p_gender: gender || null,
+  });
+  if (error) { fail("join_waitlist", error); return { ok: false, error: "ثبت در لیست انتظار ناموفق بود" }; }
+  return data || { ok: false };
+}
+
+/** The salon's own SMS account: {configured, provider, sender, key_hint}. */
+export async function fetchSmsAccount() {
+  if (!SUPABASE_ENABLED) return { ok: true, configured: false, demo: true };
+  const { data, error } = await supabase.rpc("get_sms_account");
+  if (error) { fail("get_sms_account", error); return { ok: false }; }
+  return data || { ok: false };
+}
+
+export async function saveSmsAccount({ provider, apiKey, sender }) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("set_sms_account", { p_provider: provider, p_api_key: apiKey || "", p_sender: sender || "" });
+  if (error) { failWrite("set_sms_account", error); return { ok: false, error: "ذخیره ناموفق بود" }; }
+  return data || { ok: false };
+}
+
+/* Platform admin (/admin) */
+export async function isPlatformAdmin() {
+  if (!SUPABASE_ENABLED) return false;
+  const { data, error } = await supabase.rpc("is_platform_admin");
+  return !error && data === true;
+}
+export async function adminListSalons() {
+  const { data, error } = await fetchAllPages(() => supabase.rpc("admin_list_salons").order("created_at", { ascending: false }).order("id"));
+  if (error) { fail("admin_list_salons", error); return null; }
+  return data || [];
+}
+export async function adminCreateSalon({ slug, name, ownerPhone }) {
+  const { data, error } = await supabase.rpc("admin_create_salon", { p_slug: slug, p_name: name, p_owner_phone: ownerPhone });
+  if (error) { failWrite("admin_create_salon", error); return { ok: false, error: "ساخت سالن ناموفق بود" }; }
+  return data || { ok: false };
+}
+export async function adminUpdateSalon(id, { name = null, ownerPhone = null, active = null } = {}) {
+  const { data, error } = await supabase.rpc("admin_update_salon", { p_id: id, p_name: name, p_owner_phone: ownerPhone, p_active: active });
+  if (error) { failWrite("admin_update_salon", error); return { ok: false, error: "ذخیره ناموفق بود" }; }
+  return data || { ok: false };
+}
+
+/* ------------------------------------------- v2.43: BI action center ------ */
+/** Queue a campaign server-side (opt-out, 14-day frequency cap and quiet
+ *  hours are enforced there). → {ok, queued, send_at, skipped_*} */
+export async function queueCampaign({ insightKey, title, segment, body, recipients, sendAt = null, capDays = 14, baseline = {} }) {
+  if (!SUPABASE_ENABLED) return { ok: false, demo: true, error: "حالت دمو — پیامک واقعی ارسال نمی‌شود" };
+  const { data, error } = await supabase.rpc("queue_campaign", {
+    p_insight_key: insightKey, p_title: title, p_segment: segment, p_body: body,
+    p_recipients: recipients, p_send_at: sendAt, p_cap_days: capDays, p_baseline: baseline,
+  });
+  if (error) { failWrite("queue_campaign", error); return { ok: false, error: "ثبت کمپین ناموفق بود" }; }
+  return data || { ok: false };
+}
+
+/** Record an approved / snoozed / dismissed BI action. */
+export async function recordBiAction({ insightKey, kind, status = "done", title = "", params = {}, baseline = {}, snoozeDays = 7 }) {
+  if (!SUPABASE_ENABLED) return { ok: true, demo: true };
+  const { data, error } = await supabase.rpc("record_bi_action", {
+    p_insight_key: insightKey, p_kind: kind, p_status: status, p_title: title,
+    p_params: params, p_baseline: baseline, p_snooze_days: snoozeDays,
+  });
+  if (error) { failWrite("record_bi_action", error); return { ok: false, error: "ثبت ناموفق بود" }; }
+  return data || { ok: false };
+}
+
+/** Past BI actions with their measured outcome (latest first). */
+export async function fetchBiActionHistory(limit = 50) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.rpc("bi_action_history", { p_limit: limit });
+  if (error) { fail("bi_action_history", error); return []; }
+  return data || [];
+}
+
+/** Phones this salon sent a campaign SMS to in the last `days` days. */
+export async function fetchRecentCampaignPhones(days = 14) {
+  if (!SUPABASE_ENABLED) return new Set();
+  const { data, error } = await fetchAllPages(() => supabase.rpc("recent_campaign_phones", { p_days: days }).order("phone"));
+  if (error) { fail("recent_campaign_phones", error); return new Set(); }
+  return new Set((data || []).map((r) => r.phone));
 }

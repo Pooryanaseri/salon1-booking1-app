@@ -161,6 +161,11 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           staffWorkingHours={staffWorkingHours}
           timeOff={timeOff}
           approvedDates={approvedDates}
+          automation={automation}
+          onAutomationChange={onAutomationChange}
+          onReminderHoursSaved={onReminderHoursSaved}
+          onNavigate={setSubTab}
+          notify={notify}
         />
       )}
     </div>

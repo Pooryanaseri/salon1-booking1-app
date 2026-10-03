@@ -25,7 +25,7 @@ import { supabase, SUPABASE_ENABLED, setCurrentSalonId } from "./supabase.js";
 export function slugFromLocation() {
   const seg = window.location.pathname.split("/").filter(Boolean)[0];
   if (!seg) return null;
-  if (seg === "feedback" || seg === "book" || seg === "confirm" || seg === "payment") return null; // standalone token pages, not salon slugs
+  if (seg === "feedback" || seg === "book" || seg === "confirm" || seg === "payment" || seg === "admin") return null; // standalone token pages, not salon slugs
   return seg;
 }
 
@@ -52,6 +52,12 @@ let currentSalon = { id: "demo", name: DEFAULT_SALON_NAME, slug: "demo" };
 /** The resolved salon's display name, e.g. for the header, SMS and calendar files. */
 export function getSalonName() {
   return currentSalon.name || DEFAULT_SALON_NAME;
+}
+
+/** Public booking page of the resolved salon, e.g. for links in campaign SMS. */
+export function getSalonBookingUrl() {
+  if (typeof window === "undefined" || !currentSalon.slug) return "";
+  return `${window.location.origin}/${currentSalon.slug}`;
 }
 
 function setCurrentSalon(salon) {

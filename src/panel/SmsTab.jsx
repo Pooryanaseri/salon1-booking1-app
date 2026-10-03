@@ -1,12 +1,14 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Eye, MessageSquareText, TrendingUp, History, Users, Zap, Send, Loader2, AlertTriangle, RefreshCw, Clock } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { fetchSmsLog, fetchCustomers, fetchRfmSegments, logCampaignSend, updateCampaignLogResult, fetchCampaignPerformance, createCampaign, addCampaignTargets, setReminderHours } from "../lib/api";
+import { fetchSmsLog, fetchCustomers, fetchRfmSegments, logCampaignSend, updateCampaignLogResult, fetchCampaignPerformance, setReminderHours, queueCampaign } from "../lib/api";
+import { sendCampaign, campaignResultMessage, segmentMembers } from "../lib/campaigns";
 import { sendBulkSms, renderTemplate, smsParts, SMS_PLACEHOLDERS } from "../lib/sms";
 import { toFa, jalaliLabel, formatClock, dateKey, parseDateKey } from "../lib/format";
 import { AUDIENCES } from "./LoyaltyTab";
 import { FALLBACK_SMS_TEMPLATES, RFM_SMART_DRAFTS, SMS_KIND_LABEL, SMS_STATUS_META } from "../app/shared";
 import { PanelSectionHeader } from "../components/ui";
+import { SmsAccountCard } from "./SmsAccountCard";
 import { RFM_SEGMENT_META } from "./biCards";
 
 export const SMS_SEGMENTS = [
@@ -14,6 +16,9 @@ export const SMS_SEGMENTS = [
   { id: "manual", label: "پیام دستی", Icon: MessageSquareText, color: "var(--color-tab-panel)" },
   { id: "log", label: "تاریخچه", Icon: History, color: "var(--color-info)" },
 ];
+
+// Above this many recipients a manual send is queued server-side (v2.43).
+const QUEUE_THRESHOLD = 100;
 
 // v2.39 — when the customer's reminder SMS goes out, for the whole salon.
 const REMINDER_HOUR_OPTIONS = [0, 1, 2, 3, 6, 12, 24];
@@ -117,56 +122,22 @@ export function SmsTab({ bookings, services, stylists, smsTemplates, notify, pre
 
   async function sendSmartCampaign(segmentKey) {
     const draft = RFM_SMART_DRAFTS[segmentKey];
-    // champions_vip isn't a real `segment` value — it's the VIP-flagged
-    // subset of "champions" (see get_customer_rfm_segments()'s is_vip
-    // column) — so it needs its own filter instead of matching segmentKey
-    // against c.segment directly.
-    const members = segmentKey === "champions_vip"
-      ? rfmSegments.filter((c) => c.segment === "champions" && c.is_vip && !c.sms_opt_out && /^09\d{9}$/.test(c.phone || ""))
-      : rfmSegments.filter((c) => c.segment === segmentKey && !c.sms_opt_out && /^09\d{9}$/.test(c.phone || ""));
+    const members = segmentMembers(rfmSegments, segmentKey);
     if (!members.length) { notify("مشتری‌ای در این دسته برای ارسال یافت نشد"); return; }
 
     setSendingSegment(segmentKey);
-    const campaignId = "cmp-" + Date.now().toString(36);
-    await createCampaign({
-      id: campaignId,
+    const res = await sendCampaign({
       name: `کمپین هوشمند — ${RFM_SEGMENT_META[segmentKey]?.label || segmentKey}`,
-      inactive_days: null,
-      discount_percent: null,
-      template_id: null,
-      valid_until: null,
-      targeted_count: members.length,
-    });
-    await addCampaignTargets(campaignId, members.map((c) => c.phone));
-
-    // v2.13: template_id here is a synthetic key (the segment itself), not
-    // a real sms_templates row — smart-campaign drafts are hardcoded text,
-    // not stored templates. template_label makes the segment name readable
-    // in the performance breakdown regardless.
-    const campaignLog = await logCampaignSend({
+      // template_id is a synthetic key (the segment itself), not a real
+      // sms_templates row — smart-campaign drafts are hardcoded text.
       templateId: segmentKey,
       templateLabel: RFM_SEGMENT_META[segmentKey]?.label || segmentKey,
       segment: segmentKey,
-      totalSent: members.length,
+      draft,
+      recipients: members.map((c) => ({ phone: c.phone, name: c.name, vars: { days: toFa(c.recency_days ?? "") } })),
     });
-
-    const messages = members.map((c) => ({
-      to: c.phone,
-      body: renderTemplate(draft, { name: c.name || "مشتری", days: toFa(c.recency_days ?? "") }),
-      kind: "campaign",
-      campaign_id: campaignId,
-      campaign_log_id: campaignLog?.id ?? null,
-    }));
-    const res = await sendBulkSms(messages);
     setSendingSegment(null);
-
-    if (campaignLog?.id && typeof res?.sent === "number") {
-      await updateCampaignLogResult(campaignLog.id, res.sent);
-    }
-
-    if (res?.demo) notify("حالت دمو — پیامک واقعی ارسال نشد");
-    else if (res?.ok) notify(`${toFa(res.sent)} پیامک ارسال شد${res.failed ? ` · ${toFa(res.failed)} ناموفق` : ""}`);
-    else notify(res?.error ? "ارسال ناموفق بود" : "هیچ پیامکی ارسال نشد");
+    notify(res?.ok || res?.demo ? campaignResultMessage(res) : res?.error ? "ارسال ناموفق بود" : "هیچ پیامکی ارسال نشد");
     refreshLog();
   }
 
@@ -307,6 +278,27 @@ export function SmsTab({ bookings, services, stylists, smsTemplates, notify, pre
 
     setSending(true);
     const selectedTemplate = templates.find((t) => t.id === templateId);
+
+    // v2.43 review: large audiences go through the server queue — opt-outs
+    // are skipped there (a "custom" message sent directly ignored them),
+    // nothing goes out at night, and the send doesn't depend on this tab
+    // staying open for the many minutes a few thousand SMS take.
+    if (SUPABASE_ENABLED && recipients.length > QUEUE_THRESHOLD) {
+      const res = await queueCampaign({
+        insightKey: "manual",
+        title: selectedTemplate?.title || SMS_KIND_LABEL[selectedTemplate?.kind] || "پیام دستی",
+        segment: null,
+        body,
+        recipients: recipients.map((r) => ({ phone: r.phone, name: r.vars?.name || "", vars: r.vars || {} })),
+        capDays: 0,
+      });
+      setSending(false);
+      if (!res?.ok) { notify(res?.error || "ثبت ارسال ناموفق بود"); return; }
+      notify(`${toFa(res.queued)} پیامک در صف ارسال${res.deferred ? " (ساعت ۱۰ صبح)" : " — ظرف چند دقیقه"}${res.skipped_opt_out ? ` · ${toFa(res.skipped_opt_out)} نفر انصراف داده بودند` : ""}`);
+      refreshLog();
+      return;
+    }
+
     const campaignLog = await logCampaignSend({
       templateId: selectedTemplate?.id ?? null,
       templateLabel: selectedTemplate?.title || SMS_KIND_LABEL[selectedTemplate?.kind] || "پیام دستی",
@@ -343,6 +335,7 @@ export function SmsTab({ bookings, services, stylists, smsTemplates, notify, pre
   return (
     <div className="fade-in flex flex-col gap-3">
       <PanelSectionHeader Icon={MessageSquareText} title="پیامک" subtitle="کمپین‌های هوشمند، ارسال دستی، و تاریخچهٔ پیامک‌ها" color="var(--color-tab-panel)" />
+      <SmsAccountCard notify={notify} />
       <ReminderTimingCard hours={reminderHours} onSaved={onReminderHoursSaved} notify={notify} />
 
       {/* Segment switcher — three clear, organized sections instead of one long scroll */}

@@ -1,8 +1,9 @@
 // ============================================================================
 //  SMS provider adapters — Kavenegar + Melipayamak behind one interface.
-//  Switch with the SMS_PROVIDER secret; no code change, no redeploy of the app.
-//  You said you'd hand over the exact API later: when you do, the ONLY thing
-//  that changes is the relevant function in this file.
+//  v2.41: every salon sends through its OWN account (salon_sms_settings,
+//  set in Panel → پیامک). The SMS_PROVIDER / *_API_KEY secrets are only a
+//  fallback for salons without their own account — set
+//  SMS_PLATFORM_FALLBACK=false to turn that off on a multi-salon install.
 // ============================================================================
 
 export type SendResult = {
@@ -29,10 +30,7 @@ export function isValidIranMobile(p: string): boolean {
 /* --------------------------------------------------------------- Kavenegar */
 // Docs: https://kavenegar.com/rest.html
 // Simple send:  GET/POST https://api.kavenegar.com/v1/{API-KEY}/sms/send.json
-async function sendKavenegar(to: string, message: string): Promise<SendResult> {
-  const apiKey = Deno.env.get("KAVENEGAR_API_KEY");
-  const sender = Deno.env.get("KAVENEGAR_SENDER") ?? "";
-  if (!apiKey) return { ok: false, error: "KAVENEGAR_API_KEY تنظیم نشده" };
+async function sendKavenegar(to: string, message: string, apiKey: string, sender: string): Promise<SendResult> {
 
   const url = `https://api.kavenegar.com/v1/${apiKey}/sms/send.json`;
   const form = new URLSearchParams({ receptor: to, message });
@@ -58,10 +56,7 @@ async function sendKavenegar(to: string, message: string): Promise<SendResult> {
 
 /* ------------------------------------------------------------ Melipayamak */
 // Docs: https://console.melipayamak.com  (REST v1 "send/simple")
-async function sendMelipayamak(to: string, message: string): Promise<SendResult> {
-  const apiKey = Deno.env.get("MELIPAYAMAK_API_KEY");   // console REST key
-  const from = Deno.env.get("MELIPAYAMAK_SENDER") ?? "";
-  if (!apiKey) return { ok: false, error: "MELIPAYAMAK_API_KEY تنظیم نشده" };
+async function sendMelipayamak(to: string, message: string, apiKey: string, from: string): Promise<SendResult> {
 
   const url = `https://console.melipayamak.com/api/send/simple/${apiKey}`;
   try {
@@ -81,13 +76,54 @@ async function sendMelipayamak(to: string, message: string): Promise<SendResult>
   }
 }
 
-/* ------------------------------------------------------------------ router */
-export function activeProvider(): string {
-  return (Deno.env.get("SMS_PROVIDER") ?? "kavenegar").toLowerCase();
+/* ---------------------------------------------------------------- accounts */
+export type SmsAccount = { provider: string; apiKey: string; sender: string; source: "salon" | "platform" };
+
+/** The project-wide account from secrets, if any and if fallback is allowed. */
+export function platformAccount(): SmsAccount | null {
+  if (Deno.env.get("SMS_PLATFORM_FALLBACK") === "false") return null;
+  const provider = (Deno.env.get("SMS_PROVIDER") ?? "kavenegar").toLowerCase();
+  const apiKey = provider === "melipayamak" ? Deno.env.get("MELIPAYAMAK_API_KEY") : Deno.env.get("KAVENEGAR_API_KEY");
+  if (!apiKey) return null;
+  const sender = (provider === "melipayamak" ? Deno.env.get("MELIPAYAMAK_SENDER") : Deno.env.get("KAVENEGAR_SENDER")) ?? "";
+  return { provider, apiKey, sender, source: "platform" };
 }
 
-export async function sendOne(to: string, message: string): Promise<SendResult & { provider: string }> {
-  const provider = activeProvider();
+/** Per-run cache of salon accounts (one query per salon per run, not per SMS). */
+// deno-lint-ignore no-explicit-any
+export function smsAccounts(admin: any) {
+  const cache = new Map<string, SmsAccount | null>();
+  return {
+    async forSalon(salonId: string | null | undefined): Promise<SmsAccount | null> {
+      if (!salonId) return platformAccount();
+      if (cache.has(salonId)) return cache.get(salonId)!;
+      const { data } = await admin.from("salon_sms_settings").select("provider, api_key, sender").eq("salon_id", salonId).maybeSingle();
+      const acc: SmsAccount | null = data?.api_key
+        ? { provider: data.provider, apiKey: data.api_key, sender: data.sender ?? "", source: "salon" }
+        : platformAccount();
+      cache.set(salonId, acc);
+      return acc;
+    },
+    /** Warm the cache for many salons in one query. */
+    async preload(salonIds: string[]) {
+      const ids = [...new Set(salonIds.filter((id) => id && !cache.has(id)))];
+      for (let i = 0; i < ids.length; i += 200) {
+        const { data } = await admin.from("salon_sms_settings").select("salon_id, provider, api_key, sender").in("salon_id", ids.slice(i, i + 200));
+        const found = new Map((data ?? []).map((r: any) => [r.salon_id, r]));
+        for (const id of ids.slice(i, i + 200)) {
+          const r: any = found.get(id);
+          cache.set(id, r?.api_key ? { provider: r.provider, apiKey: r.api_key, sender: r.sender ?? "", source: "salon" } : platformAccount());
+        }
+      }
+    },
+  };
+}
+
+export const NO_ACCOUNT_ERROR = "حساب پیامک این سالن تنظیم نشده (پنل ← پیامک ← حساب پیامک سالن)";
+
+/* ------------------------------------------------------------------ router */
+export async function sendOne(to: string, message: string, account: SmsAccount | null): Promise<SendResult & { provider: string }> {
+  const provider = account?.provider ?? "none";
   const phone = normalizePhone(to);
 
   if (!isValidIranMobile(phone)) {
@@ -98,10 +134,25 @@ export async function sendOne(to: string, message: string): Promise<SendResult &
     console.log(`[DRY RUN] -> ${phone}: ${message}`);
     return { ok: true, provider: `${provider} (dry-run)`, providerMsgId: "dry-run" };
   }
+  if (!account) return { ok: false, provider, error: NO_ACCOUNT_ERROR };
 
-  const result = provider === "melipayamak"
-    ? await sendMelipayamak(phone, message)
-    : await sendKavenegar(phone, message);
+  const result = account.provider === "melipayamak"
+    ? await sendMelipayamak(phone, message, account.apiKey, account.sender)
+    : await sendKavenegar(phone, message, account.apiKey, account.sender);
 
-  return { ...result, provider };
+  return { ...result, provider: account.source === "platform" ? `${account.provider} (platform)` : account.provider };
+}
+
+/** Run fn over items with at most `limit` in flight (provider calls are slow). */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }

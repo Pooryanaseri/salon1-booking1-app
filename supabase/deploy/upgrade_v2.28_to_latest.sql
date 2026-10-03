@@ -2362,3 +2362,939 @@ end;
 $fn$;
 grant execute on function public.set_reminder_hours(int) to authenticated;
 
+
+-- >>>>>>>>>> supabase/migrations/v2.40_tenant_scoping_fixes.sql
+-- ============================================================================
+-- Migration v2.40 — salon scoping for four older functions (run after v2.39)
+-- ============================================================================
+-- These SECURITY DEFINER functions predate multi-tenancy (v2.24) and were
+-- never given a salon filter. Because they bypass RLS, a manager of one
+-- salon could read every salon's data through them:
+--   * inactive_customers(days)        — names + phones of other salons' customers
+--   * get_customer_category_matrix()  — other salons' customers + visit history
+--   * get_campaign_performance()      — campaign stats mixed across salons
+--   * track_campaign_conversion       — (trigger) could credit a booking to
+--                                       another salon's campaign SMS sent to
+--                                       the same phone number
+-- Same signatures and result columns as before; only the filters change.
+-- ============================================================================
+
+create or replace function public.inactive_customers(p_days int default 60)
+returns table (phone text, name text, gender text, last_booking_at timestamptz, days_since int, total_visits int)
+language sql stable security definer set search_path = public as $fn$
+  select c.phone, c.name, c.gender, c.last_booking_at,
+         extract(day from now() - c.last_booking_at)::int, c.total_visits
+    from public.customers c
+   where public.is_manager()
+     and c.salon_id = public.current_salon_id()
+     and c.sms_opt_out = false
+     and c.last_booking_at is not null
+     and c.last_booking_at < now() - make_interval(days => p_days)
+   order by c.last_booking_at asc;
+$fn$;
+revoke all on function public.inactive_customers(int) from public, anon;
+grant execute on function public.inactive_customers(int) to authenticated;
+
+create or replace function public.get_customer_category_matrix()
+returns table (phone text, name text, category text, category_fa text, visit_count int,
+               last_visit_days int, line_status text, line_status_fa text)
+language sql stable security definer set search_path = public as $fn$
+  with cat_stats as (
+    select
+      a.customer_phone as phone, c.name, s.category,
+      count(a.id)::int as visit_count,
+      extract(day from (now() - max(a.date)))::int as last_visit_days
+    from public.appointments a
+    join public.services s on s.id = a.service_id and s.salon_id = a.salon_id
+    join public.customers c on c.phone = a.customer_phone and c.salon_id = a.salon_id
+    where a.status = 'completed'
+      and a.salon_id = public.current_salon_id()
+    group by a.customer_phone, c.name, s.category
+  )
+  select
+    phone, name, category,
+    case category
+      when 'hair' then 'مو' when 'beard' then 'ریش' when 'color' then 'رنگ'
+      when 'makeup' then 'میکاپ' when 'nails' then 'ناخن' when 'skin' then 'پوست'
+      when 'permanent_makeup' then 'خدمات دائم' else category
+    end as category_fa,
+    visit_count, last_visit_days,
+    case when last_visit_days <= 45 then 'active' when last_visit_days <= 90 then 'at_risk' else 'dormant' end as line_status,
+    case when last_visit_days <= 45 then 'فعال در این خط خدمت'
+         when last_visit_days <= 90 then 'در خطر ریزش در این خط خدمت'
+         else 'غیرفعال در این خط خدمت' end as line_status_fa
+  from cat_stats
+  where public.is_manager()
+  order by phone, category;
+$fn$;
+revoke all on function public.get_customer_category_matrix() from public, anon;
+grant execute on function public.get_customer_category_matrix() to authenticated;
+
+create or replace function public.get_campaign_performance(p_template_id text default null)
+returns table (template_id text, template_label text, segment text, total_sent bigint,
+               successful_count bigint, total_conversions bigint, conversion_rate numeric,
+               attributed_revenue bigint)
+language sql stable security definer set search_path = public as $fn$
+  select
+    cl.template_id,
+    max(cl.template_label) as template_label,
+    max(cl.segment) as segment,
+    sum(cl.total_sent)::bigint as total_sent,
+    sum(cl.successful_count)::bigint as successful_count,
+    count(distinct cc.id)::bigint as total_conversions,
+    case when sum(cl.successful_count) = 0 then 0::numeric
+         else round(count(distinct cc.id)::numeric / sum(cl.successful_count) * 100, 1)
+    end as conversion_rate,
+    coalesce(sum(a.final_price) filter (where a.status = 'completed'), 0)::bigint as attributed_revenue
+  from public.campaign_logs cl
+  left join public.campaign_conversions cc on cc.campaign_log_id = cl.id
+  left join public.appointments a on a.id = cc.appointment_id
+  where public.is_manager()
+    and cl.salon_id = public.current_salon_id()
+    and (p_template_id is null or cl.template_id = p_template_id)
+  group by cl.template_id
+  order by conversion_rate desc;
+$fn$;
+revoke all on function public.get_campaign_performance(text) from public, anon;
+grant execute on function public.get_campaign_performance(text) to authenticated;
+
+create or replace function public.track_campaign_conversion()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare matched_sms record;
+begin
+  if new.customer_phone !~ '^09[0-9]{9}$' then
+    return new;
+  end if;
+
+  -- Most recent campaign SMS this salon sent to this phone in the last 7 days.
+  select sm.id as sms_id, sm.campaign_log_id, sm.sent_at
+    into matched_sms
+    from public.sms_messages sm
+   where sm.to_phone = new.customer_phone
+     and sm.salon_id = new.salon_id
+     and sm.campaign_log_id is not null
+     and sm.status in ('sent', 'delivered')
+     and sm.sent_at >= now() - interval '7 days'
+   order by sm.sent_at desc
+   limit 1;
+
+  if matched_sms.campaign_log_id is not null then
+    insert into public.campaign_conversions
+      (salon_id, campaign_log_id, customer_phone, appointment_id, sms_message_id, converted_at, days_to_convert)
+    values (
+      new.salon_id, matched_sms.campaign_log_id, new.customer_phone, new.id, matched_sms.sms_id, now(),
+      greatest(0, extract(day from (now() - matched_sms.sent_at))::int)
+    )
+    on conflict (appointment_id) do nothing;
+  end if;
+
+  return new;
+end;
+$fn$;
+revoke all on function public.track_campaign_conversion() from public, anon, authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.41_multi_salon_platform.sql
+-- ============================================================================
+-- Migration v2.41 — running many salons on one installation (run after v2.40)
+-- ============================================================================
+-- 1. Platform admin: a small set of accounts (platform_admins) that can create
+--    salons, bind each to its owner's phone, and activate/deactivate them —
+--    no SQL needed per salon. Bootstrap the first admin once (INSTALL.md).
+-- 2. Owner binding: a salon created by the admin carries owner_phone; only
+--    that phone can register as its manager. Before this, whoever signed up
+--    first at a fresh salon's address became its owner.
+-- 3. Deactivated salons are off for everyone: current_salon_id() resolves
+--    only active salons, so public booking AND the staff panel stop.
+-- 4. Each salon's own SMS account (provider, API key, sender line). The key
+--    is write-only from the app; only the Edge Functions (service role) read it.
+-- 5. Waitlist: an anonymous visitor could read every salon's waitlist (names,
+--    phones), and the public "join waitlist" write never worked (the client's
+--    upsert needs UPDATE, which anon doesn't have). Joining now goes through
+--    join_waitlist(); only staff can read the list.
+-- 6. Feedback rows take their salon from the booking, not the request header.
+-- ============================================================================
+
+-- ---------------------------------------------------------------- salons ----
+alter table public.salons add column if not exists owner_phone text;
+alter table public.salons drop constraint if exists salons_owner_phone_check;
+alter table public.salons add constraint salons_owner_phone_check check (owner_phone is null or owner_phone ~ '^09[0-9]{9}$');
+
+-- Public pages need id/slug/name only; owner_phone stays private.
+revoke select on public.salons from anon, authenticated;
+grant select (id, slug, name, active, created_at) on public.salons to anon, authenticated;
+
+-- ------------------------------------------------------ platform admins ----
+create table if not exists public.platform_admins (
+  user_id    uuid primary key references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+alter table public.platform_admins enable row level security;
+revoke all on public.platform_admins from public, anon, authenticated;
+
+create or replace function public.is_platform_admin()
+returns boolean
+language sql stable security definer set search_path = public as $fn$
+  select exists (select 1 from public.platform_admins where user_id = auth.uid());
+$fn$;
+revoke all on function public.is_platform_admin() from public, anon;
+grant execute on function public.is_platform_admin() to authenticated;
+
+-- ------------------------------------------- active salons only (tenancy) ---
+create or replace function public.current_salon_id()
+returns uuid
+language sql stable security definer set search_path = public as $fn$
+  select s.id
+    from public.salons s
+   where s.active
+     and s.id = coalesce(
+       (select salon_id from public.users where id = auth.uid()),
+       nullif(nullif(current_setting('request.headers', true), '')::json ->> 'x-salon-id', '')::uuid
+     );
+$fn$;
+
+-- ------------------------------------------------ owner phone binding ------
+create or replace function public.guard_user_self_insert()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare v_st record; v_owner_phone text;
+begin
+  -- Only the app's own sign-up path (a user creating their own profile).
+  if auth.uid() is null or new.id <> auth.uid() then
+    return new;
+  end if;
+
+  if new.role in ('owner', 'manager') then
+    select owner_phone into v_owner_phone from public.salons where id = new.salon_id;
+    if v_owner_phone is not null then
+      -- v2.41: salons created from the platform panel name their owner.
+      if new.phone is distinct from v_owner_phone then
+        raise exception 'این شماره به‌عنوان مدیر این سالن ثبت نشده است' using errcode = '42501';
+      end if;
+      new.role := 'owner';
+    end if;
+    if exists (
+      select 1 from public.users u
+       where u.salon_id = new.salon_id and u.role in ('owner', 'manager') and u.id <> new.id
+    ) then
+      raise exception 'این سالن قبلاً مدیر دارد — برای دسترسی مدیریتی از مدیر فعلی بخواهید'
+        using errcode = '42501';
+    end if;
+  elsif new.role = 'stylist' then
+    select * into v_st from public.stylists s
+     where s.id = new.stylist_id and s.salon_id = new.salon_id and s.phone = new.phone;
+    if v_st.id is null or exists (
+      select 1 from public.users u where u.stylist_id = new.stylist_id and u.salon_id = new.salon_id and u.id <> new.id
+    ) then
+      raise exception 'پروفایل آرایشگر با این شماره پیدا نشد' using errcode = '42501';
+    end if;
+    if v_st.self_registered and not v_st.active then
+      new.active := false;
+    end if;
+  end if;
+  return new;
+end;
+$fn$;
+
+-- --------------------------------------------- per-salon SMS account -------
+create table if not exists public.salon_sms_settings (
+  salon_id   uuid primary key references public.salons(id) on delete cascade,
+  provider   text not null check (provider in ('kavenegar', 'melipayamak')),
+  api_key    text not null,
+  sender     text not null default '',
+  updated_at timestamptz not null default now()
+);
+alter table public.salon_sms_settings enable row level security;
+revoke all on public.salon_sms_settings from public, anon, authenticated;
+-- (no policies: only the service role — the Edge Functions — reads it)
+
+-- -------------------------------------------------------- admin RPCs -------
+create or replace function public.admin_create_salon(p_slug text, p_name text, p_owner_phone text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_slug text := lower(trim(coalesce(p_slug, ''))); v_id uuid;
+begin
+  if not public.is_platform_admin() then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  if v_slug !~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' then
+    return json_build_object('ok', false, 'error', 'آدرس فقط حروف کوچک انگلیسی، عدد و خط تیره');
+  end if;
+  if v_slug in ('admin', 'feedback', 'book', 'confirm', 'payment', 'reconcile', 'api', 'assets', 'default-new') then
+    return json_build_object('ok', false, 'error', 'این آدرس رزرو شده است');
+  end if;
+  if coalesce(trim(p_name), '') = '' then
+    return json_build_object('ok', false, 'error', 'نام سالن لازم است');
+  end if;
+  if coalesce(p_owner_phone, '') !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شمارهٔ موبایل مدیر نامعتبر است');
+  end if;
+  if exists (select 1 from public.salons where slug = v_slug) then
+    return json_build_object('ok', false, 'error', 'این آدرس قبلاً استفاده شده');
+  end if;
+
+  insert into public.salons (slug, name, owner_phone) values (v_slug, trim(p_name), p_owner_phone)
+  returning id into v_id;
+  -- trg_provision_salon_defaults adds app/loyalty/segment settings; open the
+  -- booking window right away so the salon is bookable once it has hours.
+  return json_build_object('ok', true, 'id', v_id, 'slug', v_slug);
+end;
+$fn$;
+
+create or replace function public.admin_update_salon(p_id uuid, p_name text default null, p_owner_phone text default null, p_active boolean default null)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if not public.is_platform_admin() then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  if p_owner_phone is not null and p_owner_phone !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شمارهٔ موبایل مدیر نامعتبر است');
+  end if;
+  update public.salons
+     set name = coalesce(nullif(trim(p_name), ''), name),
+         owner_phone = coalesce(p_owner_phone, owner_phone),
+         active = coalesce(p_active, active)
+   where id = p_id;
+  if not found then
+    return json_build_object('ok', false, 'error', 'سالن پیدا نشد');
+  end if;
+  return json_build_object('ok', true);
+end;
+$fn$;
+
+-- One row per salon with what the platform owner needs to run 300+ of them:
+-- is it set up, is it used, is its SMS working.
+create or replace function public.admin_list_salons()
+returns table (
+  id uuid, slug text, name text, active boolean, owner_phone text, created_at timestamptz,
+  owner_registered boolean, stylists int, services int,
+  bookings_30d int, completed_30d int, last_booking_date date,
+  sms_configured boolean, sms_sent_30d int, sms_failed_30d int
+)
+language sql stable security definer set search_path = public as $fn$
+  select s.id, s.slug, s.name, s.active, s.owner_phone, s.created_at,
+         exists (select 1 from public.users u where u.salon_id = s.id and u.role in ('owner', 'manager')),
+         (select count(*)::int from public.stylists t where t.salon_id = s.id and t.active),
+         (select count(*)::int from public.services v where v.salon_id = s.id and v.is_active),
+         (select count(*)::int from public.appointments a where a.salon_id = s.id and a.date >= current_date - 30),
+         (select count(*)::int from public.appointments a where a.salon_id = s.id and a.date >= current_date - 30 and a.status = 'completed'),
+         (select max(a.date) from public.appointments a where a.salon_id = s.id),
+         exists (select 1 from public.salon_sms_settings x where x.salon_id = s.id),
+         (select count(*)::int from public.sms_messages m where m.salon_id = s.id and m.created_at >= now() - interval '30 days' and m.status in ('sent', 'delivered')),
+         (select count(*)::int from public.sms_messages m where m.salon_id = s.id and m.created_at >= now() - interval '30 days' and m.status = 'failed')
+    from public.salons s
+   where public.is_platform_admin()
+   order by s.created_at desc;
+$fn$;
+
+create or replace function public.get_sms_account()
+returns json
+language sql stable security definer set search_path = public as $fn$
+  select case when not public.is_manager() then json_build_object('ok', false)
+  else coalesce(
+    (select json_build_object('ok', true, 'configured', true, 'provider', provider, 'sender', sender,
+                              'key_hint', right(api_key, 4), 'updated_at', updated_at)
+       from public.salon_sms_settings where salon_id = public.current_salon_id()),
+    json_build_object('ok', true, 'configured', false))
+  end;
+$fn$;
+
+-- p_api_key empty = keep the saved key (change provider line/sender only).
+create or replace function public.set_sms_account(p_provider text, p_api_key text, p_sender text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id(); v_key text := nullif(trim(coalesce(p_api_key, '')), '');
+begin
+  if not public.is_manager() or v_salon is null then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  if p_provider = 'none' then
+    delete from public.salon_sms_settings where salon_id = v_salon;
+    return json_build_object('ok', true, 'configured', false);
+  end if;
+  if p_provider not in ('kavenegar', 'melipayamak') then
+    return json_build_object('ok', false, 'error', 'سرویس پیامک نامعتبر است');
+  end if;
+  if v_key is not null and length(v_key) < 8 then
+    return json_build_object('ok', false, 'error', 'کلید API نامعتبر به نظر می‌رسد');
+  end if;
+  if v_key is null and not exists (select 1 from public.salon_sms_settings where salon_id = v_salon) then
+    return json_build_object('ok', false, 'error', 'کلید API لازم است');
+  end if;
+  update public.salon_sms_settings
+     set provider = p_provider, api_key = coalesce(v_key, api_key),
+         sender = coalesce(trim(p_sender), ''), updated_at = now()
+   where salon_id = v_salon;
+  if not found then
+    insert into public.salon_sms_settings (salon_id, provider, api_key, sender)
+    values (v_salon, p_provider, v_key, coalesce(trim(p_sender), ''));
+  end if;
+  insert into public.audit_log (salon_id, actor, event, detail)
+  values (v_salon, auth.uid(), 'sms_account_updated', jsonb_build_object('provider', p_provider));
+  return json_build_object('ok', true, 'configured', true);
+end;
+$fn$;
+
+-- ---------------------------------------------------------- waitlist -------
+drop policy if exists p_wait_select on public.waitlist;
+create policy p_wait_select on public.waitlist for select using (salon_id = public.current_salon_id() and public.is_staff());
+drop policy if exists p_wait_insert on public.waitlist;
+create policy p_wait_insert on public.waitlist for insert with check (salon_id = public.current_salon_id() and public.is_staff());
+revoke insert, select, update, delete on public.waitlist from anon;
+
+create or replace function public.join_waitlist(p_date date, p_service_id text, p_staff_id text,
+                                                p_name text, p_phone text, p_gender text default null)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id(); v_staff_name text;
+begin
+  if v_salon is null then
+    return json_build_object('ok', false, 'error', 'سالن نامعتبر است');
+  end if;
+  if coalesce(p_phone, '') !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شمارهٔ موبایل نامعتبر است');
+  end if;
+  if coalesce(trim(p_name), '') = '' or length(p_name) > 80 then
+    return json_build_object('ok', false, 'error', 'نام را وارد کنید');
+  end if;
+  if p_date is null or p_date < public.salon_today() or p_date > public.salon_today() + 90 then
+    return json_build_object('ok', false, 'error', 'تاریخ نامعتبر است');
+  end if;
+  if not exists (select 1 from public.services where id = p_service_id and salon_id = v_salon and is_active) then
+    return json_build_object('ok', false, 'error', 'خدمت پیدا نشد');
+  end if;
+  if p_staff_id is not null then
+    select name into v_staff_name from public.stylists where id = p_staff_id and salon_id = v_salon and active;
+    if v_staff_name is null then
+      return json_build_object('ok', false, 'error', 'آرایشگر پیدا نشد');
+    end if;
+  end if;
+  if not public.check_rate_limit('waitlist:' || p_phone, 10, 60) then
+    return json_build_object('ok', false, 'error', 'تعداد درخواست‌ها زیاد است؛ کمی بعد دوباره تلاش کنید');
+  end if;
+  -- Same person, same day/service/stylist: already on the list.
+  if exists (select 1 from public.waitlist w
+              where w.salon_id = v_salon and w.customer_phone = p_phone and w.date = p_date
+                and w.service_id = p_service_id and w.staff_id is not distinct from p_staff_id) then
+    return json_build_object('ok', true, 'already', true);
+  end if;
+
+  insert into public.waitlist (id, salon_id, date, customer_name, customer_phone, customer_gender, service_id, staff_id, staff_name)
+  values ('wl-' || encode(gen_random_bytes(8), 'hex'), v_salon, p_date, trim(p_name), p_phone,
+          coalesce(nullif(p_gender, ''), (select gender from public.services where id = p_service_id), 'female'),
+          p_service_id, p_staff_id, coalesce(v_staff_name, ''));
+  return json_build_object('ok', true);
+end;
+$fn$;
+revoke all on function public.join_waitlist(date, text, text, text, text, text) from public;
+grant execute on function public.join_waitlist(date, text, text, text, text, text) to anon, authenticated;
+
+-- ---------------------------------------------------------- feedbacks ------
+create or replace function public.feedback_salon_from_booking()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+begin
+  select salon_id into new.salon_id from public.appointments where id = new.booking_id;
+  if new.salon_id is null then
+    raise exception 'نوبت پیدا نشد' using errcode = '23503';
+  end if;
+  return new;
+end;
+$fn$;
+revoke all on function public.feedback_salon_from_booking() from public, anon, authenticated;
+drop trigger if exists trg_feedback_salon on public.feedbacks;
+create trigger trg_feedback_salon before insert on public.feedbacks
+  for each row execute function public.feedback_salon_from_booking();
+
+-- ------------------------------------------------------------ grants -------
+revoke all on function public.admin_create_salon(text, text, text) from public, anon;
+revoke all on function public.admin_update_salon(uuid, text, text, boolean) from public, anon;
+revoke all on function public.admin_list_salons() from public, anon;
+revoke all on function public.get_sms_account() from public, anon;
+revoke all on function public.set_sms_account(text, text, text) from public, anon;
+grant execute on function public.admin_create_salon(text, text, text) to authenticated;
+grant execute on function public.admin_update_salon(uuid, text, text, boolean) to authenticated;
+grant execute on function public.admin_list_salons() to authenticated;
+grant execute on function public.get_sms_account() to authenticated;
+grant execute on function public.set_sms_account(text, text, text) to authenticated;
+
+-- Sign-up pre-check for the manager form, so a wrong number is rejected
+-- before an auth account is created (an orphaned account would block that
+-- phone later). Answers only yes/no for the caller's own number.
+create or replace function public.can_register_manager(p_phone text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id(); v_owner text;
+begin
+  if v_salon is null then
+    return json_build_object('ok', false, 'error', 'سالن نامعتبر است');
+  end if;
+  if not public.check_rate_limit('can_register_manager:' || coalesce(p_phone, ''), 10, 10) then
+    return json_build_object('ok', false, 'error', 'تعداد درخواست‌ها زیاد است؛ کمی بعد دوباره تلاش کنید');
+  end if;
+  if exists (select 1 from public.users where salon_id = v_salon and role in ('owner', 'manager')) then
+    return json_build_object('ok', false, 'error', 'برای این سالن قبلاً یک مدیر ثبت‌نام کرده — وارد شوید');
+  end if;
+  select owner_phone into v_owner from public.salons where id = v_salon;
+  if v_owner is not null and v_owner is distinct from p_phone then
+    return json_build_object('ok', false, 'error', 'این شماره به‌عنوان مدیر این سالن ثبت نشده است');
+  end if;
+  return json_build_object('ok', true);
+end;
+$fn$;
+revoke all on function public.can_register_manager(text) from public;
+grant execute on function public.can_register_manager(text) to anon, authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.42_scale.sql
+-- ============================================================================
+-- Migration v2.42 — scale to hundreds of salons (run after v2.41)
+-- ============================================================================
+-- * queue_due_reminders(): the cron-reminders "safety net" sweep used to load
+--   every upcoming booking, every stylist and every service of every salon
+--   through the REST API each minute. The API returns at most 1000 rows, so
+--   past a few dozen salons reminders and service names went missing
+--   silently. The sweep is now one SQL statement that queues only what is
+--   due; the regular drain sends it (through each salon's own SMS account).
+-- * Deactivated salons send nothing: claim_due_sms() skips them and
+--   deactivating a salon drops its queued messages.
+-- * RLS policies call current_salon_id() / is_manager() / is_staff() once per
+--   statement instead of once per row (wrapped in a scalar sub-select — the
+--   pattern Supabase recommends), and indexes cover the per-salon lookups the
+--   policies and cron jobs make.
+-- ============================================================================
+
+create or replace function public.queue_due_reminders(p_limit int default 500)
+returns int
+language plpgsql security definer set search_path = public as $fn$
+declare v_tz text := coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'); v_n int;
+begin
+  insert into public.sms_messages (salon_id, to_phone, body, kind, appointment_id, status, scheduled_for)
+  select a.salon_id, a.customer_phone, public.booking_sms_text(a, 'reminder'), 'reminder', a.id, 'queued', now()
+    from public.appointments a
+    join public.salons s on s.id = a.salon_id and s.active
+    join public.app_settings st on st.salon_id = a.salon_id and st.reminder_hours_before > 0
+    left join public.stylists t on t.id = a.staff_id and t.salon_id = a.salon_id
+    cross join lateral (
+      select ((a.date + make_interval(mins => a.start_min)) at time zone v_tz) as starts_at,
+             coalesce(nullif(t.reminder_hours_before, 0), st.reminder_hours_before) as hrs
+    ) w
+   where a.status in ('confirmed', 'rescheduled')
+     and not a.sms_sent_reminder
+     and a.customer_phone ~ '^09[0-9]{9}$'
+     and a.date between public.salon_today() and public.salon_today() + 3
+     and now() >= w.starts_at - make_interval(hours => w.hrs)
+     and now() < w.starts_at
+     and not exists (
+       select 1 from public.sms_messages m
+        where m.appointment_id = a.id and m.kind = 'reminder'
+          and m.status in ('queued', 'sending', 'sent', 'delivered'))
+   limit greatest(p_limit, 1);
+  get diagnostics v_n = row_count;
+  return v_n;
+end;
+$fn$;
+revoke all on function public.queue_due_reminders(int) from public, anon, authenticated;
+grant execute on function public.queue_due_reminders(int) to service_role;
+
+create or replace function public.claim_due_sms(p_limit integer default 200)
+returns setof public.sms_messages
+language sql security definer set search_path = public as $fn$
+  update public.sms_messages m
+     set status = 'sending', claimed_at = now()
+   where m.id in (
+     select q.id from public.sms_messages q
+       join public.salons s on s.id = q.salon_id and s.active
+      where q.scheduled_for <= now()
+        and (q.status = 'queued' or (q.status = 'sending' and q.claimed_at < now() - interval '10 minutes'))
+      order by q.scheduled_for
+      limit greatest(p_limit, 1)
+      for update of q skip locked
+   )
+  returning m.*;
+$fn$;
+revoke all on function public.claim_due_sms(int) from public, anon, authenticated;
+grant execute on function public.claim_due_sms(int) to service_role;
+
+-- Deactivating a salon drops what it still had queued (so reactivating it
+-- later doesn't fire a backlog of stale reminders).
+create or replace function public.cancel_queued_sms_of_inactive_salon()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if old.active and not new.active then
+    update public.sms_messages set status = 'cancelled', error = 'salon deactivated'
+     where salon_id = new.id and status in ('queued', 'sending');
+  end if;
+  return new;
+end;
+$fn$;
+revoke all on function public.cancel_queued_sms_of_inactive_salon() from public, anon, authenticated;
+drop trigger if exists trg_salon_deactivated on public.salons;
+create trigger trg_salon_deactivated after update of active on public.salons
+  for each row execute function public.cancel_queued_sms_of_inactive_salon();
+
+-- ---------------------------------------------------------------- indexes ---
+create index if not exists appointments_salon_date_idx on public.appointments (salon_id, date);
+create index if not exists appointments_salon_staff_date_idx on public.appointments (salon_id, staff_id, date);
+create index if not exists appointments_salon_phone_idx on public.appointments (salon_id, customer_phone);
+create index if not exists appointments_upcoming_reminder_idx on public.appointments (date)
+  where status in ('confirmed', 'rescheduled') and not sms_sent_reminder;
+create index if not exists sms_messages_appointment_idx on public.sms_messages (appointment_id, kind) where appointment_id is not null;
+create index if not exists sms_messages_salon_created_idx on public.sms_messages (salon_id, created_at desc);
+create index if not exists users_salon_role_idx on public.users (salon_id, role);
+create index if not exists stylists_salon_idx on public.stylists (salon_id);
+create index if not exists services_salon_idx on public.services (salon_id);
+create index if not exists time_offs_salon_date_idx on public.time_offs (salon_id, date);
+create index if not exists waitlist_salon_date_idx on public.waitlist (salon_id, date);
+create index if not exists expenses_salon_date_idx on public.expenses (salon_id, date);
+create index if not exists loyalty_ledger_salon_phone_idx on public.loyalty_ledger (salon_id, customer_phone);
+create index if not exists campaign_logs_salon_idx on public.campaign_logs (salon_id);
+create index if not exists feedbacks_salon_idx on public.feedbacks (salon_id);
+create index if not exists rate_limit_events_bucket_idx on public.rate_limit_events (bucket, created_at);
+
+-- -------------------------------------------- RLS: evaluate once per query ---
+-- Rewrites every public policy's expressions so the tenant/role helpers sit
+-- inside (select …): Postgres then runs them once as an InitPlan instead of
+-- once per row. Same logic; idempotent (already-wrapped calls are skipped).
+do $$
+declare
+  p record; v_using text; v_check text; v_sql text;
+  fns text[] := array['current_salon_id', 'is_manager', 'is_staff', 'my_role', 'my_stylist_id'];
+  f text;
+begin
+  for p in
+    select pol.polname, c.relname, pol.polcmd, pol.polpermissive,
+           pg_get_expr(pol.polqual, pol.polrelid) as qual,
+           pg_get_expr(pol.polwithcheck, pol.polrelid) as wcheck,
+           array(select rolname from pg_roles where oid = any(pol.polroles)) as roles
+      from pg_policy pol join pg_class c on c.oid = pol.polrelid
+     where c.relnamespace = 'public'::regnamespace
+  loop
+    v_using := p.qual; v_check := p.wcheck;
+    foreach f in array fns loop
+      -- only bare calls: "f()" not already preceded by "select "
+      v_using := regexp_replace(v_using, '(?<!SELECT )(?<!select )\m' || f || '\(\)', '(select public.' || f || '())', 'g');
+      v_check := regexp_replace(v_check, '(?<!SELECT )(?<!select )\m' || f || '\(\)', '(select public.' || f || '())', 'g');
+    end loop;
+    if v_using is not distinct from p.qual and v_check is not distinct from p.wcheck then
+      continue;
+    end if;
+    v_sql := format('alter policy %I on public.%I', p.polname, p.relname);
+    if v_using is not null then v_sql := v_sql || format(' using (%s)', v_using); end if;
+    if v_check is not null then v_sql := v_sql || format(' with check (%s)', v_check); end if;
+    execute v_sql;
+  end loop;
+end $$;
+
+-- -------------------------------------------------- public slot view -------
+-- The booking page only needs occupied slots from yesterday on. Without the
+-- date filter it fetched every booking the salon ever had, oldest first —
+-- and past 1000 of them the API cut off exactly the upcoming ones, so taken
+-- times showed as free.
+create or replace view public.appointments_public_slots as
+  select staff_id, date, start_min, end_min, buffer_minutes, status
+    from public.appointments
+   where salon_id = public.current_salon_id()
+     and date >= public.salon_today() - 1;
+grant select on public.appointments_public_slots to anon, authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.43_action_center.sql
+-- ============================================================================
+-- Migration v2.43 — BI action center (run after v2.42)
+-- ============================================================================
+-- The BI tab's "اقدام پیشنهادی" grows from a button into a managed process:
+--   * bi_actions — every action the manager approves (or snoozes, or
+--     dismisses) is recorded per salon, with the numbers it was based on, so
+--     the result can be measured later and the same suggestion isn't repeated
+--     on another device.
+--   * queue_campaign() — one server-side path for a BI campaign. It enforces
+--     what must not depend on the browser: opted-out customers are skipped,
+--     nobody gets more than one campaign SMS per N days (default 14), and
+--     nothing is sent at night (21:00–09:00 → moved to 10:00). Messages are
+--     queued and the cron drain sends them through the salon's own account.
+--   * bi_action_history() — each action with its measured outcome: SMS sent,
+--     customers who booked within 7 days of the SMS, and their revenue.
+--   * The drain re-checks opt-out at send time, and a delivered campaign SMS
+--     now counts toward campaign_logs.successful_count by itself.
+-- ============================================================================
+
+create table if not exists public.bi_actions (
+  id               uuid primary key default gen_random_uuid(),
+  salon_id         uuid not null default public.current_salon_id() references public.salons(id) on delete cascade,
+  insight_key      text not null,
+  kind             text not null check (kind in ('campaign', 'automation', 'reminder', 'goto')),
+  status           text not null default 'done' check (status in ('done', 'snoozed', 'dismissed')),
+  title            text not null default '',
+  params           jsonb not null default '{}'::jsonb,
+  baseline         jsonb not null default '{}'::jsonb,   -- the metrics the suggestion was based on
+  campaign_log_id  text references public.campaign_logs(id) on delete set null,
+  until            timestamptz,                          -- snoozed until
+  created_by       uuid default auth.uid(),
+  created_at       timestamptz not null default now()
+);
+create index if not exists bi_actions_salon_created_idx on public.bi_actions (salon_id, created_at desc);
+create index if not exists bi_actions_salon_key_idx on public.bi_actions (salon_id, insight_key);
+alter table public.bi_actions enable row level security;
+drop policy if exists p_bi_actions_read on public.bi_actions;
+create policy p_bi_actions_read on public.bi_actions for select
+  using (salon_id = (select public.current_salon_id()) and (select public.is_manager()));
+drop policy if exists p_bi_actions_write on public.bi_actions;
+create policy p_bi_actions_write on public.bi_actions for insert
+  with check (salon_id = (select public.current_salon_id()) and (select public.is_manager()));
+revoke all on public.bi_actions from anon;
+grant select, insert on public.bi_actions to authenticated;
+
+-- Frequency-cap lookups ("did this phone get a campaign SMS lately?").
+create index if not exists sms_messages_campaign_phone_idx
+  on public.sms_messages (salon_id, to_phone, created_at desc) where kind = 'campaign';
+
+-- ------------------------------------------------------------ helpers ------
+/** 10:00 the same/next day when p_at falls in quiet hours (salon local time). */
+create or replace function public.outside_quiet_hours(p_at timestamptz)
+returns timestamptz
+language sql stable set search_path = public as $fn$
+  with t as (
+    select coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran') as tz
+  ), l as (
+    select (greatest(p_at, now()) at time zone t.tz) as local_ts, t.tz from t
+  )
+  select case
+    when extract(hour from local_ts) < 9  then (date_trunc('day', local_ts) + interval '10 hours') at time zone tz
+    when extract(hour from local_ts) >= 21 then (date_trunc('day', local_ts) + interval '1 day 10 hours') at time zone tz
+    else greatest(p_at, now())
+  end
+  from l;
+$fn$;
+
+-- ------------------------------------------------------ queue_campaign -----
+-- p_recipients: [{ "phone": "09…", "name": "…", "vars": { … } }, …]
+-- p_body: template with {{name}}, {{salon}}, {{days}}, … rendered per person.
+create or replace function public.queue_campaign(
+  p_insight_key text, p_title text, p_segment text, p_body text, p_recipients jsonb,
+  p_send_at timestamptz default null, p_cap_days int default 14, p_baseline jsonb default '{}'::jsonb)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_salon uuid := public.current_salon_id();
+  v_salon_name text;
+  v_send_at timestamptz;
+  v_campaign_id text := 'cmp-' || substr(md5(gen_random_uuid()::text), 1, 12);
+  v_log_id text;
+  v_total int; v_opted int; v_recent int; v_invalid int; v_queued int;
+begin
+  if v_salon is null or not public.is_manager() then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  if coalesce(trim(p_body), '') = '' then
+    return json_build_object('ok', false, 'error', 'متن پیامک خالی است');
+  end if;
+  if length(p_body) > 600 then
+    return json_build_object('ok', false, 'error', 'متن پیامک خیلی طولانی است');
+  end if;
+  if jsonb_typeof(p_recipients) is distinct from 'array' or jsonb_array_length(p_recipients) = 0 then
+    return json_build_object('ok', false, 'error', 'گیرنده‌ای انتخاب نشده');
+  end if;
+  if jsonb_array_length(p_recipients) > 5000 then
+    return json_build_object('ok', false, 'error', 'حداکثر ۵۰۰۰ گیرنده در هر ارسال');
+  end if;
+  select name into v_salon_name from public.salons where id = v_salon;
+  v_send_at := public.outside_quiet_hours(coalesce(p_send_at, now()));
+  if v_send_at > now() + interval '14 days' then
+    return json_build_object('ok', false, 'error', 'زمان ارسال حداکثر ۱۴ روز بعد');
+  end if;
+
+  drop table if exists _rcpt;
+  create temp table _rcpt on commit drop as
+  select distinct on (r.phone) r.phone, r.name, r.vars,
+         (r.phone !~ '^09[0-9]{9}$') as invalid,
+         coalesce(c.sms_opt_out, false) as opted_out,
+         exists (select 1 from public.sms_messages m
+                  where m.salon_id = v_salon and m.to_phone = r.phone and m.kind = 'campaign'
+                    and m.status in ('queued', 'sending', 'sent', 'delivered')
+                    and coalesce(m.sent_at, m.scheduled_for, m.created_at) > now() - make_interval(days => greatest(coalesce(p_cap_days, 14), 0))
+                    and coalesce(p_cap_days, 14) > 0) as recent
+    from (
+      select trim(coalesce(e ->> 'phone', '')) as phone,
+             nullif(trim(coalesce(e ->> 'name', '')), '') as name,
+             coalesce(e -> 'vars', '{}'::jsonb) as vars
+        from jsonb_array_elements(p_recipients) e
+    ) r
+    left join public.customers c on c.salon_id = v_salon and c.phone = r.phone
+   order by r.phone;
+
+  select count(*), count(*) filter (where invalid), count(*) filter (where opted_out and not invalid),
+         count(*) filter (where recent and not opted_out and not invalid)
+    into v_total, v_invalid, v_opted, v_recent from _rcpt;
+  v_queued := v_total - v_invalid - v_opted - v_recent;
+  if v_queued <= 0 then
+    return json_build_object('ok', false, 'error', 'همهٔ گیرنده‌ها کنار گذاشته شدند (انصراف یا پیامک اخیر)',
+                             'skipped_opt_out', v_opted, 'skipped_recent', v_recent, 'skipped_invalid', v_invalid);
+  end if;
+
+  insert into public.campaigns (id, salon_id, name, status, targeted_count)
+  values (v_campaign_id, v_salon, coalesce(nullif(p_title, ''), 'کمپین'), 'sent', v_queued);
+  insert into public.campaign_logs (salon_id, template_id, template_label, segment, total_sent, successful_count, created_by, sent_at)
+  values (v_salon, coalesce(nullif(p_segment, ''), 'bi_' || p_insight_key), coalesce(nullif(p_title, ''), 'کمپین'),
+          nullif(p_segment, ''), v_queued, 0, auth.uid(), v_send_at)
+  returning id into v_log_id;
+  insert into public.campaign_targets (salon_id, campaign_id, customer_phone)
+  select v_salon, v_campaign_id, phone from _rcpt where not (invalid or opted_out or recent)
+  on conflict (campaign_id, customer_phone) do nothing;
+  insert into public.sms_messages (salon_id, to_phone, body, kind, campaign_id, campaign_log_id, status, scheduled_for)
+  select v_salon, phone,
+         public.render_sms(p_body, jsonb_build_object('name', coalesce(name, 'مشتری'), 'salon', coalesce(v_salon_name, '')) || vars),
+         'campaign', v_campaign_id, v_log_id, 'queued', v_send_at
+    from _rcpt where not (invalid or opted_out or recent);
+
+  insert into public.bi_actions (salon_id, insight_key, kind, title, params, baseline, campaign_log_id)
+  values (v_salon, p_insight_key, 'campaign', coalesce(p_title, ''),
+          jsonb_build_object('segment', p_segment, 'queued', v_queued, 'send_at', v_send_at, 'body', p_body),
+          coalesce(p_baseline, '{}'::jsonb), v_log_id);
+
+  return json_build_object('ok', true, 'queued', v_queued, 'send_at', v_send_at, 'campaign_log_id', v_log_id,
+                           'skipped_opt_out', v_opted, 'skipped_recent', v_recent, 'skipped_invalid', v_invalid,
+                           'deferred', v_send_at > now() + interval '2 minutes');
+end;
+$fn$;
+revoke all on function public.queue_campaign(text, text, text, text, jsonb, timestamptz, int, jsonb) from public, anon;
+grant execute on function public.queue_campaign(text, text, text, text, jsonb, timestamptz, int, jsonb) to authenticated;
+
+-- Phones that got a campaign SMS from this salon in the last p_days — the
+-- action wizard shows them as "recently contacted" before sending.
+create or replace function public.recent_campaign_phones(p_days int default 14)
+returns table (phone text)
+language sql stable security definer set search_path = public as $fn$
+  select distinct m.to_phone
+    from public.sms_messages m
+   where public.is_manager()
+     and m.salon_id = public.current_salon_id()
+     and m.kind = 'campaign'
+     and m.status in ('queued', 'sending', 'sent', 'delivered')
+     and coalesce(m.sent_at, m.scheduled_for, m.created_at) > now() - make_interval(days => greatest(p_days, 0));
+$fn$;
+revoke all on function public.recent_campaign_phones(int) from public, anon;
+grant execute on function public.recent_campaign_phones(int) to authenticated;
+
+-- ------------------------------------------------- record / snooze ---------
+create or replace function public.record_bi_action(p_insight_key text, p_kind text, p_status text,
+                                                   p_title text default '', p_params jsonb default '{}'::jsonb,
+                                                   p_baseline jsonb default '{}'::jsonb, p_snooze_days int default 7)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id(); v_id uuid;
+begin
+  if v_salon is null or not public.is_manager() then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  if p_status not in ('done', 'snoozed', 'dismissed') or p_kind not in ('campaign', 'automation', 'reminder', 'goto') then
+    return json_build_object('ok', false, 'error', 'درخواست نامعتبر');
+  end if;
+  insert into public.bi_actions (salon_id, insight_key, kind, status, title, params, baseline, until)
+  values (v_salon, left(p_insight_key, 120), p_kind, p_status, left(coalesce(p_title, ''), 200),
+          coalesce(p_params, '{}'::jsonb), coalesce(p_baseline, '{}'::jsonb),
+          case when p_status = 'snoozed' then now() + make_interval(days => least(greatest(coalesce(p_snooze_days, 7), 1), 90)) end)
+  returning id into v_id;
+  return json_build_object('ok', true, 'id', v_id);
+end;
+$fn$;
+revoke all on function public.record_bi_action(text, text, text, text, jsonb, jsonb, int) from public, anon;
+grant execute on function public.record_bi_action(text, text, text, text, jsonb, jsonb, int) to authenticated;
+
+-- ------------------------------------------------------ history + results --
+-- Conversions come from campaign_conversions (a booking made within 7 days of
+-- the customer's campaign SMS, see track_campaign_conversion); revenue counts
+-- only those bookings that were completed.
+create or replace function public.bi_action_history(p_limit int default 50)
+returns table (
+  id uuid, insight_key text, kind text, status text, title text, params jsonb, baseline jsonb,
+  until timestamptz, created_at timestamptz, campaign_log_id text,
+  sms_queued int, sms_sent int, sms_failed int, conversions int, revenue bigint, measure_until timestamptz
+)
+language sql stable security definer set search_path = public as $fn$
+  select a.id, a.insight_key, a.kind, a.status, a.title, a.params, a.baseline, a.until, a.created_at, a.campaign_log_id,
+         coalesce(s.queued, 0), coalesce(s.sent, 0), coalesce(s.failed, 0),
+         coalesce(cv.n, 0), coalesce(cv.revenue, 0),
+         case when a.campaign_log_id is not null then coalesce(cl.sent_at, a.created_at) + interval '7 days' end
+    from public.bi_actions a
+    left join public.campaign_logs cl on cl.id = a.campaign_log_id
+    left join lateral (
+      select count(*) filter (where m.status in ('queued', 'sending'))::int as queued,
+             count(*) filter (where m.status in ('sent', 'delivered'))::int as sent,
+             count(*) filter (where m.status = 'failed')::int as failed
+        from public.sms_messages m where m.campaign_log_id = a.campaign_log_id and m.salon_id = a.salon_id
+    ) s on a.campaign_log_id is not null
+    left join lateral (
+      select count(distinct c.customer_phone)::int as n,
+             coalesce(sum(ap.final_price) filter (where ap.status = 'completed'), 0)::bigint as revenue
+        from public.campaign_conversions c
+        left join public.appointments ap on ap.id = c.appointment_id
+       where c.campaign_log_id = a.campaign_log_id and c.salon_id = a.salon_id
+    ) cv on a.campaign_log_id is not null
+   where public.is_manager() and a.salon_id = public.current_salon_id()
+   order by a.created_at desc
+   limit least(greatest(coalesce(p_limit, 50), 1), 200);
+$fn$;
+revoke all on function public.bi_action_history(int) from public, anon;
+grant execute on function public.bi_action_history(int) to authenticated;
+
+-- --------------------------------------- delivered campaign SMS counted ----
+create or replace function public.count_campaign_delivery()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if new.campaign_log_id is not null and new.status in ('sent', 'delivered')
+     and old.status not in ('sent', 'delivered') then
+    update public.campaign_logs set successful_count = successful_count + 1 where id = new.campaign_log_id;
+  end if;
+  return new;
+end;
+$fn$;
+revoke all on function public.count_campaign_delivery() from public, anon, authenticated;
+drop trigger if exists trg_count_campaign_delivery on public.sms_messages;
+create trigger trg_count_campaign_delivery after update of status on public.sms_messages
+  for each row execute function public.count_campaign_delivery();
+
+-- ------------------------------------------------ fair, prioritised queue ---
+-- With campaigns queued server-side, one salon's 5000-SMS campaign used to
+-- sit in front of every salon's booking confirmations and reminders (the
+-- claim took the oldest due rows first). Now: transactional messages first,
+-- then campaigns interleaved across salons (each salon's 1st, then each
+-- salon's 2nd, …). Exactly-once is kept: candidates are locked with SKIP
+-- LOCKED and re-checked before being marked 'sending'.
+create or replace function public.claim_due_sms(p_limit integer default 200)
+returns setof public.sms_messages
+language plpgsql security definer set search_path = public as $fn$
+begin
+  return query
+  with due as (
+    select q.id,
+           (q.kind = 'campaign') as is_campaign,
+           row_number() over (partition by q.salon_id, (q.kind = 'campaign') order by q.scheduled_for, q.id) as turn,
+           q.scheduled_for
+      from public.sms_messages q
+      join public.salons s on s.id = q.salon_id and s.active
+     where q.scheduled_for <= now()
+       and (q.status = 'queued' or (q.status = 'sending' and q.claimed_at < now() - interval '10 minutes'))
+  ), picked as (
+    select d.id from due d
+     order by d.is_campaign, d.turn, d.scheduled_for
+     limit greatest(p_limit, 1)
+  ), locked as (
+    select m.id from public.sms_messages m
+     where m.id in (select id from picked)
+       for update skip locked
+  )
+  update public.sms_messages m
+     set status = 'sending', claimed_at = now()
+   where m.id in (select id from locked)
+     and (m.status = 'queued' or (m.status = 'sending' and m.claimed_at < now() - interval '10 minutes'))
+  returning m.*;
+end;
+$fn$;
+revoke all on function public.claim_due_sms(int) from public, anon, authenticated;
+grant execute on function public.claim_due_sms(int) to service_role;
+
