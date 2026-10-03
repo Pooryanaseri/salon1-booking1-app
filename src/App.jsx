@@ -250,8 +250,10 @@ export default function App() {
   useEffect(() => {
     if (!SUPABASE_ENABLED || panelAuthed) return;
     return subscribeSlotChanges(async () => {
+      // An empty list is a real answer (e.g. the last upcoming booking was
+      // cancelled); only a failed fetch keeps the current slots.
       const slots = await fetchPublicSlots();
-      if (slots.length) setBookings(slots);
+      if (slots) setBookings(slots);
     });
   }, [panelAuthed]);
 

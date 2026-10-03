@@ -346,7 +346,7 @@ function publicSlotsQuery() {
 export async function fetchPublicSlots() {
   if (!SUPABASE_ENABLED) return [];
   const { data, error } = await fetchAllPages(publicSlotsQuery);
-  if (error) { fail("fetchPublicSlots", error); return []; }
+  if (error) { fail("fetchPublicSlots", error); return null; } // null = keep what's shown
   return (data || []).map(map.appointments.fromRow);
 }
 

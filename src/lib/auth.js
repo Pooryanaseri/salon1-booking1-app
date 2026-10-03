@@ -3,10 +3,17 @@
 //  The three roles (owner / manager / stylist) are unchanged; they live in
 //  public.users.role and are also enforced by RLS in Postgres.
 // ============================================================================
-import { supabase, SUPABASE_ENABLED, phoneToEmail } from "./supabase";
+import { supabase, SUPABASE_ENABLED, phoneToEmail, getCurrentSalonId } from "./supabase";
 
 const OWNER_BOOTSTRAP_PHONE = import.meta.env.VITE_OWNER_PHONE || "09120000000";
 const PENDING_APPROVAL_MSG = "ثبت‌نام انجام شد — بعد از تایید مدیر سالن می‌توانید وارد شوید (به مدیر پیامک رفت)";
+const OTHER_SALON_MSG = "این حساب متعلق به سالن دیگری است — از لینک سالن خودتان وارد شوید";
+
+// v2.42 review: with many salons on one site, staff of salon A opening salon
+// B's link got A's data under B's name (the database follows the account,
+// the page follows the URL) and no live updates. Each salon's panel only
+// accepts its own staff.
+const belongsHere = (profile) => !profile?.salon_id || profile.salon_id === getCurrentSalonId();
 
 /**
  * @param {string} phone
@@ -43,6 +50,10 @@ export async function signIn(phone, password, roleHint = null) {
       await supabase.auth.signOut();
       return { ok: false, error: "حساب شما پیدا نشد — با مدیر سالن تماس بگیرید" };
     }
+  }
+  if (!belongsHere(profile)) {
+    await supabase.auth.signOut();
+    return { ok: false, error: OTHER_SALON_MSG };
   }
   if (!profile.active) {
     await supabase.auth.signOut();
@@ -83,7 +94,7 @@ export async function loadProfile(userId) {
   if (!SUPABASE_ENABLED) return null;
   const { data, error } = await supabase
     .from("users")
-    .select("id, phone, full_name, role, stylist_id, active")
+    .select("id, salon_id, phone, full_name, role, stylist_id, active")
     .eq("id", userId)
     .maybeSingle();
   if (error) return null;
@@ -96,7 +107,7 @@ export async function restoreSession() {
   const { data } = await supabase.auth.getSession();
   if (!data?.session?.user) return null;
   const profile = await loadProfile(data.session.user.id);
-  if (!profile?.active) return null;
+  if (!profile?.active || !belongsHere(profile)) return null; // another salon's session: show this salon's login
   return { role: profile.role, stylistId: profile.stylist_id, user: profile };
 }
 

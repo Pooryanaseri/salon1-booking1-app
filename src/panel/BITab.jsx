@@ -71,24 +71,59 @@ export function biEntryMatches(b, entry) {
 
 export function biPriced(list) { return list.filter((b) => b.final_price != null); }
 
+// Per-customer history, built once per bookings array: each customer's first
+// booking time and their sorted completed-visit times. The KPI checks below
+// ("seen before?", "came back within 60 days?") were a scan of the whole
+// history per booking — O(n²), over a second per render for a salon with
+// ~20k bookings once the panel started loading full history (v2.42).
+const historyCache = new WeakMap();
+export function biHistoryIndex(allBookings) {
+  let idx = historyCache.get(allBookings);
+  if (idx) return idx;
+  const first = new Map();
+  const completed = new Map();
+  for (const b of allBookings) {
+    const ts = bookingTimestamp(b);
+    const prev = first.get(b.customer_phone);
+    if (prev === undefined || ts < prev) first.set(b.customer_phone, ts);
+    if (b.status === "completed") {
+      if (!completed.has(b.customer_phone)) completed.set(b.customer_phone, []);
+      completed.get(b.customer_phone).push(ts);
+    }
+  }
+  for (const list of completed.values()) list.sort((a, b) => a - b);
+  idx = { first, completed };
+  historyCache.set(allBookings, idx);
+  return idx;
+}
+/** True if a sorted list has a value in (lo, hi]. */
+function hasValueIn(sorted, lo, hi) {
+  if (!sorted) return false;
+  let a = 0, z = sorted.length;
+  while (a < z) { const m = (a + z) >> 1; if (sorted[m] <= lo) a = m + 1; else z = m; }
+  return a < sorted.length && sorted[a] <= hi;
+}
+const RETURN_WINDOW_MS = 60 * 86400000;
+
 export const BI_KPIS = [
   {
     id: "newCustomers", label: "مشتری جدید", Icon: UserPlus, higherIsBetter: true,
     format: (v) => `${toFa(Math.round(v))} نفر`,
     compute: (subset, allBookings, periodStartTs) => {
+      const { first } = biHistoryIndex(allBookings);
       const seen = new Set();
       let count = 0;
       for (const b of subset) {
         if (seen.has(b.customer_phone)) continue;
         seen.add(b.customer_phone);
-        const hadEarlier = allBookings.some((ob) => ob.customer_phone === b.customer_phone && bookingTimestamp(ob) < periodStartTs);
-        if (!hadEarlier) count++;
+        if (!(first.get(b.customer_phone) < periodStartTs)) count++;
       }
       return count;
     },
     single: (b, allBookings, periodStartTs) => {
-      const hadEarlier = allBookings.some((ob) => ob.customer_phone === b.customer_phone && ob.id !== b.id && bookingTimestamp(ob) < periodStartTs);
-      return hadEarlier ? 0 : 1;
+      // b itself is inside the period, so "any booking before the period"
+      // never counts b — the same as excluding it by id.
+      return biHistoryIndex(allBookings).first.get(b.customer_phone) < periodStartTs ? 0 : 1;
     },
   },
   {
@@ -102,22 +137,17 @@ export const BI_KPIS = [
         if (!anchors.has(b.customer_phone) || ts < anchors.get(b.customer_phone)) anchors.set(b.customer_phone, ts);
       }
       if (anchors.size === 0) return 0;
+      const { completed } = biHistoryIndex(allBookings);
       let returned = 0;
       for (const [phone, anchorTs] of anchors) {
-        const hasReturn = allBookings.some(
-          (ob) => ob.customer_phone === phone && ob.status === "completed" && bookingTimestamp(ob) > anchorTs && bookingTimestamp(ob) <= anchorTs + 60 * 86400000
-        );
-        if (hasReturn) returned++;
+        if (hasValueIn(completed.get(phone), anchorTs, anchorTs + RETURN_WINDOW_MS)) returned++;
       }
       return returned / anchors.size;
     },
     single: (b, allBookings) => {
       if (b.status !== "completed") return 0;
       const ts = bookingTimestamp(b);
-      const hasReturn = allBookings.some(
-        (ob) => ob.customer_phone === b.customer_phone && ob.id !== b.id && ob.status === "completed" && bookingTimestamp(ob) > ts && bookingTimestamp(ob) <= ts + 60 * 86400000
-      );
-      return hasReturn ? 1 : 0;
+      return hasValueIn(biHistoryIndex(allBookings).completed.get(b.customer_phone), ts, ts + RETURN_WINDOW_MS) ? 1 : 0;
     },
   },
   {
@@ -358,11 +388,10 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
   // started, anywhere in baseFiltered (branch/staff-filtered but not date-filtered).
   const customerMix = useMemo(() => {
     const rangeStartTs = periodStart.getTime();
+    const completedHistory = biHistoryIndex(baseFiltered).completed;
     let newRevenue = 0, returningRevenue = 0, newCount = 0, returningCount = 0;
     for (const b of periodPricedCompleted) {
-      const hadPriorVisit = baseFiltered.some(
-        (ob) => ob.customer_phone === b.customer_phone && ob.status === "completed" && bookingTimestamp(ob) < rangeStartTs
-      );
+      const hadPriorVisit = (completedHistory.get(b.customer_phone)?.[0] ?? Infinity) < rangeStartTs;
       if (hadPriorVisit) { returningRevenue += b.final_price; returningCount += 1; }
       else { newRevenue += b.final_price; newCount += 1; }
     }

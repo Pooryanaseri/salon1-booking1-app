@@ -212,7 +212,10 @@ ReactDOM.createRoot(document.getElementById("root")).render(
       ) : paymentMatch ? (
         <PaymentCallbackPage authority={paymentParams.get("Authority")} status={paymentParams.get("Status")} />
       ) : adminMatch ? (
-        <AdminPage />
+        <>
+          <IdleSessionGuard />
+          <AdminPage />
+        </>
       ) : (
         <TenantGate>
           <OfflineBanner />

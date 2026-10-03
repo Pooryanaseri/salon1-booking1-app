@@ -120,6 +120,12 @@ Deno.serve(async (req) => {
       .eq("status", "queued");
     if (auth.role === "anon") query = query.in("kind", ANON_CANCELLABLE_KINDS);
     else if (auth.role !== "system") query = query.eq("salon_id", auth.salonId);
+    if (auth.role === "stylist") {
+      // a stylist only touches their own bookings' messages
+      const { data: own } = await admin.from("appointments").select("id")
+        .eq("id", payload.appointment_id).eq("salon_id", auth.salonId).eq("staff_id", auth.stylistId).maybeSingle();
+      if (!own) return json({ ok: false, error: "دسترسی ندارید" }, 403);
+    }
     const { error, count } = await query;
     if (error) { console.error("[send-sms/cancel] db error:", error.message); return json({ ok: false, error: "لغو ناموفق بود" }, 500); }
     return json({ ok: true, cancelled: count ?? 0 });
