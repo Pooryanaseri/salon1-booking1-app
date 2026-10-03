@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Eye, MessageSquareText, TrendingUp, History, Users, Zap, Send, Loader2, AlertTriangle, RefreshCw, Clock } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { fetchSmsLog, fetchCustomers, fetchRfmSegments, logCampaignSend, updateCampaignLogResult, fetchCampaignPerformance, setReminderHours } from "../lib/api";
+import { fetchSmsLog, fetchCustomers, fetchRfmSegments, logCampaignSend, updateCampaignLogResult, fetchCampaignPerformance, setReminderHours, queueCampaign } from "../lib/api";
 import { sendCampaign, campaignResultMessage, segmentMembers } from "../lib/campaigns";
 import { sendBulkSms, renderTemplate, smsParts, SMS_PLACEHOLDERS } from "../lib/sms";
 import { toFa, jalaliLabel, formatClock, dateKey, parseDateKey } from "../lib/format";
@@ -16,6 +16,9 @@ export const SMS_SEGMENTS = [
   { id: "manual", label: "پیام دستی", Icon: MessageSquareText, color: "var(--color-tab-panel)" },
   { id: "log", label: "تاریخچه", Icon: History, color: "var(--color-info)" },
 ];
+
+// Above this many recipients a manual send is queued server-side (v2.43).
+const QUEUE_THRESHOLD = 100;
 
 // v2.39 — when the customer's reminder SMS goes out, for the whole salon.
 const REMINDER_HOUR_OPTIONS = [0, 1, 2, 3, 6, 12, 24];
@@ -275,6 +278,27 @@ export function SmsTab({ bookings, services, stylists, smsTemplates, notify, pre
 
     setSending(true);
     const selectedTemplate = templates.find((t) => t.id === templateId);
+
+    // v2.43 review: large audiences go through the server queue — opt-outs
+    // are skipped there (a "custom" message sent directly ignored them),
+    // nothing goes out at night, and the send doesn't depend on this tab
+    // staying open for the many minutes a few thousand SMS take.
+    if (SUPABASE_ENABLED && recipients.length > QUEUE_THRESHOLD) {
+      const res = await queueCampaign({
+        insightKey: "manual",
+        title: selectedTemplate?.title || SMS_KIND_LABEL[selectedTemplate?.kind] || "پیام دستی",
+        segment: null,
+        body,
+        recipients: recipients.map((r) => ({ phone: r.phone, name: r.vars?.name || "", vars: r.vars || {} })),
+        capDays: 0,
+      });
+      setSending(false);
+      if (!res?.ok) { notify(res?.error || "ثبت ارسال ناموفق بود"); return; }
+      notify(`${toFa(res.queued)} پیامک در صف ارسال${res.deferred ? " (ساعت ۱۰ صبح)" : " — ظرف چند دقیقه"}${res.skipped_opt_out ? ` · ${toFa(res.skipped_opt_out)} نفر انصراف داده بودند` : ""}`);
+      refreshLog();
+      return;
+    }
+
     const campaignLog = await logCampaignSend({
       templateId: selectedTemplate?.id ?? null,
       templateLabel: selectedTemplate?.title || SMS_KIND_LABEL[selectedTemplate?.kind] || "پیام دستی",

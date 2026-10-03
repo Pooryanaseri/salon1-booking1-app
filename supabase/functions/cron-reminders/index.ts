@@ -71,7 +71,22 @@ Deno.serve(async (req) => {
     for (const a of data ?? []) apptStatus.set(a.id, a.status);
   }
 
+  // v2.43: campaign SMS can sit in the queue (quiet hours) — a customer who
+  // opted out meanwhile must not get it.
+  const campaignPhones = [...new Set(messages.filter((m) => m.kind === "campaign").map((m) => m.to_phone))];
+  const optedOut = new Set<string>();
+  for (let i = 0; i < campaignPhones.length; i += 200) {
+    const { data } = await admin.from("customers").select("salon_id, phone")
+      .in("phone", campaignPhones.slice(i, i + 200)).eq("sms_opt_out", true);
+    for (const c of data ?? []) optedOut.add(`${c.salon_id}|${c.phone}`);
+  }
+
   await mapLimit(messages, CONCURRENCY, async (msg) => {
+    if (msg.kind === "campaign" && optedOut.has(`${msg.salon_id}|${msg.to_phone}`)) {
+      await admin.from("sms_messages").update({ status: "cancelled", error: "customer opted out" }).eq("id", msg.id);
+      report.skipped++;
+      return;
+    }
     if (msg.appointment_id && msg.kind === "reminder") {
       const status = apptStatus.get(msg.appointment_id);
       if (status && !["confirmed", "rescheduled"].includes(status)) {

@@ -1117,3 +1117,43 @@ export async function adminUpdateSalon(id, { name = null, ownerPhone = null, act
   if (error) { failWrite("admin_update_salon", error); return { ok: false, error: "ذخیره ناموفق بود" }; }
   return data || { ok: false };
 }
+
+/* ------------------------------------------- v2.43: BI action center ------ */
+/** Queue a campaign server-side (opt-out, 14-day frequency cap and quiet
+ *  hours are enforced there). → {ok, queued, send_at, skipped_*} */
+export async function queueCampaign({ insightKey, title, segment, body, recipients, sendAt = null, capDays = 14, baseline = {} }) {
+  if (!SUPABASE_ENABLED) return { ok: false, demo: true, error: "حالت دمو — پیامک واقعی ارسال نمی‌شود" };
+  const { data, error } = await supabase.rpc("queue_campaign", {
+    p_insight_key: insightKey, p_title: title, p_segment: segment, p_body: body,
+    p_recipients: recipients, p_send_at: sendAt, p_cap_days: capDays, p_baseline: baseline,
+  });
+  if (error) { failWrite("queue_campaign", error); return { ok: false, error: "ثبت کمپین ناموفق بود" }; }
+  return data || { ok: false };
+}
+
+/** Record an approved / snoozed / dismissed BI action. */
+export async function recordBiAction({ insightKey, kind, status = "done", title = "", params = {}, baseline = {}, snoozeDays = 7 }) {
+  if (!SUPABASE_ENABLED) return { ok: true, demo: true };
+  const { data, error } = await supabase.rpc("record_bi_action", {
+    p_insight_key: insightKey, p_kind: kind, p_status: status, p_title: title,
+    p_params: params, p_baseline: baseline, p_snooze_days: snoozeDays,
+  });
+  if (error) { failWrite("record_bi_action", error); return { ok: false, error: "ثبت ناموفق بود" }; }
+  return data || { ok: false };
+}
+
+/** Past BI actions with their measured outcome (latest first). */
+export async function fetchBiActionHistory(limit = 50) {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await supabase.rpc("bi_action_history", { p_limit: limit });
+  if (error) { fail("bi_action_history", error); return []; }
+  return data || [];
+}
+
+/** Phones this salon sent a campaign SMS to in the last `days` days. */
+export async function fetchRecentCampaignPhones(days = 14) {
+  if (!SUPABASE_ENABLED) return new Set();
+  const { data, error } = await fetchAllPages(() => supabase.rpc("recent_campaign_phones", { p_days: days }).order("phone"));
+  if (error) { fail("recent_campaign_phones", error); return new Set(); }
+  return new Set((data || []).map((r) => r.phone));
+}

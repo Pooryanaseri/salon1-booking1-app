@@ -4,10 +4,10 @@ import { gregorianToJalali, jalaliDayNum, MONTHS_FA, WEEKDAYS_FA_FULL, SCHEMA_DA
 import { BookingHeatmap, CampaignPerformanceCard, CampaignReturnRateCard, FeedbackStatsCard, RevenueTrendChart, ServiceShareDonut } from "./biCards";
 import { GENDER_TYPE_LABEL, schemaDayOf } from "../app/shared";
 import { GenderBadge } from "../components/ui";
-import { fetchRfmSegments } from "../lib/api";
+import { fetchRfmSegments, fetchBiActionHistory, fetchCampaignPerformance } from "../lib/api";
 import { segmentMembers } from "../lib/campaigns";
 import { buildBIInsights } from "./biInsights";
-import { BIInsightsCard } from "./BIInsightsCard";
+import { ActionCenter } from "./ActionCenter";
 
 /* ============================================================
    Business Intelligence tab — owner-only (RBAC enforced by PanelView:
@@ -401,6 +401,22 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
   // ---- v2.40: plain-language findings + one-tap actions (see biInsights.js) ----
   const [rfmRows, setRfmRows] = useState([]);
   useEffect(() => { fetchRfmSegments().then((rows) => setRfmRows(rows || [])); }, []);
+  // v2.43 action center: what was already done/snoozed, and how past
+  // campaigns per audience actually converted (drives the impact estimates).
+  const [actionHistory, setActionHistory] = useState([]);
+  const [campaignStats, setCampaignStats] = useState({});
+  const reloadActions = () => fetchBiActionHistory(50).then((rows) => setActionHistory(rows || []));
+  useEffect(() => {
+    reloadActions();
+    fetchCampaignPerformance().then((rows) => setCampaignStats(Object.fromEntries((rows || []).map((r) => [
+      r.template_id, { sent: Number(r.successful_count) || 0, conversions: Number(r.total_conversions) || 0 },
+    ]))));
+  }, []);
+  const recentActions = useMemo(() => {
+    const latest = {};
+    for (const a of actionHistory) if (!latest[a.insight_key]) latest[a.insight_key] = a; // newest first
+    return latest;
+  }, [actionHistory]);
   const insights = useMemo(() => {
     const kpiValues = (list, startTs) => Object.fromEntries(
       BI_KPIS.map((k) => [k.id === "totalRevenue" ? "revenue" : k.id, k.compute(list, baseFiltered, startTs)])
@@ -420,8 +436,10 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
       stylistPerf,
       automation,
       segmentCounts,
+      campaignStats,
+      recentActions,
     });
-  }, [spanDays, periodBookings, prevPeriodBookings, baseFiltered, periodStart, prevPeriodStart, services, heatmapGrid, heatmapHours, paretoData, demandForecast, serviceShareSlices, stylistPerf, automation, rfmRows]);
+  }, [spanDays, periodBookings, prevPeriodBookings, baseFiltered, periodStart, prevPeriodStart, services, heatmapGrid, heatmapHours, paretoData, demandForecast, serviceShareSlices, stylistPerf, automation, rfmRows, campaignStats, recentActions]);
 
   const activeKpi = drill ? BI_KPIS.find((k) => k.id === drill.kpiId) : null;
   const currentLevel = drill && drill.path.length < BI_DRILL_LEVELS.length ? BI_DRILL_LEVELS[drill.path.length] : null;
@@ -554,8 +572,11 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
 
       {!drill && (
         <div style={{ marginTop: 12 }}>
-          <BIInsightsCard
+          <ActionCenter
             insights={insights}
+            history={actionHistory}
+            onHistoryChange={reloadActions}
+            bookings={bookings}
             rfmRows={rfmRows}
             automation={automation}
             onAutomationChange={onAutomationChange}
