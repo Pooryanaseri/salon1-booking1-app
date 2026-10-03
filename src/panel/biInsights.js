@@ -127,6 +127,7 @@ export function buildBIInsights(c) {
     }
     out.push({
       id: "no-show", category: "revenue", tone: "warn",
+      metric: { key: "no_show_rate", value: c.cur.noShowRate },
       title: `${pct(c.cur.noShowRate)} نوبت‌ها بدون حضور`,
       diagnosis: action?.kind === "goto"
         ? "یادآوری و تایید حضور روشن است و هنوز نوبت‌ها خالی می‌مانند؛ قدم بعدی گرفتن بیعانه برای خدمات گران است (مرچنت‌کد زرین‌پال سالن لازم است)."

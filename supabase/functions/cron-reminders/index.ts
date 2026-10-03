@@ -27,10 +27,12 @@ const admin = createClient(
 const INTERNAL_SECRET = Deno.env.get("INTERNAL_FUNCTION_SECRET");
 
 // Per run: how many due messages to take, and how many provider calls may be
-// in flight at once. 300 per minute ≈ 430k a day — far above what hundreds
-// of salons send — while each run stays well inside the function time limit.
-const BATCH = Number(Deno.env.get("SMS_DRAIN_BATCH") ?? 300);
-const CONCURRENCY = Number(Deno.env.get("SMS_DRAIN_CONCURRENCY") ?? 8);
+// in flight at once. 1200 a minute (~1.7M a day) leaves room for many salons
+// sending campaigns at the same hour; at ~0.4 s per provider call a run takes
+// about 30 s, well inside the function time limit. claim_due_sms hands out
+// booking messages before campaigns, and campaigns round-robin across salons.
+const BATCH = Number(Deno.env.get("SMS_DRAIN_BATCH") ?? 1200);
+const CONCURRENCY = Number(Deno.env.get("SMS_DRAIN_CONCURRENCY") ?? 16);
 
 Deno.serve(async (req) => {
   if (INTERNAL_SECRET) {

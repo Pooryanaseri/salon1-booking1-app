@@ -70,3 +70,20 @@ reset role;
 select tst.as_anon();
 delete from public.appointments where id = 'tst-conv';
 delete from public.sms_messages; delete from public.bi_actions;
+
+-- queue priority: booking messages before campaigns, campaigns shared between salons
+insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+select '00000000-0000-0000-0000-000000000001', '0912888' || lpad(g::text, 4, '0'), 'c', 'campaign', 'queued', now() - interval '10 minutes'
+  from generate_series(1, 20) g;
+insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+select '00000000-0000-0000-0000-000000000002', '0912999' || lpad(g::text, 4, '0'), 'c', 'campaign', 'queued', now() - interval '5 minutes'
+  from generate_series(1, 3) g;
+insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+values ('00000000-0000-0000-0000-000000000001', '09128880001', 'تایید', 'confirmation', 'queued', now() - interval '1 minute');
+update public.salons set active = true where id = '00000000-0000-0000-0000-000000000002';
+create temp table c1 as select * from public.claim_due_sms(3);
+select tst.ok((select count(*) from c1 where kind = 'confirmation') = 1, 'confirmation claimed ahead of 23 older campaign SMS');
+select tst.ok((select count(distinct salon_id) from c1 where kind = 'campaign') = 2, 'campaign slots shared between the two salons');
+select tst.ok((select count(*) from public.claim_due_sms(100)) = 21, 'the rest (24 − 3) claimed exactly once');
+select tst.ok((select count(*) from public.claim_due_sms(100)) = 0, 'nothing claimed twice');
+delete from public.sms_messages;

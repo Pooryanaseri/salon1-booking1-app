@@ -252,3 +252,43 @@ revoke all on function public.count_campaign_delivery() from public, anon, authe
 drop trigger if exists trg_count_campaign_delivery on public.sms_messages;
 create trigger trg_count_campaign_delivery after update of status on public.sms_messages
   for each row execute function public.count_campaign_delivery();
+
+-- ------------------------------------------------ fair, prioritised queue ---
+-- With campaigns queued server-side, one salon's 5000-SMS campaign used to
+-- sit in front of every salon's booking confirmations and reminders (the
+-- claim took the oldest due rows first). Now: transactional messages first,
+-- then campaigns interleaved across salons (each salon's 1st, then each
+-- salon's 2nd, …). Exactly-once is kept: candidates are locked with SKIP
+-- LOCKED and re-checked before being marked 'sending'.
+create or replace function public.claim_due_sms(p_limit integer default 200)
+returns setof public.sms_messages
+language plpgsql security definer set search_path = public as $fn$
+begin
+  return query
+  with due as (
+    select q.id,
+           (q.kind = 'campaign') as is_campaign,
+           row_number() over (partition by q.salon_id, (q.kind = 'campaign') order by q.scheduled_for, q.id) as turn,
+           q.scheduled_for
+      from public.sms_messages q
+      join public.salons s on s.id = q.salon_id and s.active
+     where q.scheduled_for <= now()
+       and (q.status = 'queued' or (q.status = 'sending' and q.claimed_at < now() - interval '10 minutes'))
+  ), picked as (
+    select d.id from due d
+     order by d.is_campaign, d.turn, d.scheduled_for
+     limit greatest(p_limit, 1)
+  ), locked as (
+    select m.id from public.sms_messages m
+     where m.id in (select id from picked)
+       for update skip locked
+  )
+  update public.sms_messages m
+     set status = 'sending', claimed_at = now()
+   where m.id in (select id from locked)
+     and (m.status = 'queued' or (m.status = 'sending' and m.claimed_at < now() - interval '10 minutes'))
+  returning m.*;
+end;
+$fn$;
+revoke all on function public.claim_due_sms(int) from public, anon, authenticated;
+grant execute on function public.claim_due_sms(int) to service_role;

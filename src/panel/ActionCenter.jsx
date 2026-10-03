@@ -183,7 +183,7 @@ export function ActionCenter({ insights, history, onHistoryChange, rfmRows, book
 /** Metrics stored with a setting change so the result can be compared later. */
 function baselineOf(f) {
   const ev = Object.fromEntries((f.evidence || []).map((e) => [e.label, e.value]));
-  return { finding: f.id, title: f.title, evidence: ev, measured_at: new Date().toISOString() };
+  return { finding: f.id, title: f.title, evidence: ev, metric: f.metric || null, measured_at: new Date().toISOString() };
 }
 
 const roundToman = (n) => (n >= 1e6 ? Math.round(n / 1e5) * 1e5 : Math.round(n / 1e4) * 1e4);
@@ -519,11 +519,15 @@ function HistoryRow({ h, bookings }) {
     color = "var(--color-success)"; Icon = CheckCircle2;
     status = "تنظیم روشن شد";
     if (h.insight_key === "no-show") {
-      const before = h.baseline?.evidence?.["بدون حضور"];
+      const before = h.baseline?.metric?.key === "no_show_rate" ? h.baseline.metric.value : null;
       const after = noShowRateSince(bookings, date.getTime());
       result = after == null
         ? <span className="muted">نتیجه بعد از چند نوبت دیگر نشان داده می‌شود</span>
-        : <span style={{ fontWeight: 800 }}>عدم حضور از آن روز: {toFa(Math.round(after * 100))}٪{before ? ` (قبل: ${before})` : ""}</span>;
+        : (
+          <span style={{ fontWeight: 800, color: before != null && after < before ? "var(--color-success)" : undefined }}>
+            عدم حضور: {before != null ? `${toFa(Math.round(before * 100))}٪ ← ` : ""}{toFa(Math.round(after * 100))}٪ (از روز اجرا)
+          </span>
+        );
     }
   }
   return (
