@@ -9,11 +9,15 @@
 //    { action: "schedule", messages: [{ to, body, appointment_id, scheduled_for }] }
 //    { action: "cancel",   appointment_id: "..." }
 //    { action: "request_otp", phone: "09..." }  -- v2.19: sends a booking-management OTP; see supabase/migrations/v2.19_secure_public_booking.sql
+//    { action: "test" }  -- v2.41: manager sends a test SMS to their own phone through the salon's account
+//
+//  v2.41: every message goes out through its salon's own SMS account, and a
+//  signed-in caller can only touch their own salon (send, schedule, cancel).
 //
 //  Deploy:  supabase functions deploy send-sms
 // ============================================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { sendOne, normalizePhone, activeProvider } from "../_shared/providers.ts";
+import { sendOne, normalizePhone, smsAccounts } from "../_shared/providers.ts";
 
 // SECURITY: fail closed. An unset ALLOWED_ORIGIN used to default to "*" —
 // any website could call this function from a visitor's browser using
@@ -43,8 +47,10 @@ const admin = createClient(
 
 const MAX_BATCH = Number(Deno.env.get("SMS_MAX_BATCH") ?? 200);
 
+type Caller = { ok: boolean; role?: string; salonId?: string | null; phone?: string | null; stylistId?: string | null; error?: string };
+
 /** Only owner/manager may fire SMS. Booking-triggered messages use the shared secret. */
-async function authorize(req: Request): Promise<{ ok: boolean; role?: string; error?: string }> {
+async function authorize(req: Request): Promise<Caller> {
   const internal = req.headers.get("x-internal-secret");
   if (internal && internal === Deno.env.get("INTERNAL_FUNCTION_SECRET")) {
     return { ok: true, role: "system" };
@@ -63,11 +69,19 @@ async function authorize(req: Request): Promise<{ ok: boolean; role?: string; er
   }
 
   const { data: profile } = await admin
-    .from("users").select("role, active").eq("id", data.user.id).maybeSingle();
+    .from("users").select("role, active, salon_id, phone, stylist_id").eq("id", data.user.id).maybeSingle();
 
   if (!profile?.active) return { ok: false, error: "حساب غیرفعال است" };
-  return { ok: true, role: profile.role };
+  const { data: salon } = await admin.from("salons").select("active").eq("id", profile.salon_id).maybeSingle();
+  if (!salon?.active) return { ok: false, error: "این سالن غیرفعال است" };
+  return { ok: true, role: profile.role, salonId: profile.salon_id, phone: profile.phone, stylistId: profile.stylist_id };
 }
+
+const isManager = (c: Caller) => c.role === "owner" || c.role === "manager";
+
+// A stylist's own booking actions (cancel / complete / reschedule) still send
+// the customer's notice — but only these kinds, only for their own bookings.
+const STYLIST_KINDS = ["cancellation", "reschedule", "reschedule_proposed", "confirmation", "feedback_request", "feedback_followup"];
 
 // v2.31: anonymous callers can no longer send or schedule anything — the
 // booking confirmation, stylist notice and reminder are queued by the
@@ -94,6 +108,7 @@ Deno.serve(async (req) => {
   }
 
   const action = payload.action ?? "send";
+  const accounts = smsAccounts(admin);
 
   /* ------------------------------------------------------------- cancel ---- */
   if (action === "cancel") {
@@ -104,6 +119,13 @@ Deno.serve(async (req) => {
       .eq("appointment_id", payload.appointment_id)
       .eq("status", "queued");
     if (auth.role === "anon") query = query.in("kind", ANON_CANCELLABLE_KINDS);
+    else if (auth.role !== "system") query = query.eq("salon_id", auth.salonId);
+    if (auth.role === "stylist") {
+      // a stylist only touches their own bookings' messages
+      const { data: own } = await admin.from("appointments").select("id")
+        .eq("id", payload.appointment_id).eq("salon_id", auth.salonId).eq("staff_id", auth.stylistId).maybeSingle();
+      if (!own) return json({ ok: false, error: "دسترسی ندارید" }, 403);
+    }
     const { error, count } = await query;
     if (error) { console.error("[send-sms/cancel] db error:", error.message); return json({ ok: false, error: "لغو ناموفق بود" }, 500); }
     return json({ ok: true, cancelled: count ?? 0 });
@@ -122,12 +144,15 @@ Deno.serve(async (req) => {
     if (!/^09\d{9}$/.test(phone)) return json({ ok: false, error: "شماره نامعتبر است" }, 400);
     if (!salonId) return json({ ok: false, error: "سالن نامعتبر است" }, 400);
 
+    const { data: salonRow } = await admin.from("salons").select("active").eq("id", salonId).maybeSingle();
+    if (!salonRow?.active) return json({ ok: false, error: "سالن نامعتبر است" }, 400);
+
     const { data, error } = await admin.rpc("request_booking_otp_internal", { p_phone: phone, p_salon_id: salonId });
     if (error) { console.error("[send-sms/request_otp] rpc error:", error.message); return json({ ok: false, error: "درخواست کد ناموفق بود" }, 500); }
     if (!data?.ok) return json({ ok: false, error: data?.error ?? "درخواست کد ناموفق بود" });
 
     const body = `کد تایید شما: ${data.otp}\nاین کد ظرف ۵ دقیقه منقضی می‌شود.`;
-    const r = await sendOne(phone, body);
+    const r = await sendOne(phone, body, await accounts.forSalon(salonId));
     await admin.from("sms_messages").insert({
       salon_id: salonId, to_phone: phone, body, kind: "otp", status: r.ok ? "sent" : "failed",
       provider: r.provider, provider_msg_id: r.providerMsgId ?? null,
@@ -149,6 +174,33 @@ Deno.serve(async (req) => {
   if (auth.role === "anon") {
     return json({ ok: false, error: "برای ارسال پیامک باید وارد شوید" }, 403);
   }
+  if (auth.role !== "system" && !isManager(auth) && auth.role !== "stylist") {
+    return json({ ok: false, error: "دسترسی ارسال پیامک ندارید" }, 403);
+  }
+  /** Stylist-sent rows must be booking notices about the stylist's own appointments. */
+  async function stylistMayUse(rows: { appointment_id?: string | null; kind?: string }[]): Promise<boolean> {
+    if (auth.role !== "stylist") return true;
+    if (rows.some((r) => !r.appointment_id || !STYLIST_KINDS.includes(r.kind ?? ""))) return false;
+    const ids = [...new Set(rows.map((r) => r.appointment_id))];
+    const { data } = await admin.from("appointments").select("id").in("id", ids)
+      .eq("salon_id", auth.salonId).eq("staff_id", auth.stylistId);
+    return (data ?? []).length === ids.length;
+  }
+
+  /* --------------------------------------------------------------- test ---- */
+  if (action === "test") {
+    if (!isManager(auth)) return json({ ok: false, error: "فقط مدیر سالن" }, 403);
+    if (!auth.salonId || !auth.phone) return json({ ok: false, error: "سالن نامعتبر است" }, 400);
+    const account = await accounts.forSalon(auth.salonId);
+    const body = "پیامک آزمایشی: حساب پیامک سالن درست کار می‌کند ✅";
+    const r = await sendOne(auth.phone, body, account);
+    await admin.from("sms_messages").insert({
+      salon_id: auth.salonId, to_phone: auth.phone, body, kind: "custom",
+      status: r.ok ? "sent" : "failed", provider: r.provider, provider_msg_id: r.providerMsgId ?? null,
+      error: r.ok ? null : r.error, cost: r.cost ?? null, sent_at: r.ok ? new Date().toISOString() : null,
+    });
+    return json({ ok: r.ok, to: auth.phone, error: r.ok ? undefined : r.error, platform: account?.source === "platform" });
+  }
 
   const messages: any[] = Array.isArray(payload.messages) ? payload.messages : [];
   if (!messages.length) return json({ ok: false, error: "پیامی برای ارسال وجود ندارد" }, 400);
@@ -169,6 +221,7 @@ Deno.serve(async (req) => {
     })).filter((r) => r.scheduled_for && new Date(r.scheduled_for).getTime() > Date.now());
 
     if (!rows.length) return json({ ok: true, queued: 0, note: "زمان یادآوری گذشته بود" });
+    if (!(await stylistMayUse(rows))) return json({ ok: false, error: "دسترسی ارسال پیامک ندارید" }, 403);
 
     // salon_id is derived from each row's own appointment — never trusted
     // from the caller — so a message can't be filed under a different
@@ -181,7 +234,8 @@ Deno.serve(async (req) => {
     }
     const rowsWithSalon = rows
       .map((r) => ({ ...r, salon_id: r.appointment_id ? salonByAppt[r.appointment_id] : null }))
-      .filter((r) => r.salon_id); // an appointment_id that didn't resolve is dropped, not silently filed under no salon
+      .filter((r) => r.salon_id) // an appointment_id that didn't resolve is dropped, not silently filed under no salon
+      .filter((r) => auth.role === "system" || r.salon_id === auth.salonId);
 
     if (!rowsWithSalon.length) return json({ ok: true, queued: 0, note: "زمان یادآوری گذشته بود" });
 
@@ -191,6 +245,9 @@ Deno.serve(async (req) => {
   }
 
   /* --------------------------------------------------------------- send ---- */
+  if (!(await stylistMayUse(messages.map((m) => ({ appointment_id: m.appointment_id, kind: m.kind }))))) {
+    return json({ ok: false, error: "دسترسی ارسال پیامک ندارید" }, 403);
+  }
   const results = [];
   const auditRows = [];
 
@@ -215,6 +272,14 @@ Deno.serve(async (req) => {
     } else if (m.campaign_id) {
       const { data: camp } = await admin.from("campaigns").select("salon_id").eq("id", m.campaign_id).maybeSingle();
       salonId = camp?.salon_id ?? null;
+    }
+    if (auth.role !== "system") {
+      // A manager sends only as their own salon (and on its own SMS account).
+      if (salonId && salonId !== auth.salonId) {
+        results.push({ to, ok: false, error: "این پیام متعلق به سالن دیگری است" });
+        continue;
+      }
+      salonId = auth.salonId ?? null;
     }
     if (!salonId) {
       results.push({ to, ok: false, error: "سالن این پیام مشخص نیست" });
@@ -245,7 +310,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    const r = await sendOne(to, body);
+    const r = await sendOne(to, body, await accounts.forSalon(salonId));
 
     auditRows.push({
       salon_id: salonId,
@@ -280,7 +345,7 @@ Deno.serve(async (req) => {
 
   // Keep campaign counters honest.
   const campaignId = messages[0]?.campaign_id;
-  if (campaignId) {
+  if (campaignId && auditRows.some((r) => r.campaign_id === campaignId)) {
     const sent = results.filter((r) => r.ok).length;
     const { data: c } = await admin
       .from("campaigns").select("sent_count").eq("id", campaignId).maybeSingle();
@@ -292,7 +357,6 @@ Deno.serve(async (req) => {
   const sent = results.filter((r) => r.ok).length;
   return json({
     ok: sent > 0,
-    provider: activeProvider(),
     sent,
     failed: results.length - sent,
     results,

@@ -3,10 +3,17 @@
 //  The three roles (owner / manager / stylist) are unchanged; they live in
 //  public.users.role and are also enforced by RLS in Postgres.
 // ============================================================================
-import { supabase, SUPABASE_ENABLED, phoneToEmail } from "./supabase";
+import { supabase, SUPABASE_ENABLED, phoneToEmail, getCurrentSalonId } from "./supabase";
 
 const OWNER_BOOTSTRAP_PHONE = import.meta.env.VITE_OWNER_PHONE || "09120000000";
 const PENDING_APPROVAL_MSG = "ثبت‌نام انجام شد — بعد از تایید مدیر سالن می‌توانید وارد شوید (به مدیر پیامک رفت)";
+const OTHER_SALON_MSG = "این حساب متعلق به سالن دیگری است — از لینک سالن خودتان وارد شوید";
+
+// v2.42 review: with many salons on one site, staff of salon A opening salon
+// B's link got A's data under B's name (the database follows the account,
+// the page follows the URL) and no live updates. Each salon's panel only
+// accepts its own staff.
+const belongsHere = (profile) => !profile?.salon_id || profile.salon_id === getCurrentSalonId();
 
 /**
  * @param {string} phone
@@ -43,6 +50,10 @@ export async function signIn(phone, password, roleHint = null) {
       await supabase.auth.signOut();
       return { ok: false, error: "حساب شما پیدا نشد — با مدیر سالن تماس بگیرید" };
     }
+  }
+  if (!belongsHere(profile)) {
+    await supabase.auth.signOut();
+    return { ok: false, error: OTHER_SALON_MSG };
   }
   if (!profile.active) {
     await supabase.auth.signOut();
@@ -83,7 +94,7 @@ export async function loadProfile(userId) {
   if (!SUPABASE_ENABLED) return null;
   const { data, error } = await supabase
     .from("users")
-    .select("id, phone, full_name, role, stylist_id, active")
+    .select("id, salon_id, phone, full_name, role, stylist_id, active")
     .eq("id", userId)
     .maybeSingle();
   if (error) return null;
@@ -96,7 +107,7 @@ export async function restoreSession() {
   const { data } = await supabase.auth.getSession();
   if (!data?.session?.user) return null;
   const profile = await loadProfile(data.session.user.id);
-  if (!profile?.active) return null;
+  if (!profile?.active || !belongsHere(profile)) return null; // another salon's session: show this salon's login
   return { role: profile.role, stylistId: profile.stylist_id, user: profile };
 }
 
@@ -131,19 +142,16 @@ export function onAuthStateChange(callback) {
 }
 
 /**
- * Owner self-registration — only allowed while no owner exists (single-tenant,
- * same rule the app already enforced in OwnerAuthPanel).
+ * Owner self-registration — only while the salon has no manager, and (v2.41)
+ * only with the phone the platform admin bound to the salon. Checked before
+ * the auth account is created so a wrong number leaves nothing behind.
  */
 export async function registerOwner(phone, password) {
   if (!SUPABASE_ENABLED) return { ok: false, error: "OFFLINE" };
 
-  const { count } = await supabase
-    .from("users")
-    .select("id", { count: "exact", head: true })
-    .in("role", ["owner", "manager"]);
-  if (count && count > 0) {
-    return { ok: false, error: "برای این سالن قبلاً یک مدیر ثبت‌نام کرده — وارد شوید" };
-  }
+  const { data: allowed, error: checkError } = await supabase.rpc("can_register_manager", { p_phone: phone });
+  if (checkError) return { ok: false, error: "بررسی ثبت‌نام ناموفق بود — دوباره تلاش کنید" };
+  if (!allowed?.ok) return { ok: false, error: allowed?.error || "ثبت‌نام مجاز نیست" };
 
   const { data, error } = await supabase.auth.signUp({
     email: phoneToEmail(phone),
@@ -174,7 +182,9 @@ export async function registerOwner(phone, password) {
     full_name: "مدیر سالن",
     active: true,
   });
-  if (profileError) return { ok: false, error: "ساخت پروفایل ناموفق بود" };
+  if (profileError) {
+    return { ok: false, error: profileError.code === "42501" ? profileError.message : "ساخت پروفایل ناموفق بود" };
+  }
 
   return { ok: true, role: "owner", stylistId: null };
 }
@@ -267,4 +277,29 @@ function translateAuthError(msg = "") {
   if (m.includes("password")) return "رمز عبور باید حداقل ۶ کاراکتر باشد";
   if (m.includes("rate limit")) return "تعداد تلاش‌ها زیاد بود — کمی بعد دوباره امتحان کنید";
   return "ثبت‌نام ناموفق بود — دوباره تلاش کنید";
+}
+
+/* ------------------------------------------------ v2.41: platform admin -- */
+/** Sign in on /admin. Platform admins usually have no salon profile, so this
+ *  skips signIn()'s profile handling and only checks platform_admins. */
+export async function signInPlatformAdmin(phone, password) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { error } = await supabase.auth.signInWithPassword({ email: phoneToEmail(phone), password });
+  if (error) return { ok: false, error: "شماره یا رمز عبور اشتباه است" };
+  const { data: isAdmin } = await supabase.rpc("is_platform_admin");
+  if (isAdmin !== true) {
+    await supabase.auth.signOut();
+    return { ok: false, error: "این حساب مدیر کل نیست", notAdmin: true };
+  }
+  return { ok: true };
+}
+
+/** Creates the login for a would-be platform admin; access is granted
+ *  separately with one SQL line (see INSTALL.md) — never from the browser. */
+export async function registerPlatformAdmin(phone, password) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { error } = await supabase.auth.signUp({ email: phoneToEmail(phone), password });
+  if (error) return { ok: false, error: translateAuthError(error.message) };
+  await supabase.auth.signOut();
+  return { ok: true, email: phoneToEmail(phone) };
 }

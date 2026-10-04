@@ -18,7 +18,17 @@ export function WaitlistJoinCard({ onJoin, alreadyJoined, autoOffer }) {
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const phoneValid = /^09\d{9}$/.test(phone);
+
+  async function submit() {
+    setBusy(true); setError("");
+    const res = await onJoin({ phone, name });
+    setBusy(false);
+    if (res && res.ok === false) { setError(res.error || "ثبت ناموفق بود — دوباره تلاش کنید"); return; }
+    setDone(true);
+  }
 
   if (alreadyJoined || done) {
     return (
@@ -53,13 +63,14 @@ export function WaitlistJoinCard({ onJoin, alreadyJoined, autoOffer }) {
             value={name} onChange={(e) => setName(e.target.value)} placeholder="نام (اختیاری)"
             style={{ width: "100%", padding: "10px 14px", fontSize: 14, textAlign: "center" }}
           />
+          {error && <p role="alert" style={{ fontSize: 12, color: "var(--color-danger)" }}>{error}</p>}
           <button
-            disabled={!phoneValid}
+            disabled={!phoneValid || busy}
             className="tap accent-btn w-full"
             style={{ padding: 11, fontSize: 13 }}
-            onClick={() => { onJoin({ phone, name }); setDone(true); }}
+            onClick={submit}
           >
-            ثبت درخواست
+            {busy ? "در حال ثبت…" : "ثبت درخواست"}
           </button>
         </div>
       )}
@@ -736,7 +747,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                 (w) => w.date === dateKey(selectedDate) && w.service_id === service.id && (w.staff_id || null) === (staffId || null)
               )}
               onJoin={({ phone, name }) => {
-                addWaitlistEntry({
+                return addWaitlistEntry({
                   id: uid(),
                   customer_name: name.trim(),
                   customer_phone: phone,

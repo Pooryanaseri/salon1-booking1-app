@@ -71,12 +71,28 @@ export function sendSms({ to, body, kind = "custom", appointmentId = null, campa
   return invoke({ action: "send", messages: [{ to, body, kind, appointment_id: appointmentId, campaign_id: campaignId, idempotency_key: idempotencyKey }] });
 }
 
-/** Bulk send (پنل ارسال / کمپین). Chunked server-side. */
-export function sendBulkSms(messages, { kind = "custom", campaignId = null } = {}) {
-  return invoke({
-    action: "send",
-    messages: messages.map((m) => ({ ...m, kind: m.kind || kind, campaign_id: m.campaign_id ?? campaignId })),
-  });
+/** Bulk send (پنل ارسال / کمپین). send-sms takes at most 200 per request
+ *  (and sends them one by one), so larger audiences go in chunks of 100 and
+ *  the results are added up. */
+export async function sendBulkSms(messages, { kind = "custom", campaignId = null } = {}) {
+  const rows = messages.map((m) => ({ ...m, kind: m.kind || kind, campaign_id: m.campaign_id ?? campaignId }));
+  const CHUNK = 100;
+  if (rows.length <= CHUNK) return invoke({ action: "send", messages: rows });
+  const total = { ok: false, sent: 0, failed: 0, results: [] };
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const res = await invoke({ action: "send", messages: rows.slice(i, i + CHUNK) });
+    if (res?.demo) return res;
+    if (!res?.ok && typeof res?.sent !== "number") {
+      total.failed += Math.min(CHUNK, rows.length - i);
+      total.error = res?.error;
+      continue;
+    }
+    total.sent += res.sent || 0;
+    total.failed += res.failed || 0;
+    total.results.push(...(res.results || []));
+  }
+  total.ok = total.sent > 0;
+  return total;
 }
 
 /**
@@ -103,4 +119,9 @@ export function cancelScheduledReminders(appointmentId) {
  */
 export function requestBookingOtp(phone) {
   return invoke({ action: "request_otp", phone, salon_id: getCurrentSalonId() });
+}
+
+/** v2.41 — a test SMS to the signed-in manager's own phone through the salon's account. */
+export function sendTestSms() {
+  return invoke({ action: "test" });
 }

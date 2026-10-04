@@ -22,7 +22,7 @@
 //  shared-secret header, since the scheduler has no user session.
 // ============================================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { sendOne } from "../_shared/providers.ts";
+
 
 const admin = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -112,19 +112,17 @@ Deno.serve(async (req) => {
         body = `${salon.name}: گزارش هفتگی — ${toFa(visitCount)} نوبت تکمیل‌شده، ${formatToman(revenue)} درآمد. همه‌چیز تاییدشده، کاری لازم نیست. 👍`;
       }
 
-      for (const phone of recipients) {
-        const r = await sendOne(phone, body);
-        await admin.from("sms_messages").insert({
-          salon_id: salon.id, to_phone: phone, body,
-          kind: (pendingCount ?? 0) > 0 ? "reconciliation_prompt" : "weekly_summary",
-          status: r.ok ? "sent" : "failed",
-          provider: r.provider, provider_msg_id: r.providerMsgId ?? null,
-          error: r.ok ? null : r.error, cost: r.cost ?? null,
-          sent_at: r.ok ? new Date().toISOString() : null,
-        });
-        if (r.ok) (pendingCount ?? 0) > 0 ? report.reconciliationSent++ : report.summarySent++;
-        else report.failed++;
-      }
+      // v2.42: queued, not sent inline — the cron-reminders drain sends it
+      // within a minute through the salon's own SMS account. Sending 300+
+      // salons' messages inline here would outlast the function time limit.
+      const { error: queueErr } = await admin.from("sms_messages").insert(recipients.map((phone) => ({
+        salon_id: salon.id, to_phone: phone, body,
+        kind: (pendingCount ?? 0) > 0 ? "reconciliation_prompt" : "weekly_summary",
+        status: "queued", scheduled_for: new Date().toISOString(),
+      })));
+      if (queueErr) { console.error(`[weekly-reconciliation] salon ${salon.slug}: queue failed:`, queueErr.message); report.failed++; }
+      else if ((pendingCount ?? 0) > 0) report.reconciliationSent += recipients.length;
+      else report.summarySent += recipients.length;
 
       // Stylists get an informational heads-up about their OWN unreviewed
       // appointments — not the reconciliation link itself (that's a
