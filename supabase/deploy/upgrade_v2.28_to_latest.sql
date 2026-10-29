@@ -2666,6 +2666,7 @@ $fn$;
 
 -- One row per salon with what the platform owner needs to run 300+ of them:
 -- is it set up, is it used, is its SMS working.
+drop function if exists public.admin_list_salons(); -- v2.44 adds a column; keeps re-runs working
 create or replace function public.admin_list_salons()
 returns table (
   id uuid, slug text, name text, active boolean, owner_phone text, created_at timestamptz,
