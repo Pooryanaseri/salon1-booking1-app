@@ -149,7 +149,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const categories = ["all", ...Array.from(new Set(sectionServices.map((s) => s.category)))];
   const visibleServices = category === "all" ? sectionServices : sectionServices.filter((s) => s.category === category);
   const baseService = services.find((s) => s.id === serviceId);
-  const service = baseService ? forPet(baseService) : baseService;
+  // Memoized: the slot/day-availability memos below depend on its identity,
+  // and sizedService returns a new object for every call.
+  const service = useMemo(() => (baseService && petSalon ? sizedService(baseService, pet.size) : baseService), [baseService, petSalon, pet.size]);
   const section = gender ? SECTION_META[gender] : null;
   const sectionStaff = useMemo(() => stylists.filter((s) => s.active && staffServesSection(s, gender)), [stylists, gender]);
   const selectedStaff = stylists.find((s) => s.id === staffId) || null;
