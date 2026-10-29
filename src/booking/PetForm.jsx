@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ArrowRight, Syringe, Weight, Info } from "lucide-react";
-import { PET_SIZES, PET_TEMPERAMENTS, SECTION_META, sizeFromWeight } from "../app/shared";
+import { PET_TEMPERAMENTS, SECTION_META, normBreed, petSizes, sizeFromWeight } from "../app/shared";
 import { MONTHS_FA, toFa, gregorianToJalali, jalaliToIso, isoToJalaliLabel } from "../lib/format";
 
 /* ============================================================
@@ -78,12 +78,14 @@ export function JalaliDateInput({ value, onChange, accent }) {
   );
 }
 
-export function PetForm({ species, pet, onChange, onContinue, onBack, requireVaccination, savedPets }) {
+export function PetForm({ species, pet, onChange, onContinue, onBack, requireVaccination, savedPets, sizeLimits, pricedBreeds = [], surchargePct = 0 }) {
   const meta = SECTION_META[species];
   const [sizeTouched, setSizeTouched] = useState(!!pet.size);
   const [pickedKey, setPickedKey] = useState(0); // remounts the date selects when a saved pet is picked
   const mine = savedPets.filter((p) => p.species === species);
-  const sizes = species === "cat" ? PET_SIZES.filter((s) => s.v !== "giant") : PET_SIZES;
+  const allSizes = petSizes(sizeLimits);
+  const sizes = species === "cat" ? allSizes.filter((s) => s.v !== "giant") : allSizes;
+  const breedPriced = !!pet.breed.trim() && pricedBreeds.some((b) => normBreed(b) === normBreed(pet.breed));
   const set = (patch) => onChange({ ...pet, ...patch });
   const nameTooLong = pet.name.trim().length > 40;
   const ready = petReady(pet, requireVaccination) && !nameTooLong;
@@ -131,7 +133,7 @@ export function PetForm({ species, pet, onChange, onContinue, onBack, requireVac
           <input id="pet-weight" dir="ltr" inputMode="decimal" className="tabular" value={pet.weight_kg}
             onChange={(e) => {
               const v = e.target.value.replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)).replace(/[^0-9.]/g, "").slice(0, 5);
-              const suggested = sizeFromWeight(v);
+              const suggested = sizeFromWeight(v, sizeLimits);
               set({ weight_kg: v, ...(!sizeTouched && suggested && sizes.some((s) => s.v === suggested) ? { size: suggested } : {}) });
             }}
             placeholder="مثلاً 12" style={{ ...input, textAlign: "left" }} />
@@ -155,7 +157,8 @@ export function PetForm({ species, pet, onChange, onContinue, onBack, requireVac
           <label htmlFor="pet-breed" className="muted" style={{ fontSize: 12 }}>نژاد (اختیاری)</label>
           <input id="pet-breed" list={`breeds-${species}`} autoComplete="off" maxLength={40} value={pet.breed} onChange={(e) => set({ breed: e.target.value })}
             placeholder="انتخاب یا تایپ کنید" style={input} />
-          <datalist id={`breeds-${species}`}>{BREEDS[species].map((b) => <option key={b} value={b} />)}</datalist>
+          <datalist id={`breeds-${species}`}>{[...new Set([...pricedBreeds, ...BREEDS[species]])].map((b) => <option key={b} value={b} />)}</datalist>
+          {breedPriced && <p style={{ fontSize: 11.5, marginTop: 4, color: meta.color, fontWeight: 700 }}>این سالن برای این نژاد قیمت ویژه دارد</p>}
         </div>
 
         <div>
@@ -168,7 +171,10 @@ export function PetForm({ species, pet, onChange, onContinue, onBack, requireVac
             ))}
           </div>
           {pet.temperament === "aggressive" && (
-            <p className="muted" style={{ fontSize: 11.5, marginTop: 6, lineHeight: 1.8 }}>به آرایشگر اطلاع داده می‌شود تا با احتیاط و آمادگی کار کند.</p>
+            <p className="muted" style={{ fontSize: 11.5, marginTop: 6, lineHeight: 1.8 }}>
+              به آرایشگر اطلاع داده می‌شود تا با احتیاط و آمادگی کار کند.
+              {surchargePct > 0 && <> طبق تعرفهٔ سالن {toFa(surchargePct)}٪ به مبلغ اضافه می‌شود.</>}
+            </p>
           )}
         </div>
 

@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 import { Sparkles, Percent, Banknote, Plus, Trash2, Pencil, Settings } from "lucide-react";
 import { toFa, formatToman } from "../lib/format";
-import { CATEGORIES_BY_TYPE, CATEGORY_LABEL, PET_SIZES, SECTION_META, sectionFilters, sectionsFor, sizePriceRange, SERVICE_ICONS, discountAmountFor, finalPriceFor, hasPrice, priceLabel, uid } from "../app/shared";
+import { CATEGORIES_BY_TYPE, CATEGORY_LABEL, SECTION_META, petSizes, sectionFilters, sectionsFor, sizePriceRange, SERVICE_ICONS, discountAmountFor, finalPriceFor, hasPrice, priceLabel, uid } from "../app/shared";
 import { getBusinessType } from "../lib/tenant";
 import { GenderBadge, Modal, PanelSectionHeader, Row, Switch } from "../components/ui";
 
@@ -9,7 +9,7 @@ import { GenderBadge, Modal, PanelSectionHeader, Row, Switch } from "../componen
    Services management tab — discounts are configured HERE, per
    service, and apply to every booking of that service.
    ============================================================ */
-export function ServicesTab({ services, setServices, notify }) {
+export function ServicesTab({ services, setServices, notify, automation }) {
   const [editing, setEditing] = useState(null); // service object or 'new'
   const [genderFilter, setGenderFilter] = useState("all");
 
@@ -72,7 +72,13 @@ export function ServicesTab({ services, setServices, notify }) {
                 <div className="flex items-center gap-1.5">
                   <span style={{ fontWeight: 700, fontSize: 13.5, color: "var(--color-heading)" }}>{s.name}</span>
                   <GenderBadge gender={s.gender} />
+                  {s.is_addon && <span className="badge" style={{ background: "var(--color-surface-raised)", color: "var(--color-muted)" }}>افزودنی پایان کار</span>}
                 </div>
+                {Object.keys(s.breed_pricing || {}).length > 0 && (
+                  <div className="muted" style={{ fontSize: 11, marginTop: 1 }}>
+                    نژاد: {Object.entries(s.breed_pricing).map(([n, t]) => `${n}${t?.price != null ? ` ${toFa(Number(t.price).toLocaleString("en-US"))}` : ""}`).join("، ")}
+                  </div>
+                )}
                 <div className="muted tabular" style={{ fontSize: 11.5, marginTop: 1 }}>
                   {CATEGORY_LABEL[s.category]} · {toFa(s.duration_minutes)} د
                   {s.buffer_minutes > 0 && <> (+{toFa(s.buffer_minutes)} د تایم اصلاح)</>}
@@ -108,23 +114,43 @@ export function ServicesTab({ services, setServices, notify }) {
         )}
       </div>
 
-      {editing && <ServiceEditModal service={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={saveService} />}
+      {editing && <ServiceEditModal service={editing === "new" ? null : editing} sizeLimits={automation?.pet_size_limits} onClose={() => setEditing(null)} onSave={saveService} />}
     </div>
   );
 }
 
-export function ServiceEditModal({ service, onClose, onSave }) {
+export function ServiceEditModal({ service, onClose, onSave, sizeLimits }) {
   const [name, setName] = useState(service?.name || "");
   const [gender, setGender] = useState(service?.gender || sectionsFor(getBusinessType())[0]);
   const businessType = getBusinessType();
   const categories = CATEGORIES_BY_TYPE[businessType] || CATEGORIES_BY_TYPE.beauty;
   const [category, setCategory] = useState(service?.category || categories[0]);
   // v2.44 pet salons: price/duration per size; an empty cell uses the base.
-  const [sizePricing, setSizePricing] = useState(() => Object.fromEntries(PET_SIZES.map(({ v }) => {
+  const [sizePricing, setSizePricing] = useState(() => Object.fromEntries(petSizes().map(({ v }) => {
     const t = service?.size_pricing?.[v] || {};
     return [v, { price: t.price != null ? String(t.price) : "", duration: t.duration != null ? String(t.duration) : "" }];
   })));
-  const sizeRows = gender === "cat" ? PET_SIZES.filter((x) => x.v !== "giant") : PET_SIZES;
+  const allSizes = petSizes(sizeLimits);
+  const sizeRows = gender === "cat" ? allSizes.filter((x) => x.v !== "giant") : allSizes;
+  // v2.45: breed prices (override the size price) and add-on items
+  const [breedRows, setBreedRows] = useState(() => Object.entries(service?.breed_pricing || {}).map(([name, t]) => ({
+    name, price: t?.price != null ? String(t.price) : "", duration: t?.duration != null ? String(t.duration) : "",
+  })));
+  const [isAddon, setIsAddon] = useState(!!service?.is_addon);
+  function breedPricingOut() {
+    const out = {};
+    for (const r of breedRows) {
+      const name = r.name.trim().slice(0, 40);
+      if (!name) continue;
+      const tier = {};
+      const p = r.price === "" ? NaN : Math.max(0, Math.round(Number(r.price)));
+      const d = r.duration === "" ? NaN : Math.round(Number(r.duration));
+      if (Number.isFinite(p)) tier.price = p;
+      if (Number.isFinite(d) && d >= 5 && d <= 600) tier.duration = d;
+      if (Object.keys(tier).length) out[name] = tier;
+    }
+    return out;
+  }
   function sizePricingOut() {
     const out = {};
     for (const { v } of sizeRows) {
@@ -250,6 +276,45 @@ export function ServiceEditModal({ service, onClose, onSave }) {
                 </Fragment>
               ))}
             </div>
+
+            <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 14 }}>قیمت ویژهٔ نژاد — اختیاری</label>
+            <p className="muted" style={{ fontSize: 11.5, marginTop: 2, lineHeight: 1.8 }}>
+              برای نژادهایی مثل چاو چاو یا پامرانین که قیمت خودشان را دارند؛ این قیمت بر قیمت جثه مقدم است.
+              اگر قیمت پایه خالی باشد، برای بقیهٔ نژادها «قیمت در سالن اعلام می‌شود» نمایش داده می‌شود.
+            </p>
+            <div className="flex flex-col gap-2" style={{ marginTop: 8 }}>
+              {breedRows.map((r, i) => (
+                <div key={i} className="flex gap-2 items-center">
+                  <input aria-label="نام نژاد" value={r.name} maxLength={40} placeholder="نام نژاد"
+                    onChange={(e) => setBreedRows((rows) => rows.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+                    style={{ flex: 2, minWidth: 0, padding: "8px 10px", fontSize: 13 }} />
+                  <input type="number" min={0} step={1000} aria-label={`قیمت ${r.name || "نژاد"}`} value={r.price} placeholder="قیمت"
+                    onChange={(e) => setBreedRows((rows) => rows.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))}
+                    className="tabular" style={{ flex: 1.5, minWidth: 0, padding: "8px 10px", fontSize: 13 }} />
+                  <input type="number" min={5} step={5} aria-label={`مدت ${r.name || "نژاد"}`} value={r.duration} placeholder="دقیقه"
+                    onChange={(e) => setBreedRows((rows) => rows.map((x, j) => (j === i ? { ...x, duration: e.target.value } : x)))}
+                    className="tabular" style={{ flex: 1, minWidth: 0, padding: "8px 10px", fontSize: 13 }} />
+                  <button type="button" className="tap ghost-btn" aria-label="حذف نژاد" style={{ width: 32, height: 32, padding: 0, color: "var(--color-danger)", flexShrink: 0 }}
+                    onClick={() => setBreedRows((rows) => rows.filter((_, j) => j !== i))}>
+                    <Trash2 size={13} style={{ margin: "auto" }} />
+                  </button>
+                </div>
+              ))}
+              <button type="button" className="tap ghost-btn flex items-center justify-center gap-1" style={{ padding: 8, fontSize: 12.5 }}
+                onClick={() => setBreedRows((rows) => [...rows, { name: "", price: "", duration: "" }])}>
+                <Plus size={13} /> افزودن نژاد
+              </button>
+            </div>
+
+            <label className="flex items-center justify-between gap-3" style={{ marginTop: 14 }}>
+              <span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "var(--color-heading)" }}>افزودنی پایان کار</span>
+                <span className="muted" style={{ display: "block", fontSize: 11.5, lineHeight: 1.8 }}>
+                  مثل گره‌زدایی هر نیم ساعت: در رزرو آنلاین نمایش داده نمی‌شود؛ آرایشگر هنگام «انجام شد» تعدادش را اضافه می‌کند.
+                </span>
+              </span>
+              <Switch checked={isAddon} onChange={(v) => { setIsAddon(v); if (v) setCategory("addon"); }} />
+            </label>
           </div>
         )}
 
@@ -327,6 +392,8 @@ export function ServiceEditModal({ service, onClose, onSave }) {
             discount_reason: priceSet ? discountReason.trim() : "",
             average_cycle_days: cycleDays === "" ? null : Math.max(1, Number(cycleDays)),
             size_pricing: businessType === "pet" ? sizePricingOut() : (service?.size_pricing || {}),
+            breed_pricing: businessType === "pet" ? breedPricingOut() : (service?.breed_pricing || {}),
+            is_addon: businessType === "pet" ? isAddon : !!service?.is_addon,
           })}
         >
           {service ? "ذخیره تغییرات" : "افزودن خدمت"}

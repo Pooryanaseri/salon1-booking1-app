@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
-import { PawPrint, Search, Syringe, AlertTriangle, Pencil } from "lucide-react";
-import { toFa, jalaliLabel, parseDateKey, isoToJalaliLabel } from "../lib/format";
+import { PawPrint, Search, Syringe, AlertTriangle, Pencil, Minus, Plus } from "lucide-react";
+import { toFa, jalaliLabel, parseDateKey, isoToJalaliLabel, formatToman } from "../lib/format";
 import { updatePet } from "../lib/api";
 import { GenderBadge, Modal, PanelSectionHeader, Row } from "../components/ui";
-import { PET_SIZES, PET_SIZE_LABEL, PET_TEMPERAMENTS, PET_TEMPERAMENT_LABEL, STATUS_META } from "../app/shared";
+import { PET_SIZES, PET_SIZE_LABEL, PET_TEMPERAMENTS, PET_TEMPERAMENT_LABEL, STATUS_META, extraChargesTotal } from "../app/shared";
 import { JalaliDateInput } from "../booking/PetForm";
 
 /* ============================================================
@@ -269,5 +269,83 @@ export function PetsTab({ pets, setPets, bookings, services, notify }) {
         />
       )}
     </div>
+  );
+}
+
+/* v2.45 — finishing a visit: add-on items (e.g. detangling per half hour),
+   the salon's aggression surcharge, or any other charge. Everything goes
+   into extra_charges and final_price, so reports and the customer's
+   receipt show it. */
+export function CompleteVisitModal({ booking, services, surchargePct, onClose, onConfirm }) {
+  const addons = services.filter((s) => s.is_addon && s.is_active && s.gender === booking.customer_gender && s.price > 0);
+  const [qty, setQty] = useState({});
+  const already = extraChargesTotal(booking);
+  const hasSurcharge = (booking.extra_charges || []).some((x) => x.label === "حیوان پرخاشگر");
+  const [surcharge, setSurcharge] = useState(false);
+  const [basePrice, setBasePrice] = useState(""); // only when the price was "announced in salon"
+  const [otherLabel, setOtherLabel] = useState("");
+  const [otherAmount, setOtherAmount] = useState("");
+
+  const base = booking.final_price != null ? booking.final_price - already : (basePrice === "" ? null : Math.max(0, Math.round(Number(basePrice))));
+  const lines = [];
+  for (const a of addons) {
+    const n = qty[a.id] || 0;
+    if (n > 0) lines.push({ label: `${a.name} × ${toFa(n)}`, amount: a.price * n });
+  }
+  if (surcharge && base) lines.push({ label: "حیوان پرخاشگر", amount: Math.round((base * surchargePct) / 100) });
+  const other = Math.round(Number(otherAmount));
+  if (otherLabel.trim() && Number.isFinite(other) && other > 0) lines.push({ label: otherLabel.trim().slice(0, 60), amount: other });
+  const added = lines.reduce((t, x) => t + x.amount, 0);
+  const total = base == null && added === 0 ? null : (base || 0) + already + added;
+
+  function confirm() {
+    if (lines.length === 0 && (booking.final_price != null || base == null)) { onConfirm({}); return; }
+    onConfirm({ final_price: total, extra_charges: [...(booking.extra_charges || []), ...lines] });
+  }
+
+  const step = { width: 30, height: 30, padding: 0, borderRadius: "var(--radius-sm)" };
+  return (
+    <Modal title={`پایان کار ${booking.pet_name || booking.customer_name || ""}`} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        {booking.final_price == null && (
+          <div>
+            <label htmlFor="cv-base" className="muted" style={{ fontSize: 12 }}>مبلغ خدمت (قیمت در سالن تعیین می‌شد)</label>
+            <input id="cv-base" type="number" min={0} step={1000} value={basePrice} onChange={(e) => setBasePrice(e.target.value)} className="tabular" style={{ width: "100%", padding: "9px 12px", fontSize: 14, marginTop: 4 }} />
+          </div>
+        )}
+        {addons.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <span className="muted" style={{ fontSize: 12 }}>افزودنی‌ها</span>
+            {addons.map((a) => (
+              <div key={a.id} className="flex items-center justify-between gap-2">
+                <span style={{ fontSize: 13 }}>{a.name} <span className="muted tabular" style={{ fontSize: 11.5 }}>({formatToman(a.price)})</span></span>
+                <span className="flex items-center gap-2">
+                  <button type="button" className="tap ghost-btn" style={step} aria-label={`کم کردن ${a.name}`} onClick={() => setQty((q) => ({ ...q, [a.id]: Math.max(0, (q[a.id] || 0) - 1) }))}><Minus size={13} style={{ margin: "auto" }} /></button>
+                  <span className="tabular" style={{ minWidth: 18, textAlign: "center", fontWeight: 700 }}>{toFa(qty[a.id] || 0)}</span>
+                  <button type="button" className="tap ghost-btn" style={step} aria-label={`افزودن ${a.name}`} onClick={() => setQty((q) => ({ ...q, [a.id]: Math.min(12, (q[a.id] || 0) + 1) }))}><Plus size={13} style={{ margin: "auto" }} /></button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {surchargePct > 0 && !hasSurcharge && (
+          <label className="flex items-center gap-2" style={{ fontSize: 13 }}>
+            <input type="checkbox" checked={surcharge} onChange={(e) => setSurcharge(e.target.checked)} />
+            حیوان پرخاشگر بود ({toFa(surchargePct)}٪ اضافه)
+          </label>
+        )}
+        <div className="flex gap-2">
+          <input aria-label="شرح هزینهٔ دیگر" value={otherLabel} onChange={(e) => setOtherLabel(e.target.value)} placeholder="هزینهٔ دیگر (شرح)" style={{ flex: 2, minWidth: 0, padding: "9px 12px", fontSize: 13 }} />
+          <input aria-label="مبلغ هزینهٔ دیگر" type="number" min={0} step={1000} value={otherAmount} onChange={(e) => setOtherAmount(e.target.value)} placeholder="مبلغ" className="tabular" style={{ flex: 1, minWidth: 0, padding: "9px 12px", fontSize: 13 }} />
+        </div>
+        <div className="card" style={{ padding: 12 }}>
+          {base != null && <Row label="مبلغ خدمت" value={formatToman(base)} />}
+          {(booking.extra_charges || []).map((x, i) => <Row key={`o${i}`} label={x.label} value={"+ " + formatToman(x.amount)} />)}
+          {lines.map((x, i) => <Row key={`n${i}`} label={x.label} value={"+ " + formatToman(x.amount)} />)}
+          <Row label="مبلغ نهایی" value={total == null ? "تعیین نشده" : formatToman(total)} bold />
+        </div>
+        <button className="tap accent-btn w-full" style={{ padding: 12 }} onClick={confirm}>ثبت «انجام شد»</button>
+      </div>
+    </Modal>
   );
 }

@@ -89,17 +89,18 @@ export default function App() {
       return [
         makeSeedBooking({
           customer_name: "الهام رضایی", customer_phone: "09351112233", customer_gender: "dog", pet_name: "پاپی", pet_size: "large",
-          service_id: "pd1", staff_id: "st1", staff_name: "سمیرا نادری", date: dateKey(t), start_min: 10 * 60, end_min: 11 * 60 + 30,
-          status: "confirmed", original_price: 600000, final_price: 600000,
+          service_id: "pd3", staff_id: "st1", staff_name: "سمیرا نادری", date: dateKey(t), start_min: 10 * 60, end_min: 11 * 60 + 30,
+          status: "confirmed", original_price: 1800000, final_price: 1800000,
         }),
         makeSeedBooking({
           customer_name: "سارا محمدی", customer_phone: KNOWN_CUSTOMER.phone, customer_gender: "cat", pet_name: "ملوس", pet_size: "small",
-          service_id: "pc1", staff_id: "st1", staff_name: "سمیرا نادری", date: dateKey(t), start_min: 13 * 60, end_min: 13 * 60 + 45,
-          status: "completed", original_price: 450000, final_price: 450000,
+          service_id: "pc3", staff_id: "st1", staff_name: "سمیرا نادری", date: dateKey(t), start_min: 13 * 60, end_min: 14 * 60,
+          status: "completed", original_price: 800000, final_price: 1150000,
+          extra_charges: [{ label: "گره‌زدایی (هر نیم ساعت) × ۱", amount: 350000 }],
         }),
         makeSeedBooking({
           customer_name: "آرش نوری", customer_phone: "09190002233", customer_gender: "dog", pet_name: "راکی", pet_size: "medium",
-          service_id: "pd2", staff_id: "st2", staff_name: "کاوه رحیمی", date: dateKey(t), start_min: 15 * 60, end_min: 17 * 60,
+          service_id: "pd4", staff_id: "st2", staff_name: "کاوه رحیمی", date: dateKey(t), start_min: 15 * 60, end_min: 16 * 60 + 15,
           status: "pending", original_price: 900000, final_price: 900000,
         }),
       ];
@@ -382,6 +383,7 @@ export default function App() {
         original_price: res.original_price, final_price: res.final_price,
         tracking_code: res.tracking_code, sms_sent_confirmation: true,
         pet_name: params.pet?.name?.trim() || null, pet_size: params.pet?.size || null,
+        extra_charges: Array.isArray(res.extra_charges) ? res.extra_charges : [], // v2.45
       });
     } else {
       // Demo mode has no real backend to validate price/slot against —
@@ -395,6 +397,7 @@ export default function App() {
         discount_value: params.discountValue, discount_reason: params.discountReason, final_price: params.finalPrice,
         sms_sent_confirmation: true,
         pet_name: params.pet?.name?.trim() || null, pet_size: params.pet?.size || null,
+        extra_charges: params.extraCharges || [],
       });
     }
 

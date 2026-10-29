@@ -4,7 +4,7 @@ import { SUPABASE_ENABLED, getCurrentSalonId } from "../lib/supabase";
 import { getSalonName, getBusinessType } from "../lib/tenant";
 import { fetchCustomerLoyalty, applyReferral, startDepositPayment } from "../lib/api";
 import { WEEKDAYS_FA_FULL, toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, dateKey } from "../lib/format";
-import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, PET_SIZE_LABEL, SECTION_META, SERVICE_ICONS, sectionsFor, sizedService, staffServesSection, discountAmountFor, finalPriceFor, fitsWithoutOverlap, hasPrice, isOccupied, occupiedEndFor, priceLabel, schemaDayOf, uid } from "../app/shared";
+import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, PET_SIZE_LABEL, SECTION_META, SERVICE_ICONS, extraChargesTotal, petService, petSurcharge, pricedBreeds, sectionsFor, staffServesSection, discountAmountFor, finalPriceFor, fitsWithoutOverlap, hasPrice, isOccupied, occupiedEndFor, priceLabel, schemaDayOf, uid } from "../app/shared";
 import { DateStrip, Row } from "../components/ui";
 import { PetForm, EMPTY_PET, loadSavedPets, rememberPet } from "./PetForm";
 
@@ -143,15 +143,17 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const [pet, setPet] = useState(EMPTY_PET);
   const [savedPets, setSavedPets] = useState(() => (petSalon ? loadSavedPets(getCurrentSalonId()) : []));
   const requireVaccination = petSalon && !!automation?.pet_require_vaccination;
-  const forPet = (s) => (petSalon ? sizedService(s, pet.size) : s);
+  const forPet = (s) => (petSalon ? petService(s, pet.size, pet.breed) : s);
+  const surchargePct = petSalon ? automation?.pet_aggressive_surcharge_percent || 0 : 0;
 
-  const sectionServices = services.filter((s) => s.is_active && s.gender === gender).map(forPet);
+  // v2.45: add-ons (e.g. detangling) are added by staff at checkout, not booked online
+  const sectionServices = services.filter((s) => s.is_active && !s.is_addon && s.gender === gender).map(forPet);
   const categories = ["all", ...Array.from(new Set(sectionServices.map((s) => s.category)))];
   const visibleServices = category === "all" ? sectionServices : sectionServices.filter((s) => s.category === category);
   const baseService = services.find((s) => s.id === serviceId);
   // Memoized: the slot/day-availability memos below depend on its identity,
   // and sizedService returns a new object for every call.
-  const service = useMemo(() => (baseService && petSalon ? sizedService(baseService, pet.size) : baseService), [baseService, petSalon, pet.size]);
+  const service = useMemo(() => (baseService && petSalon ? petService(baseService, pet.size, pet.breed) : baseService), [baseService, petSalon, pet.size, pet.breed]);
   const section = gender ? SECTION_META[gender] : null;
   const sectionStaff = useMemo(() => stylists.filter((s) => s.active && staffServesSection(s, gender)), [stylists, gender]);
   const selectedStaff = stylists.find((s) => s.id === staffId) || null;
@@ -397,7 +399,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const loyaltyDiscountAmount = service && hasPrice(service) && servicePrice != null
     ? Math.round((servicePrice * loyaltyDiscountPct) / 100)
     : 0;
-  const finalPrice = servicePrice != null ? Math.max(0, servicePrice - loyaltyDiscountAmount) : null;
+  // v2.45: the salon's surcharge for an aggressive animal (server: pet_surcharge)
+  const surcharge = petSalon && service && hasPrice(service) ? petSurcharge(servicePrice, pet.temperament, surchargePct) : 0;
+  const finalPrice = servicePrice != null ? Math.max(0, servicePrice - loyaltyDiscountAmount) + surcharge : null;
 
   // v2.37 online deposit — what the server will ask for on this booking
   // (mirrors hold_for_deposit; the server's answer is what actually counts).
@@ -439,6 +443,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           discountValue: service.discount_value,
           discountReason: [service.discount_reason, loyaltyDiscountAmount > 0 ? `${toFa(loyaltyDiscountPct)}٪ تخفیف باشگاه مشتریان` : ""].filter(Boolean).join(" · "),
           finalPrice,
+          extraCharges: surcharge > 0 ? [{ label: "حیوان پرخاشگر", amount: surcharge }] : [],
           pet: petSalon ? {
             name: pet.name.trim(), size: pet.size, breed: pet.breed.trim(), temperament: pet.temperament,
             weight_kg: pet.weight_kg || null, vaccine_valid_until: pet.vaccine_valid_until || null, notes: pet.notes.trim(),
@@ -566,6 +571,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           onChange={setPet}
           savedPets={savedPets}
           requireVaccination={requireVaccination}
+          sizeLimits={automation?.pet_size_limits}
+          pricedBreeds={pricedBreeds(services.filter((s) => s.is_active), gender)}
+          surchargePct={surchargePct}
           onBack={() => { if (hasGuard()) window.history.back(); else { setGender(null); onSectionChange(null); } }}
           onContinue={() => goTo(2)}
         />
@@ -581,7 +589,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             {sectionsFor(businessType).map((g) => {
               const meta = SECTION_META[g];
               const Icon = meta.Icon;
-              const count = services.filter((s) => s.is_active && s.gender === g).length;
+              const count = services.filter((s) => s.is_active && !s.is_addon && s.gender === g).length;
               return (
                 <button
                   key={g}
@@ -666,7 +674,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                     <Icon size={19} color={section.color} />
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, color: "var(--color-heading)", fontSize: 14 }}>{s.name}</div>
+                    <div style={{ fontWeight: 700, color: "var(--color-heading)", fontSize: 14 }}>
+                      {s.name}
+                      {s.breed_priced && <span className="badge" style={{ marginRight: 6, fontSize: 10.5, background: "var(--color-pet-100)", color: "var(--color-pet-500)" }}>قیمت ویژهٔ نژاد</span>}
+                    </div>
                     <div className="muted tabular" style={{ fontSize: 12, marginTop: 2 }}>
                       {toFa(s.duration_minutes)} دقیقه
                       {!hasPrice(s) ? (
@@ -1017,6 +1028,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             {hasPrice(service) && loyaltyDiscountAmount > 0 && (
               <Row label={`تخفیف باشگاه مشتریان (${toFa(loyaltyDiscountPct)}٪)`} value={"- " + formatToman(loyaltyDiscountAmount)} />
             )}
+            {surcharge > 0 && <Row label="مبلغ خدمت" value={formatToman(finalPrice - surcharge)} />}
+            {surcharge > 0 && <Row label={`افزایش برای حیوان پرخاشگر (${toFa(surchargePct)}٪)`} value={"+ " + formatToman(surcharge)} />}
             {hasPrice(service) && <Row label="مبلغ نهایی" value={formatToman(finalPrice)} bold />}
             {expectedDeposit > 0 && (
               <>
@@ -1084,12 +1097,13 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               <Row label="مبلغ" value="قیمت در سالن اعلام می‌شود" bold />
             ) : (
               <>
-                {result.original_price > result.final_price && (
+                {result.original_price > result.final_price - extraChargesTotal(result) && (
                   <>
                     <Row label="قیمت اصلی" value={formatToman(result.original_price)} strike />
-                    <Row label="تخفیف" value={"- " + formatToman(result.original_price - result.final_price)} />
+                    <Row label="تخفیف" value={"- " + formatToman(result.original_price - (result.final_price - extraChargesTotal(result)))} />
                   </>
                 )}
+                {(result.extra_charges || []).map((x, i) => <Row key={i} label={x.label} value={"+ " + formatToman(x.amount)} />)}
                 <Row label="مبلغ نهایی" value={formatToman(result.final_price)} bold />
               </>
             )}

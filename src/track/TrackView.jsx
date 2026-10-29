@@ -6,7 +6,7 @@ import { requestBookingOtp } from "../lib/sms";
 import { toFa, digitsOnly, normalizeMobile, formatToman, jalaliLabel, formatClock, parseDateKey } from "../lib/format";
 import { Badge, Row } from "../components/ui";
 import { CancelModal, RescheduleModal } from "../components/bookingModals";
-import { LOYALTY_REASON_FA, PET_SIZE_LABEL, sizedService } from "../app/shared";
+import { LOYALTY_REASON_FA, PET_SIZE_LABEL, extraChargesTotal, sizedService } from "../app/shared";
 
 /* ============================================================
    Track view (public, restricted fields only)
@@ -148,9 +148,10 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
   // picked) still needs to move through the same server-validated path —
   // reschedule to the exact pending date/time already proposed.
   async function acceptProposedReschedule(b) {
-    const svc = sizedService(services.find((s) => s.id === b.service_id), b.pet_size); // v2.44: as the server times it
+    const svc = sizedService(services.find((s) => s.id === b.service_id), b.pet_size);
     const newStart = b.pending_start_min;
-    const newEnd = svc ? newStart + svc.duration_minutes : b.pending_end_min;
+    // pet bookings keep their booked length (size and breed); the server recomputes either way
+    const newEnd = b.pet_name ? newStart + (b.end_min - b.start_min) : svc ? newStart + svc.duration_minutes : b.pending_end_min;
     await rescheduleMyBooking(b.id, b.pending_date, newStart, newEnd);
   }
 
@@ -364,7 +365,8 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
               ) : matches.map((b) => {
                 const service = services.find((s) => s.id === b.service_id);
                 if (!service) return null;
-                const hasDiscount = b.final_price != null && b.original_price > b.final_price;
+                const extras = extraChargesTotal(b); // v2.45: surcharge / add-ons, included in final_price
+                const hasDiscount = b.final_price != null && b.original_price > b.final_price - extras;
                 const isProposed = b.status === "reschedule_proposed";
                 const changeable = ["pending", "confirmed", "rescheduled"].includes(b.status);
                 return (
@@ -383,7 +385,8 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
                     ) : (
                       <>
                         {hasDiscount && <Row label="قیمت اصلی" value={formatToman(b.original_price)} strike />}
-                        {hasDiscount && <Row label="تخفیف" value={"- " + formatToman(b.original_price - b.final_price)} />}
+                        {hasDiscount && <Row label="تخفیف" value={"- " + formatToman(b.original_price - (b.final_price - extras))} />}
+                        {(b.extra_charges || []).map((x, i) => <Row key={i} label={x.label} value={"+ " + formatToman(x.amount)} />)}
                         <Row label="مبلغ نهایی" value={formatToman(b.final_price)} bold />
                       </>
                     )}
@@ -549,7 +552,8 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
           onClose={() => setActionFor(null)}
           onConfirm={(newStart, newDate) => {
             const svc = sizedService(services.find((s) => s.id === actionBooking.service_id), actionBooking.pet_size);
-            rescheduleMyBooking(actionBooking.id, newDate, newStart, newStart + svc.duration_minutes);
+            const length = actionBooking.pet_name ? actionBooking.end_min - actionBooking.start_min : svc.duration_minutes;
+            rescheduleMyBooking(actionBooking.id, newDate, newStart, newStart + length);
             setActionFor(null);
           }}
         />

@@ -14,7 +14,7 @@ import { getBusinessType } from "../lib/tenant";
 import { ScheduleTab } from "./ScheduleTab";
 import { ServicesTab } from "./ServicesTab";
 import { SmsTab } from "./SmsTab";
-import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings } from "./PetsTab";
+import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
 
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
@@ -111,7 +111,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       </div>
 
       {subTab === "dashboard" && (
-        <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} pets={pets} setPets={setPets} notify={notify} />
+        <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} pets={pets} setPets={setPets} notify={notify} automation={automation} />
       )}
       {subTab === "pets" && petSalon && (
         <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} />
@@ -129,7 +129,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           canEditExpenses={!currentStylist}
         />
       )}
-      {subTab === "services" && !currentStylist && <ServicesTab services={services} setServices={setServices} notify={notify} />}
+      {subTab === "services" && !currentStylist && <ServicesTab services={services} setServices={setServices} notify={notify} automation={automation} />}
       {subTab === "staff" && !currentStylist && (
         <StaffTab stylists={stylists} addStylist={addStylist} updateStylist={updateStylist} removeStylist={removeStylist} notify={notify} />
       )}
@@ -396,7 +396,7 @@ export function StylistEditModal({ stylist, onClose, onSave }) {
   );
 }
 
-export function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHours, timeOff, updateBooking, waitlist, removeWaitlistEntry, pets = [], setPets, notify }) {
+export function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHours, timeOff, updateBooking, waitlist, removeWaitlistEntry, pets = [], setPets, notify, automation }) {
   const [petOpen, setPetOpen] = useState(null);
   const petOf = (b) => (b.pet_id ? pets.find((p) => p.id === b.pet_id) : null)
     || pets.find((p) => p.owner_phone === b.customer_phone && p.species === b.customer_gender && p.name === (b.pet_name || "").trim()) || null;
@@ -420,13 +420,21 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
   // immediately as before. Only when this customer was referred does staff
   // need to confirm (in ReferralVerifyModal) that they're genuinely new
   // before the referrer's reward can be awarded.
-  async function handleComplete(b) {
+  // v2.45 pet salons: "انجام شد" first asks for add-ons (detangling per half
+  // hour, the aggression surcharge, anything else) — they go into final_price.
+  const petSalonDash = getBusinessType() === "pet";
+  const [completeFor, setCompleteFor] = useState(null);
+  function handleComplete(b) {
     setMenuFor(null);
+    if (petSalonDash) { setCompleteFor(b); return; }
+    finishComplete(b, {});
+  }
+  async function finishComplete(b, extra) {
     const referredBy = await fetchCustomerReferredBy(b.customer_phone);
     if (referredBy) {
-      setVerifyAction({ booking: b });
+      setVerifyAction({ booking: b, extra });
     } else {
-      updateBooking(b.id, { status: "completed" }, "وضعیت به «انجام شده» تغییر کرد");
+      updateBooking(b.id, { status: "completed", ...extra }, "وضعیت به «انجام شده» تغییر کرد");
     }
   }
 
@@ -659,6 +667,11 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                     <div className="muted" style={{ fontSize: 12, marginTop: 1, textDecoration: meta.strike ? "line-through" : "none" }}>
                       {service?.name}{b.staff_name ? ` · ${b.staff_name}` : ""}
                     </div>
+                    {(b.extra_charges || []).length > 0 && (
+                      <div className="muted tabular" style={{ fontSize: 11, marginTop: 1 }}>
+                        {b.extra_charges.map((x) => `+ ${x.label} ${formatToman(x.amount)}`).join(" · ")}
+                      </div>
+                    )}
                     <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                       <Badge status={b.status} />
                       {b.deposit_paid_at && (
@@ -748,6 +761,15 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
           }}
         />
       )}
+      {completeFor && (
+        <CompleteVisitModal
+          booking={completeFor}
+          services={services}
+          surchargePct={automation?.pet_aggressive_surcharge_percent || 0}
+          onClose={() => setCompleteFor(null)}
+          onConfirm={(extra) => { const b = completeFor; setCompleteFor(null); finishComplete(b, extra); }}
+        />
+      )}
       {petOpen && (
         <PetProfileModal
           pet={petOpen}
@@ -766,7 +788,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
           onConfirm={(verified) => {
             updateBooking(
               verifyAction.booking.id,
-              { status: "completed", referral_verified: verified },
+              { status: "completed", referral_verified: verified, ...(verifyAction.extra || {}) },
               verified ? "وضعیت به «انجام شده» تغییر کرد؛ امتیاز معرف و مشتری ثبت شد" : "وضعیت به «انجام شده» تغییر کرد؛ بدون امتیاز معرفی"
             );
             setVerifyAction(null);

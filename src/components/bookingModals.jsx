@@ -63,8 +63,11 @@ export function CancelModal({ booking, onClose, onConfirm, variant = "staff" }) 
 }
 
 export function RescheduleModal({ booking, services, bookings, workingHours, staffWorkingHours, timeOff, approvedDates, onClose, onConfirm, variant = "staff" }) {
-  // v2.44: a pet booking keeps the duration of the animal's size
-  const service = sizedService(services.find((s) => s.id === booking.service_id), booking.pet_size);
+  // v2.44/45: a pet booking keeps the length it was booked for (size and breed)
+  const baseService = services.find((s) => s.id === booking.service_id);
+  const service = baseService && booking.pet_name && booking.end_min > booking.start_min
+    ? { ...baseService, duration_minutes: booking.end_min - booking.start_min }
+    : sizedService(baseService, booking.pet_size);
   const [date, setDate] = useState(() => parseDateKey(booking.date));
   const [slot, setSlot] = useState(null);
   const [confirming, setConfirming] = useState(false);

@@ -45,6 +45,8 @@ const map = {
       discount_reason: r.discount_reason || "", is_active: r.is_active,
       loyalty_points: r.loyalty_points ?? 10,
       size_pricing: r.size_pricing && typeof r.size_pricing === "object" ? r.size_pricing : {}, // v2.44 pet salons
+      breed_pricing: r.breed_pricing && typeof r.breed_pricing === "object" ? r.breed_pricing : {}, // v2.45
+      is_addon: !!r.is_addon,                                                                     // v2.45
       // v2.26 rebooking cycle — was never mapped, so the services tab field
       // neither loaded nor saved and the predictive reminders never ran.
       average_cycle_days: r.average_cycle_days ?? null,
@@ -59,6 +61,7 @@ const map = {
       // Only pet salons (always on v2.44+) send it, so a beauty salon keeps
       // saving even before its database has the column.
       ...(isPetSalon() || Object.keys(s.size_pricing || {}).length ? { size_pricing: s.size_pricing ?? {} } : {}),
+      ...(isPetSalon() ? { breed_pricing: s.breed_pricing ?? {}, is_addon: !!s.is_addon } : {}), // v2.45
     }),
   },
 
@@ -111,6 +114,7 @@ const map = {
       pet_id: r.pet_id ?? null,       // v2.44 pet salons: the animal and
       pet_name: r.pet_name ?? null,   // the size the booking was priced for
       pet_size: r.pet_size ?? null,
+      extra_charges: Array.isArray(r.extra_charges) ? r.extra_charges : [], // v2.45: [{label, amount}], in final_price
       created_at: ms(r.created_at),
     }),
     toRow: (b) => {
@@ -789,10 +793,13 @@ export const DEFAULT_AUTOMATION = {
   deposit_min_price: 0,           // v2.37 — toman; deposit only for services at/above this
   reminder_hours_before: 3,       // v2.39 — customer reminder, hours before the visit (0 = off)
   pet_require_vaccination: false, // v2.44 — pet salons: booking needs a vaccination valid on the visit day
+  pet_size_limits: [5, 15, 30],    // v2.45 — kg upper bounds of small / medium / large
+  pet_aggressive_surcharge_percent: 0, // v2.45
 };
-// v2.44's column is read separately (pet salons only), so a database that
-// hasn't run v2.44 yet still loads every other setting.
-const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).filter((k) => k !== "pet_require_vaccination").join(", ");
+// The pet columns are read separately (pet salons only), so a database that
+// hasn't run v2.44/v2.45 yet still loads every other setting.
+const PET_SETTING_KEYS = ["pet_require_vaccination", "pet_size_limits", "pet_aggressive_surcharge_percent"];
+const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).filter((k) => !PET_SETTING_KEYS.includes(k)).join(", ");
 
 export async function fetchAutomationSettings() {
   if (!SUPABASE_ENABLED) return { ...DEFAULT_AUTOMATION };
@@ -805,8 +812,11 @@ export async function fetchAutomationSettings() {
   }
   const out = { ...DEFAULT_AUTOMATION, ...data };
   if (isPetSalon()) {
-    const { data: pet } = await supabase.from("app_settings").select("pet_require_vaccination").eq("salon_id", getCurrentSalonId()).maybeSingle();
+    let { data: pet, error: petErr } = await supabase.from("app_settings").select(PET_SETTING_KEYS.join(", ")).eq("salon_id", getCurrentSalonId()).maybeSingle();
+    if (petErr) ({ data: pet } = await supabase.from("app_settings").select("pet_require_vaccination").eq("salon_id", getCurrentSalonId()).maybeSingle()); // before v2.45
     out.pet_require_vaccination = !!pet?.pet_require_vaccination;
+    if (Array.isArray(pet?.pet_size_limits) && pet.pet_size_limits.length === 3) out.pet_size_limits = pet.pet_size_limits.map(Number);
+    if (Number.isFinite(pet?.pet_aggressive_surcharge_percent)) out.pet_aggressive_surcharge_percent = pet.pet_aggressive_surcharge_percent;
   }
   return out;
 }

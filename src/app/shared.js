@@ -37,12 +37,19 @@ export function sectionFilters(sections) {
   return [{ v: "all", l: "همه" }, ...sections.map((g) => ({ v: g, l: SECTION_META[g].short }))];
 }
 
-export const PET_SIZES = [
-  { v: "small", label: "کوچک", hint: "تا ۱۰ کیلو" },
-  { v: "medium", label: "متوسط", hint: "۱۰ تا ۲۵ کیلو" },
-  { v: "large", label: "بزرگ", hint: "۲۵ تا ۴۰ کیلو" },
-  { v: "giant", label: "خیلی بزرگ", hint: "بیش از ۴۰ کیلو" },
-];
+// v2.45: each salon sets its own weight bounds (kg) for small/medium/large.
+export const DEFAULT_PET_SIZE_LIMITS = [5, 15, 30];
+const faNum = (n) => String(n).replace(/[0-9]/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+export function petSizes(limits = DEFAULT_PET_SIZE_LIMITS) {
+  const [a, b, c] = Array.isArray(limits) && limits.length === 3 ? limits : DEFAULT_PET_SIZE_LIMITS;
+  return [
+    { v: "small", label: "کوچک", hint: `تا ${faNum(a)} کیلو` },
+    { v: "medium", label: "متوسط", hint: `${faNum(a)} تا ${faNum(b)} کیلو` },
+    { v: "large", label: "بزرگ", hint: `${faNum(b)} تا ${faNum(c)} کیلو` },
+    { v: "giant", label: "خیلی بزرگ", hint: `بیش از ${faNum(c)} کیلو` },
+  ];
+}
+export const PET_SIZES = petSizes();
 export const PET_SIZE_LABEL = Object.fromEntries(PET_SIZES.map((x) => [x.v, x.label]));
 export const PET_TEMPERAMENTS = [
   { v: "calm", label: "آرام" },
@@ -51,11 +58,55 @@ export const PET_TEMPERAMENTS = [
 ];
 export const PET_TEMPERAMENT_LABEL = Object.fromEntries(PET_TEMPERAMENTS.map((x) => [x.v, x.label]));
 /** A size from a weight in kg (the form suggests it; the owner can override). */
-export function sizeFromWeight(kg) {
+export function sizeFromWeight(kg, limits = DEFAULT_PET_SIZE_LIMITS) {
   const w = Number(kg);
   if (!Number.isFinite(w) || w <= 0) return null;
-  return w <= 10 ? "small" : w <= 25 ? "medium" : w <= 40 ? "large" : "giant";
+  const [a, b, c] = Array.isArray(limits) && limits.length === 3 ? limits : DEFAULT_PET_SIZE_LIMITS;
+  return w <= a ? "small" : w <= b ? "medium" : w <= c ? "large" : "giant";
 }
+
+/** Mirrors the server's norm_breed(): spacing, ZWNJ and Arabic ی/ک don't matter. */
+export function normBreed(name) {
+  const map = { "\u064A": "\u06CC", "\u0643": "\u06A9", "\u06C0": "\u0647", "\u0629": "\u0647" }; // ي ك ۀ ة → ی ک ه ه
+  return String(name || "").toLowerCase().replace(/[\u064A\u0643\u06C0\u0629]/g, (ch) => map[ch]).replace(/(?:\s|\u200c|\u200d|_|-)+/g, "");
+}
+/** The breed tier of a service for this breed, or null. */
+export function breedTier(service, breed) {
+  const key = normBreed(breed);
+  if (!key || !service?.breed_pricing) return null;
+  const hit = Object.entries(service.breed_pricing).find(([name]) => normBreed(name) === key);
+  return hit && typeof hit[1] === "object" ? hit[1] : null;
+}
+/** Breed names that have their own price in any of these services. */
+export function pricedBreeds(services, species) {
+  const names = new Map();
+  for (const s of services) {
+    if (species && s.gender !== species) continue;
+    for (const name of Object.keys(s.breed_pricing || {})) names.set(normBreed(name), name);
+  }
+  return [...names.values()];
+}
+/**
+ * The service as booked for this animal — mirrors service_for_pet(): the
+ * size's price/duration, then the breed's own price/duration on top.
+ */
+export function petService(service, size, breed) {
+  const sized = sizedService(service, size);
+  const tier = breedTier(service, breed);
+  if (!tier) return sized;
+  return {
+    ...sized,
+    price: Number.isFinite(tier.price) && tier.price >= 0 ? Math.round(tier.price) : sized.price,
+    duration_minutes: Number.isFinite(tier.duration) && tier.duration >= 5 && tier.duration <= 600 ? Math.round(tier.duration) : sized.duration_minutes,
+    breed_priced: true,
+  };
+}
+/** v2.45: the aggression surcharge (percent of the price after the service's discount). */
+export function petSurcharge(priceAfterDiscount, temperament, percent) {
+  if (temperament !== "aggressive" || !percent || priceAfterDiscount == null || priceAfterDiscount <= 0) return 0;
+  return Math.round((priceAfterDiscount * percent) / 100);
+}
+export const extraChargesTotal = (b) => (Array.isArray(b?.extra_charges) ? b.extra_charges : []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
 /**
  * The service as booked for an animal of this size — mirrors the server's
  * service_at_size(): price/duration from size_pricing when set, otherwise
@@ -78,15 +129,16 @@ export function sizePriceRange(service) {
 export const CATEGORY_LABEL = {
   hair: "مو", beard: "ریش", color: "رنگ", makeup: "میکاپ", nails: "ناخن", skin: "پوست", permanent_makeup: "خدمات دائم",
   // v2.44 pet salons
-  bath: "حمام و شستشو", grooming: "اصلاح و آرایش", nails_pet: "ناخن", hygiene: "بهداشتی (گوش، دندان)", spa: "اسپا و ماساژ",
+  bath: "حمام و شستشو", grooming: "اصلاح و آرایش", nails_pet: "ناخن", hygiene: "بهداشتی", spa: "اسپا و ماساژ",
+  addon: "افزودنی (پایان کار)",
 };
 export const SERVICE_ICONS = {
   hair: Scissors, beard: Scissors, color: Palette, makeup: Sparkles, nails: Hand, skin: Droplet, permanent_makeup: Eye,
-  bath: Bath, grooming: Scissors, nails_pet: PawPrint, hygiene: Sparkles, spa: Droplet,
+  bath: Bath, grooming: Scissors, nails_pet: PawPrint, hygiene: Sparkles, spa: Droplet, addon: Clock,
 };
 export const CATEGORIES_BY_TYPE = {
   beauty: ["hair", "beard", "color", "makeup", "nails", "skin", "permanent_makeup"],
-  pet: ["bath", "grooming", "nails_pet", "hygiene", "spa"],
+  pet: ["bath", "grooming", "nails_pet", "hygiene", "spa", "addon"],
 };
 
 // Business expenses tracked in the accounting tab — categorized so the dashboard can
@@ -121,19 +173,24 @@ export const SEED_SERVICES = [
 
 // Demo menu of a pet salon (the /pets demo) — the same starter menu a new
 // pet salon gets on the server (seed_pet_services).
-const PET_BASE = { is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 0 };
+const PET_BASE = { is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 0, size_pricing: {}, breed_pricing: {}, is_addon: false };
 export const SEED_PET_SERVICES = [
-  { ...PET_BASE, id: "pd1", name: "حمام و سشوار", gender: "dog", category: "bath", duration_minutes: 60, price: 450000,
-    size_pricing: { small: { price: 350000, duration: 45 }, medium: { price: 450000, duration: 60 }, large: { price: 600000, duration: 90 }, giant: { price: 800000, duration: 120 } } },
-  { ...PET_BASE, id: "pd2", name: "اصلاح کامل (حمام + کوتاهی + ناخن)", gender: "dog", category: "grooming", duration_minutes: 120, price: 900000, buffer_minutes: 15,
-    size_pricing: { small: { price: 700000, duration: 90 }, medium: { price: 900000, duration: 120 }, large: { price: 1200000, duration: 150 }, giant: { price: 1500000, duration: 180 } } },
-  { ...PET_BASE, id: "pd3", name: "کوتاهی ناخن", gender: "dog", category: "nails_pet", duration_minutes: 15, price: 150000, size_pricing: {} },
-  { ...PET_BASE, id: "pd4", name: "تمیز کردن گوش و دندان", gender: "dog", category: "hygiene", duration_minutes: 20, price: 200000, size_pricing: {} },
-  { ...PET_BASE, id: "pc1", name: "حمام گربه", gender: "cat", category: "bath", duration_minutes: 60, price: 500000,
-    size_pricing: { small: { price: 450000, duration: 45 }, medium: { price: 500000, duration: 60 }, large: { price: 600000, duration: 75 } } },
-  { ...PET_BASE, id: "pc2", name: "اصلاح کامل گربه", gender: "cat", category: "grooming", duration_minutes: 90, price: 900000,
-    size_pricing: { small: { price: 800000, duration: 75 }, medium: { price: 900000, duration: 90 }, large: { price: 1100000, duration: 105 } } },
-  { ...PET_BASE, id: "pc3", name: "کوتاهی ناخن گربه", gender: "cat", category: "nails_pet", duration_minutes: 15, price: 150000, size_pricing: {} },
+  { ...PET_BASE, id: "pd1", name: "کوتاهی ناخن", gender: "dog", category: "nails_pet", duration_minutes: 15, price: 200000 },
+  { ...PET_BASE, id: "pd2", name: "تخلیهٔ کیسهٔ مقعدی", gender: "dog", category: "hygiene", duration_minutes: 15, price: 200000 },
+  { ...PET_BASE, id: "pd3", name: "شستشو (حمام)", gender: "dog", category: "bath", duration_minutes: 90, price: 1800000,
+    size_pricing: { small: { price: 500000, duration: 45 }, medium: { price: 700000, duration: 60 }, large: { price: 1800000, duration: 90 } } },
+  { ...PET_BASE, id: "pd4", name: "اصلاح ساده با موزر", gender: "dog", category: "grooming", duration_minutes: 90, price: 1300000,
+    size_pricing: { small: { price: 900000, duration: 60 }, medium: { price: 900000, duration: 75 }, large: { price: 1300000, duration: 90 } } },
+  { ...PET_BASE, id: "pd5", name: "اصلاح ساده با قیچی", gender: "dog", category: "grooming", duration_minutes: 90, price: 1000000,
+    size_pricing: { medium: { price: 1000000, duration: 90 }, large: { price: 1500000, duration: 120 } } },
+  { ...PET_BASE, id: "pd6", name: "اصلاح کامل + حمام", gender: "dog", category: "grooming", duration_minutes: 150, price: null,
+    breed_pricing: { "پامرانین": { price: 1900000, duration: 120 }, "پامر": { price: 1900000, duration: 120 }, "چاو چاو": { price: 3500000, duration: 180 } } },
+  { ...PET_BASE, id: "pd7", name: "گره‌زدایی (هر نیم ساعت)", gender: "dog", category: "addon", duration_minutes: 30, price: 350000, is_addon: true },
+  { ...PET_BASE, id: "pc1", name: "کوتاهی ناخن", gender: "cat", category: "nails_pet", duration_minutes: 15, price: 200000 },
+  { ...PET_BASE, id: "pc2", name: "تخلیهٔ کیسهٔ مقعدی", gender: "cat", category: "hygiene", duration_minutes: 15, price: 200000 },
+  { ...PET_BASE, id: "pc3", name: "شستشو (حمام) گربه", gender: "cat", category: "bath", duration_minutes: 60, price: 800000 },
+  { ...PET_BASE, id: "pc4", name: "شیو سادهٔ گربه", gender: "cat", category: "grooming", duration_minutes: 60, price: 900000 },
+  { ...PET_BASE, id: "pc5", name: "گره‌زدایی (هر نیم ساعت)", gender: "cat", category: "addon", duration_minutes: 30, price: 350000, is_addon: true },
 ];
 
 // schema day_of_week: 0=Saturday .. 6=Friday (Iran week)
