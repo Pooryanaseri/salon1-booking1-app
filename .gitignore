@@ -6,3 +6,6 @@ dist
 .DS_Store
 .vercel
 supabase/.temp
+
+.vercel
+.env*
