@@ -30,6 +30,13 @@ export const TOKENS_CSS = `
   --color-female-100: oklch(93% 0.04 10);
   --color-male-500: oklch(54% 0.13 235);
   --color-male-100: oklch(92% 0.025 225);
+  /* v2.44 pet salons — dogs (warm amber) / cats (violet) / both (green) */
+  --color-dog-500: oklch(60% 0.15 60);
+  --color-dog-100: oklch(93% 0.045 70);
+  --color-cat-500: oklch(56% 0.17 300);
+  --color-cat-100: oklch(93% 0.035 300);
+  --color-pet-500: oklch(58% 0.14 160);
+  --color-pet-100: oklch(93% 0.04 160);
 
   /* Brand + status gradients — the "reporting" surfaces (hero cards, KPI tiles,
      chart fills) lean on these instead of flat fills for a richer, more premium look. */
@@ -96,6 +103,9 @@ export const TOKENS_CSS = `
   --color-accent-100: oklch(30% 0.06 65);
   --color-female-100: oklch(27% 0.05 10);
   --color-male-100: oklch(25% 0.035 225);
+  --color-dog-100: oklch(28% 0.05 65);
+  --color-cat-100: oklch(27% 0.05 300);
+  --color-pet-100: oklch(27% 0.045 160);
   --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.3);
   --shadow-md: 0 6px 16px -4px oklch(0% 0 0 / 0.45);
   --shadow-lg: 0 16px 32px -8px oklch(0% 0 0 / 0.55);

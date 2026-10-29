@@ -13,6 +13,7 @@
 //  app degrades to the original demo behaviour instead of crashing.
 // ============================================================================
 import { supabase, SUPABASE_ENABLED, getCurrentSalonId } from "./supabase";
+import { isPetSalon } from "./tenant";
 
 /* ---------------------------------------------------------------- date glue */
 // The app's dateKey() produces an UNPADDED key: "2026-8-31".
@@ -43,6 +44,10 @@ const map = {
       discount_type: r.discount_type, discount_value: Number(r.discount_value || 0),
       discount_reason: r.discount_reason || "", is_active: r.is_active,
       loyalty_points: r.loyalty_points ?? 10,
+      size_pricing: r.size_pricing && typeof r.size_pricing === "object" ? r.size_pricing : {}, // v2.44 pet salons
+      // v2.26 rebooking cycle — was never mapped, so the services tab field
+      // neither loaded nor saved and the predictive reminders never ran.
+      average_cycle_days: r.average_cycle_days ?? null,
     }),
     toRow: (s) => ({
       id: s.id, name: s.name ?? "", gender: s.gender ?? "female", category: s.category ?? "hair",
@@ -50,6 +55,10 @@ const map = {
       price: s.price ?? null, discount_type: s.discount_type ?? "none",
       discount_value: s.discount_value ?? 0, discount_reason: s.discount_reason ?? "",
       is_active: s.is_active ?? true, loyalty_points: s.loyalty_points ?? 10,
+      average_cycle_days: s.average_cycle_days ?? null,
+      // Only pet salons (always on v2.44+) send it, so a beauty salon keeps
+      // saving even before its database has the column.
+      ...(isPetSalon() || Object.keys(s.size_pricing || {}).length ? { size_pricing: s.size_pricing ?? {} } : {}),
     }),
   },
 
@@ -99,6 +108,9 @@ const map = {
       sms_sent_reminder: r.sms_sent_reminder,
       campaign_id: r.campaign_id ?? null,
       points_awarded: r.points_awarded ?? 0,
+      pet_id: r.pet_id ?? null,       // v2.44 pet salons: the animal and
+      pet_name: r.pet_name ?? null,   // the size the booking was priced for
+      pet_size: r.pet_size ?? null,
       created_at: ms(r.created_at),
     }),
     toRow: (b) => {
@@ -500,12 +512,14 @@ export async function requestBookingOtpTestMode(phone) {
 // create_public_booking from services/loyalty tables, never trusted from
 // this call's arguments beyond the customer's own choices (service,
 // staff, date, time, name, phone, gender, optional referral code).
-export async function createPublicBooking({ serviceId, staffId, date, startMin, customerName, customerPhone, customerGender, referralCode }) {
+export async function createPublicBooking({ serviceId, staffId, date, startMin, customerName, customerPhone, customerGender, referralCode, pet }) {
   if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
   const { data, error } = await supabase.rpc("create_public_booking", {
     p_service_id: serviceId, p_staff_id: staffId ?? null, p_date: date, p_start_min: startMin,
     p_customer_name: customerName, p_customer_phone: customerPhone, p_customer_gender: customerGender,
     p_referral_code: referralCode ?? null,
+    // v2.44: only sent by pet salons — the server validates and saves it
+    ...(pet ? { p_pet: pet } : {}),
   });
   if (error) { fail("create_public_booking", error); return { ok: false, error: "ثبت نوبت ناموفق بود" }; }
   return data;
@@ -579,6 +593,28 @@ export async function fetchCustomers() {
     .order("phone"));
   if (error) { fail("customers", error); return []; }
   return setCache(key, data || []);
+}
+
+/* ------------------------------------------------- v2.44 pet profiles --- */
+// Managers see every pet of the salon; a groomer sees the pets of customers
+// they have served (RLS). Profiles are created by the booking itself.
+export async function fetchPets() {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await fetchAllPages(() => supabase
+    .from("pets")
+    .select("id, owner_phone, name, species, breed, size, weight_kg, temperament, vaccine_valid_until, owner_notes, grooming_notes, last_visit_date, created_at")
+    .order("owner_phone").order("id"));
+  if (error) { fail("pets", error); return []; }
+  return (data || []).map((p) => ({ ...p, weight_kg: p.weight_kg == null ? null : Number(p.weight_kg) }));
+}
+
+const PET_EDITABLE = ["name", "breed", "size", "weight_kg", "temperament", "vaccine_valid_until", "owner_notes", "grooming_notes"];
+export async function updatePet(id, patch) {
+  if (!SUPABASE_ENABLED) return { ok: true };
+  const row = Object.fromEntries(Object.entries(patch).filter(([k]) => PET_EDITABLE.includes(k)));
+  const { error } = await supabase.from("pets").update(row).eq("id", id);
+  if (error) { fail("pets.update", error); return { ok: false, error: "ذخیرهٔ پروفایل حیوان ناموفق بود" }; }
+  return { ok: true };
 }
 
 // Links a new customer to whoever referred them, and awards points to both
@@ -752,8 +788,11 @@ export const DEFAULT_AUTOMATION = {
   deposit_percent: 0,             // v2.37 — 0 = no online deposit
   deposit_min_price: 0,           // v2.37 — toman; deposit only for services at/above this
   reminder_hours_before: 3,       // v2.39 — customer reminder, hours before the visit (0 = off)
+  pet_require_vaccination: false, // v2.44 — pet salons: booking needs a vaccination valid on the visit day
 };
-const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).join(", ");
+// v2.44's column is read separately (pet salons only), so a database that
+// hasn't run v2.44 yet still loads every other setting.
+const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).filter((k) => k !== "pet_require_vaccination").join(", ");
 
 export async function fetchAutomationSettings() {
   if (!SUPABASE_ENABLED) return { ...DEFAULT_AUTOMATION };
@@ -764,7 +803,12 @@ export async function fetchAutomationSettings() {
     if (error) fail("app_settings.fetchAutomation", error);
     return Object.fromEntries(Object.entries(DEFAULT_AUTOMATION).map(([k, v]) => [k, typeof v === "boolean" ? false : v]));
   }
-  return { ...DEFAULT_AUTOMATION, ...data };
+  const out = { ...DEFAULT_AUTOMATION, ...data };
+  if (isPetSalon()) {
+    const { data: pet } = await supabase.from("app_settings").select("pet_require_vaccination").eq("salon_id", getCurrentSalonId()).maybeSingle();
+    out.pet_require_vaccination = !!pet?.pet_require_vaccination;
+  }
+  return out;
 }
 
 /** Saves the patch; when the booking window is (re)enabled or resized, opens
@@ -1107,13 +1151,19 @@ export async function adminListSalons() {
   if (error) { fail("admin_list_salons", error); return null; }
   return data || [];
 }
-export async function adminCreateSalon({ slug, name, ownerPhone }) {
-  const { data, error } = await supabase.rpc("admin_create_salon", { p_slug: slug, p_name: name, p_owner_phone: ownerPhone });
+export async function adminCreateSalon({ slug, name, ownerPhone, businessType = "beauty" }) {
+  const { data, error } = await supabase.rpc("admin_create_salon", {
+    p_slug: slug, p_name: name, p_owner_phone: ownerPhone,
+    ...(businessType !== "beauty" ? { p_business_type: businessType } : {}), // v2.44
+  });
   if (error) { failWrite("admin_create_salon", error); return { ok: false, error: "ساخت سالن ناموفق بود" }; }
   return data || { ok: false };
 }
-export async function adminUpdateSalon(id, { name = null, ownerPhone = null, active = null } = {}) {
-  const { data, error } = await supabase.rpc("admin_update_salon", { p_id: id, p_name: name, p_owner_phone: ownerPhone, p_active: active });
+export async function adminUpdateSalon(id, { name = null, ownerPhone = null, active = null, businessType = null } = {}) {
+  const { data, error } = await supabase.rpc("admin_update_salon", {
+    p_id: id, p_name: name, p_owner_phone: ownerPhone, p_active: active,
+    ...(businessType ? { p_business_type: businessType } : {}), // v2.44
+  });
   if (error) { failWrite("admin_update_salon", error); return { ok: false, error: "ذخیره ناموفق بود" }; }
   return data || { ok: false };
 }

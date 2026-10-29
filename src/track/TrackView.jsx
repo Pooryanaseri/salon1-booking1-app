@@ -6,7 +6,7 @@ import { requestBookingOtp } from "../lib/sms";
 import { toFa, digitsOnly, normalizeMobile, formatToman, jalaliLabel, formatClock, parseDateKey } from "../lib/format";
 import { Badge, Row } from "../components/ui";
 import { CancelModal, RescheduleModal } from "../components/bookingModals";
-import { LOYALTY_REASON_FA } from "../app/shared";
+import { LOYALTY_REASON_FA, PET_SIZE_LABEL, sizedService } from "../app/shared";
 
 /* ============================================================
    Track view (public, restricted fields only)
@@ -148,7 +148,7 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
   // picked) still needs to move through the same server-validated path —
   // reschedule to the exact pending date/time already proposed.
   async function acceptProposedReschedule(b) {
-    const svc = services.find((s) => s.id === b.service_id);
+    const svc = sizedService(services.find((s) => s.id === b.service_id), b.pet_size); // v2.44: as the server times it
     const newStart = b.pending_start_min;
     const newEnd = svc ? newStart + svc.duration_minutes : b.pending_end_min;
     await rescheduleMyBooking(b.id, b.pending_date, newStart, newEnd);
@@ -373,6 +373,7 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
                       <h3 style={{ fontSize: 15 }}>{service.name}</h3>
                       <Badge status={b.status} />
                     </div>
+                    {b.pet_name && <Row label={b.customer_gender === "cat" ? "گربه" : "سگ"} value={`${b.pet_name}${b.pet_size ? ` (${PET_SIZE_LABEL[b.pet_size]})` : ""}`} />}
                     <Row label="تاریخ" value={jalaliLabel(parseDateKey(b.date), { short: true })} />
                     <Row label="ساعت" value={formatClock(b.start_min)} />
                     {b.staff_name && <Row label="آرایشگر" value={b.staff_name} />}
@@ -547,7 +548,7 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
           variant="customer"
           onClose={() => setActionFor(null)}
           onConfirm={(newStart, newDate) => {
-            const svc = services.find((s) => s.id === actionBooking.service_id);
+            const svc = sizedService(services.find((s) => s.id === actionBooking.service_id), actionBooking.pet_size);
             rescheduleMyBooking(actionBooking.id, newDate, newStart, newStart + svc.duration_minutes);
             setActionFor(null);
           }}

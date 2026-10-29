@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from "react";
-import { Sparkles, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck } from "lucide-react";
+import { Sparkles, PawPrint, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
-import { getSalonName } from "./lib/tenant";
+import { getSalonName, isPetSalon } from "./lib/tenant";
 import { bootstrap, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, fetchDepositTerms, joinWaitlist, DEFAULT_AUTOMATION } from "./lib/api";
 import { signOut as authSignOut, restoreSession } from "./lib/auth";
 import { sendSms, scheduleReminder, renderTemplate } from "./lib/sms";
 import { jalaliLabel, formatClock, dateKey, parseDateKey } from "./lib/format";
 import { TOKENS_CSS } from "./styles/tokens";
 import { BookingFlow } from "./booking/BookingFlow";
-import { FALLBACK_SMS_TEMPLATES, GENDER_TYPE_LABEL, KNOWN_CUSTOMER, SALON_GENDER_TYPE, SEED_SERVICES, SEED_STYLISTS, SEED_WORKING_HOURS, STAFF_PHONE, makeSeedBooking, makeSeedExpense, persistApproved, persistSalonHours, persistServices, persistStaffHours, persistTimeOff, usePersistedState } from "./app/shared";
+import { FALLBACK_SMS_TEMPLATES, GENDER_TYPE_LABEL, KNOWN_CUSTOMER, SALON_GENDER_TYPE, SEED_PET_SERVICES, SEED_PET_STYLISTS, SEED_SERVICES, SEED_STYLISTS, SEED_WORKING_HOURS, STAFF_PHONE, makeSeedBooking, makeSeedExpense, persistApproved, persistSalonHours, persistServices, persistStaffHours, persistTimeOff, usePersistedState } from "./app/shared";
 import { LoginScreen } from "./components/LoginScreen";
 import { PanelView } from "./panel/PanelView";
 import { Toast } from "./components/ui";
@@ -62,8 +62,10 @@ export default function App() {
   const [backendNote, setBackendNote] = useState("");
 
   // ---- collections wired to Postgres (setter contract unchanged) ------------
-  const [services, setServices, servicesCtl] = usePersistedState(SEED_SERVICES, persistServices);
-  const [stylists, setStylists] = useState(SEED_STYLISTS);
+  // v2.44: the demo seeds match the salon type (real salons load their own data).
+  const petSalon = isPetSalon();
+  const [services, setServices, servicesCtl] = usePersistedState(petSalon ? SEED_PET_SERVICES : SEED_SERVICES, persistServices);
+  const [stylists, setStylists] = useState(petSalon ? SEED_PET_STYLISTS : SEED_STYLISTS);
   const [workingHours, setWorkingHours, hoursCtl] = usePersistedState(SEED_WORKING_HOURS, persistSalonHours);
   const [staffWorkingHours, setStaffWorkingHours, staffHoursCtl] = usePersistedState({}, persistStaffHours);
   const [timeOff, setTimeOff, timeOffCtl] = usePersistedState([], persistTimeOff);
@@ -83,6 +85,25 @@ export default function App() {
 
   const [bookings, setBookings] = useState(() => {
     const t = new Date();
+    if (petSalon) {
+      return [
+        makeSeedBooking({
+          customer_name: "الهام رضایی", customer_phone: "09351112233", customer_gender: "dog", pet_name: "پاپی", pet_size: "large",
+          service_id: "pd1", staff_id: "st1", staff_name: "سمیرا نادری", date: dateKey(t), start_min: 10 * 60, end_min: 11 * 60 + 30,
+          status: "confirmed", original_price: 600000, final_price: 600000,
+        }),
+        makeSeedBooking({
+          customer_name: "سارا محمدی", customer_phone: KNOWN_CUSTOMER.phone, customer_gender: "cat", pet_name: "ملوس", pet_size: "small",
+          service_id: "pc1", staff_id: "st1", staff_name: "سمیرا نادری", date: dateKey(t), start_min: 13 * 60, end_min: 13 * 60 + 45,
+          status: "completed", original_price: 450000, final_price: 450000,
+        }),
+        makeSeedBooking({
+          customer_name: "آرش نوری", customer_phone: "09190002233", customer_gender: "dog", pet_name: "راکی", pet_size: "medium",
+          service_id: "pd2", staff_id: "st2", staff_name: "کاوه رحیمی", date: dateKey(t), start_min: 15 * 60, end_min: 17 * 60,
+          status: "pending", original_price: 900000, final_price: 900000,
+        }),
+      ];
+    }
     return [
       makeSeedBooking({
         customer_name: "الهام رضایی", customer_phone: "09351112233", customer_gender: "female",
@@ -300,6 +321,7 @@ export default function App() {
       time: formatClock(b.start_min),
       stylist: b.staff_name || "بدون آرایشگر مشخص",
       code: b.tracking_code || "",
+      pet: b.pet_name || (b.customer_gender === "cat" ? "گربهٔ شما" : b.customer_gender === "dog" ? "سگ شما" : ""), // v2.44
       link: `${window.location.origin}/feedback/${b.id}`,
     };
   }
@@ -346,7 +368,7 @@ export default function App() {
       const res = await createPublicBooking({
         serviceId: params.serviceId, staffId: params.staffId, date: params.date, startMin: params.startMin,
         customerName: params.customerName, customerPhone: params.customerPhone, customerGender: params.customerGender,
-        referralCode: params.referralCode,
+        referralCode: params.referralCode, pet: params.pet || null,
       });
       if (!res.ok) { notify(res.error || "ثبت نوبت روی سرور ناموفق بود"); return null; }
       booking = makeSeedBooking({
@@ -359,6 +381,7 @@ export default function App() {
         status: res.status || newBookingStatus, deposit_amount: res.deposit_amount ?? null,
         original_price: res.original_price, final_price: res.final_price,
         tracking_code: res.tracking_code, sms_sent_confirmation: true,
+        pet_name: params.pet?.name?.trim() || null, pet_size: params.pet?.size || null,
       });
     } else {
       // Demo mode has no real backend to validate price/slot against —
@@ -371,6 +394,7 @@ export default function App() {
         status: newBookingStatus, original_price: params.originalPrice, discount_type: params.discountType,
         discount_value: params.discountValue, discount_reason: params.discountReason, final_price: params.finalPrice,
         sms_sent_confirmation: true,
+        pet_name: params.pet?.name?.trim() || null, pet_size: params.pet?.size || null,
       });
     }
 
@@ -516,12 +540,12 @@ export default function App() {
                   boxShadow: "var(--shadow-glow-accent)",
                 }}
               >
-                <Sparkles size={17} color="white" />
+                {petSalon ? <PawPrint size={17} color="white" /> : <Sparkles size={17} color="white" />}
               </div>
               <div>
                 <h1 style={{ fontSize: 14.5, lineHeight: 1.2 }}>{getSalonName()}</h1>
                 <p className="muted" style={{ fontSize: 10.5 }}>
-                  رزرو آنلاین نوبت · {tab === "book" && activeSection ? GENDER_TYPE_LABEL[activeSection] : GENDER_TYPE_LABEL[SALON_GENDER_TYPE]}
+                  رزرو آنلاین نوبت · {tab === "book" && activeSection ? GENDER_TYPE_LABEL[activeSection] : petSalon ? "آرایشگاه سگ و گربه" : GENDER_TYPE_LABEL[SALON_GENDER_TYPE]}
                 </p>
               </div>
             </div>

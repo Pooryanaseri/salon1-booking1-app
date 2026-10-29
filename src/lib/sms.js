@@ -5,7 +5,7 @@
 //  and writes an audit row into public.sms_messages.
 // ============================================================================
 import { supabase, SUPABASE_ENABLED, getCurrentSalonId } from "./supabase";
-import { getSalonName } from "./tenant";
+import { getSalonName, isPetSalon } from "./tenant";
 
 /* ------------------------------------------------------- template rendering */
 export const SMS_PLACEHOLDERS = [
@@ -19,7 +19,12 @@ export const SMS_PLACEHOLDERS = [
   { token: "{{points}}",   label: "امتیاز باشگاه" },
   { token: "{{discount}}", label: "درصد تخفیف" },
   { token: "{{days}}",     label: "تعداد روز عدم مراجعه" },
+  { token: "{{pet}}",      label: "نام حیوان", petOnly: true }, // v2.44
 ];
+/** The placeholders that mean something for this salon. */
+export function smsPlaceholders() {
+  return SMS_PLACEHOLDERS.filter((p) => !p.petOnly || isPetSalon());
+}
 
 export function renderTemplate(body, vars = {}) {
   const all = { salon: getSalonName(), ...vars };

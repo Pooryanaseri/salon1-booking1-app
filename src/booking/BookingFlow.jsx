@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Sparkles, Phone, Check, Sun, Moon, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
-import { SUPABASE_ENABLED } from "../lib/supabase";
-import { getSalonName } from "../lib/tenant";
+import { SUPABASE_ENABLED, getCurrentSalonId } from "../lib/supabase";
+import { getSalonName, getBusinessType } from "../lib/tenant";
 import { fetchCustomerLoyalty, applyReferral, startDepositPayment } from "../lib/api";
 import { WEEKDAYS_FA_FULL, toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, dateKey } from "../lib/format";
-import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, SECTION_META, SERVICE_ICONS, discountAmountFor, finalPriceFor, fitsWithoutOverlap, hasPrice, isOccupied, occupiedEndFor, priceLabel, schemaDayOf, uid } from "../app/shared";
+import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, PET_SIZE_LABEL, SECTION_META, SERVICE_ICONS, sectionsFor, sizedService, staffServesSection, discountAmountFor, finalPriceFor, fitsWithoutOverlap, hasPrice, isOccupied, occupiedEndFor, priceLabel, schemaDayOf, uid } from "../app/shared";
 import { DateStrip, Row } from "../components/ui";
+import { PetForm, EMPTY_PET, loadSavedPets, rememberPet } from "./PetForm";
 
 /* ============================================================
    Booking flow (customer) — gender section chosen first, each
@@ -135,13 +136,22 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const [name, setName] = useState("");
   const [referralCode, setReferralCode] = useState("");
   const [result, setResult] = useState(null);
+  // v2.44 pet salons: the animal is chosen right after dog/cat; its size
+  // prices and times every service (sizedService mirrors the server).
+  const businessType = getBusinessType();
+  const petSalon = businessType === "pet";
+  const [pet, setPet] = useState(EMPTY_PET);
+  const [savedPets, setSavedPets] = useState(() => (petSalon ? loadSavedPets(getCurrentSalonId()) : []));
+  const requireVaccination = petSalon && !!automation?.pet_require_vaccination;
+  const forPet = (s) => (petSalon ? sizedService(s, pet.size) : s);
 
-  const sectionServices = services.filter((s) => s.is_active && s.gender === gender);
+  const sectionServices = services.filter((s) => s.is_active && s.gender === gender).map(forPet);
   const categories = ["all", ...Array.from(new Set(sectionServices.map((s) => s.category)))];
   const visibleServices = category === "all" ? sectionServices : sectionServices.filter((s) => s.category === category);
-  const service = services.find((s) => s.id === serviceId);
+  const baseService = services.find((s) => s.id === serviceId);
+  const service = baseService ? forPet(baseService) : baseService;
   const section = gender ? SECTION_META[gender] : null;
-  const sectionStaff = useMemo(() => stylists.filter((s) => s.active && s.gender === gender), [stylists, gender]);
+  const sectionStaff = useMemo(() => stylists.filter((s) => s.active && staffServesSection(s, gender)), [stylists, gender]);
   const selectedStaff = stylists.find((s) => s.id === staffId) || null;
   // Once a time is picked under "فرقی ندارد", this holds whichever stylist actually
   // got assigned to it — see the slot-click handler below.
@@ -364,6 +374,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   }
 
   const phoneValid = /^09\d{9}$/.test(phone);
+  // v2.44: the server refuses a vaccination that runs out before the visit —
+  // say so here, with the reason, instead of failing at "ثبت نهایی".
+  const visitIso = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, "0")}-${String(selectedDate.getDate()).padStart(2, "0")}`;
+  const vaccineExpiresBeforeVisit = requireVaccination && (!pet.vaccine_valid_until || pet.vaccine_valid_until < visitIso);
   const canContinueContact = lookedUp && !lookingUp && phoneValid && (knownCustomer || !!name.trim());
   // Recognize returning customers as soon as the number is complete.
   useEffect(() => {
@@ -423,6 +437,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           discountValue: service.discount_value,
           discountReason: [service.discount_reason, loyaltyDiscountAmount > 0 ? `${toFa(loyaltyDiscountPct)}٪ تخفیف باشگاه مشتریان` : ""].filter(Boolean).join(" · "),
           finalPrice,
+          pet: petSalon ? {
+            name: pet.name.trim(), size: pet.size, breed: pet.breed.trim(), temperament: pet.temperament,
+            weight_kg: pet.weight_kg || null, vaccine_valid_until: pet.vaccine_valid_until || null, notes: pet.notes.trim(),
+          } : null,
         },
         !knownCustomer && referralCode.trim()
           ? async () => {
@@ -432,6 +450,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           : null
       );
       if (!booking) return; // addBooking already notified the error
+      if (petSalon) {
+        rememberPet(getCurrentSalonId(), { ...pet, species: gender, name: pet.name.trim() });
+        setSavedPets(loadSavedPets(getCurrentSalonId()));
+      }
       setResult(booking);
       if (booking.status === "awaiting_payment") {
         // v2.37: held for an online deposit — straight on to Zarinpal.
@@ -452,7 +474,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   function resetState() {
     setStep(1); setGender(null); setServiceId(null); setStaffId(null); setSelectedSlot(null); setAssignedStaffId(null); setPhone(""); setLookedUp(false);
     setKnownCustomer(false); setKnownCustomerName(""); setLoyaltyDiscountPct(0);
-    setName(""); setReferralCode(""); setResult(null); setCategory("all");
+    setName(""); setReferralCode(""); setResult(null); setCategory("all"); setPet(EMPTY_PET);
     onSectionChange(null);
   }
 
@@ -463,6 +485,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
      re-arms the guard while there's still somewhere to go back to). */
   const stepRef = useRef(step);
   stepRef.current = step;
+  const petFormOpenRef = useRef(false);
+  petFormOpenRef.current = petSalon && step === 1 && !!gender;
   const skipPopRef = useRef(false);
   const hasGuard = () => !!window.history.state?.salonBookingFlow;
 
@@ -487,11 +511,15 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   onPopRef.current = () => {
     if (skipPopRef.current) { skipPopRef.current = false; return; }
     const cur = stepRef.current;
-    if (cur <= 1) return;
+    if (cur <= 1) {
+      // v2.44: back from the pet form returns to dog / cat
+      if (petFormOpenRef.current) { setGender(null); onSectionChange(null); }
+      return;
+    }
     if (cur === 7) { resetState(); return; } // never step back into an already-submitted confirm screen
     const target = cur - 1;
     applyBackStep(target);
-    if (target > 1) window.history.pushState({ salonBookingFlow: true }, "");
+    if (target > 1 || (target === 1 && petSalon)) window.history.pushState({ salonBookingFlow: true }, "");
   };
   useEffect(() => {
     const handler = () => onPopRef.current?.();
@@ -529,19 +557,43 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
       )}
 
       {/* Step 1 — choose section (this is what makes the two salons feel like separate models) */}
-      {step === 1 && (
+      {step === 1 && petSalon && gender && (
+        <PetForm
+          species={gender}
+          pet={pet}
+          onChange={setPet}
+          savedPets={savedPets}
+          requireVaccination={requireVaccination}
+          onBack={() => { if (hasGuard()) window.history.back(); else { setGender(null); onSectionChange(null); } }}
+          onContinue={() => goTo(2)}
+        />
+      )}
+
+      {step === 1 && !(petSalon && gender) && (
         <div>
-          <h2 style={{ fontSize: 18, marginBottom: 4 }}>بخش مورد نظر را انتخاب کنید</h2>
-          <p className="muted" style={{ fontSize: 13, marginBottom: 16 }}>{getSalonName()} دارای دو بخش مجزای زنانه و مردانه است</p>
+          <h2 style={{ fontSize: 18, marginBottom: 4 }}>{petSalon ? "نوبت برای سگ یا گربه؟" : "بخش مورد نظر را انتخاب کنید"}</h2>
+          <p className="muted" style={{ fontSize: 13, marginBottom: 16 }}>
+            {petSalon ? `${getSalonName()} — آرایش و بهداشت سگ و گربه` : `${getSalonName()} دارای دو بخش مجزای زنانه و مردانه است`}
+          </p>
           <div className="flex flex-col gap-3">
-            {["female", "male"].map((g) => {
+            {sectionsFor(businessType).map((g) => {
               const meta = SECTION_META[g];
               const Icon = meta.Icon;
               const count = services.filter((s) => s.is_active && s.gender === g).length;
               return (
                 <button
                   key={g}
-                  onClick={() => { setGender(g); setCategory("all"); goTo(2); onSectionChange(g); }}
+                  onClick={() => {
+                    setCategory("all"); onSectionChange(g);
+                    if (petSalon) {
+                      // the pet form opens inside step 1 — guard the back button for it
+                      if (g !== gender) setPet(EMPTY_PET);
+                      setGender(g);
+                      if (!hasGuard()) window.history.pushState({ salonBookingFlow: true }, "");
+                      return;
+                    }
+                    setGender(g); goTo(2);
+                  }}
                   className="tap card"
                   style={{ padding: 18, display: "flex", alignItems: "center", gap: 14, textAlign: "right", borderColor: "var(--color-border)" }}
                 >
@@ -568,10 +620,13 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             style={{ fontSize: 12.5, fontWeight: 700, color: section.color }}
             onClick={goBack}
           >
-            <section.Icon size={14} /> {section.label} <span className="muted" style={{ fontWeight: 400 }}>· تغییر بخش</span>
+            <section.Icon size={14} /> {petSalon ? `${pet.name.trim()} · ${section.label}، ${PET_SIZE_LABEL[pet.size] || ""}` : section.label}
+            <span className="muted" style={{ fontWeight: 400 }}>· {petSalon ? "ویرایش مشخصات" : "تغییر بخش"}</span>
           </button>
           <h2 style={{ fontSize: 18, marginBottom: 4 }}>انتخاب خدمت</h2>
-          <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>خدمت مورد نظرتان را انتخاب کنید</p>
+          <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>
+            {petSalon ? `قیمت و مدت‌ها برای جثهٔ «${PET_SIZE_LABEL[pet.size] || ""}» محاسبه شده است` : "خدمت مورد نظرتان را انتخاب کنید"}
+          </p>
 
           {categories.length > 2 && (
             <div className="flex gap-2 scrollbar-none mb-3" style={{ overflowX: "auto", paddingBottom: 4 }}>
@@ -944,7 +999,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           <h2 style={{ fontSize: 18, marginBottom: 14 }}>تایید نهایی</h2>
 
           <div className="card" style={{ padding: 16 }}>
-            <Row label="بخش" value={section.label} />
+            {petSalon
+              ? <Row label={section.label} value={`${pet.name.trim()} — ${PET_SIZE_LABEL[pet.size] || ""}${pet.breed.trim() ? `، ${pet.breed.trim()}` : ""}`} />
+              : <Row label="بخش" value={section.label} />}
             <Row label="خدمت" value={service.name} />
             {effectiveStaff && <Row label="آرایشگر" value={effectiveStaff.name} />}
             <Row label="تاریخ" value={jalaliLabel(selectedDate, { short: true })} />
@@ -973,9 +1030,14 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             <Info size={13} style={{ flexShrink: 0 }} />
             تا قبل از نوبت می‌توانید از تب «داشبورد من» آن را لغو یا جابه‌جا کنید.
           </p>
+          {vaccineExpiresBeforeVisit && (
+            <p className="mt-3" role="alert" style={{ fontSize: 12.5, lineHeight: 1.8, color: "var(--color-danger)" }}>
+              واکسن {pet.name.trim()} تا روز نوبت معتبر نیست؛ این سالن فقط حیوانات با واکسن معتبر را می‌پذیرد. تاریخ را در مشخصات حیوان اصلاح کنید یا روز دیگری انتخاب کنید.
+            </p>
+          )}
 
           <div className="sticky-cta mt-5">
-            <button onClick={confirmBooking} disabled={confirming} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: "13px" }}>
+            <button onClick={confirmBooking} disabled={confirming || vaccineExpiresBeforeVisit} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: "13px" }}>
               {confirming && <Loader2 size={15} className="salon-spin" />}
               {confirming ? "در حال ثبت..." : expectedDeposit ? `ثبت و پرداخت بیعانه (${formatToman(expectedDeposit)})` : "ثبت نهایی نوبت"}
             </button>
@@ -1010,6 +1072,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>پیامک تایید ارسال شد</p>
 
           <div className="card mt-4" style={{ padding: 16, textAlign: "right" }}>
+            {petSalon && <Row label={section?.label || "حیوان"} value={pet.name.trim()} />}
             <Row label="خدمت" value={service.name} />
             {result.staff_name && <Row label="آرایشگر" value={result.staff_name} />}
             <Row label="تاریخ" value={jalaliLabel(selectedDate, { short: true })} />

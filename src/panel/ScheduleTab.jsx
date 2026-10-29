@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useData } from "../hooks/useData";
-import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity, CreditCard } from "lucide-react";
+import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity, CreditCard, Syringe } from "lucide-react";
+import { isPetSalon } from "../lib/tenant";
 import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors, fetchPaymentSettings, savePaymentSettings } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey, digitsOnly } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
@@ -141,6 +142,13 @@ function AutomationCard({ automation, onAutomationChange, notify }) {
       on: "صبح‌ها یک پیامک کوتاه: تعداد نوبت‌های روز و فقط مواردی که به شما نیاز دارند.",
       off: "پیامک خلاصه‌ای برای مدیر ارسال نمی‌شود.",
     },
+    // v2.44 pet salons
+    ...(isPetSalon() ? [{
+      key: "pet_require_vaccination", Icon: Syringe,
+      title: "الزام واکسن معتبر",
+      on: "مشتری هنگام رزرو تاریخ اعتبار واکسن را وارد می‌کند و نوبت فقط وقتی ثبت می‌شود که واکسن تا روز نوبت معتبر باشد.",
+      off: "وارد کردن تاریخ واکسن هنگام رزرو اختیاری است.",
+    }] : []),
   ];
   return (
     <div className="card mb-6" style={{ padding: 14 }}>

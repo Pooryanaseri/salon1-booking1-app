@@ -47,7 +47,23 @@ export const DEFAULT_SALON_NAME = import.meta.env.VITE_SALON_NAME || "آرایش
 // renders and never changes afterwards (a different salon means a different
 // URL and a full page load), so a plain module value is enough — same
 // pattern as setCurrentSalonId in supabase.js.
-let currentSalon = { id: "demo", name: DEFAULT_SALON_NAME, slug: "demo" };
+let currentSalon = { id: "demo", name: DEFAULT_SALON_NAME, slug: "demo", business_type: "beauty" };
+
+// v2.44: 'beauty' (female/male sections) or 'pet' (dog/cat grooming).
+// Demo mode: a slug starting with "pet" (e.g. /pets) or VITE_DEMO_BUSINESS_TYPE=pet.
+function demoBusinessType(slug) {
+  const env = import.meta.env.VITE_DEMO_BUSINESS_TYPE;
+  if (env === "pet" || env === "beauty") return env;
+  return slug && slug.startsWith("pet") ? "pet" : "beauty";
+}
+
+/** 'beauty' | 'pet' — the kind of salon this page belongs to. */
+export function getBusinessType() {
+  return currentSalon.business_type === "pet" ? "pet" : "beauty";
+}
+export function isPetSalon() {
+  return getBusinessType() === "pet";
+}
 
 /** The resolved salon's display name, e.g. for the header, SMS and calendar files. */
 export function getSalonName() {
@@ -61,23 +77,28 @@ export function getSalonBookingUrl() {
 }
 
 function setCurrentSalon(salon) {
-  currentSalon = { ...salon, name: (salon.name || "").trim() || DEFAULT_SALON_NAME };
+  currentSalon = { ...salon, name: (salon.name || "").trim() || DEFAULT_SALON_NAME, business_type: salon.business_type === "pet" ? "pet" : "beauty" };
   if (typeof document !== "undefined") document.title = `نوبت‌دهی ${currentSalon.name}`;
 }
 
 export async function resolveSalonFromSlug(slug) {
   if (!SUPABASE_ENABLED) {
-    setCurrentSalon({ id: "demo", name: DEFAULT_SALON_NAME, slug: slug || "demo" });
+    setCurrentSalon({ id: "demo", name: DEFAULT_SALON_NAME, slug: slug || "demo", business_type: demoBusinessType(slug) });
     return { ok: true, salon: currentSalon };
   }
   if (!slug) {
     return { ok: false, error: "آدرس سالن مشخص نیست" };
   }
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("salons")
-    .select("id, name, slug")
+    .select("id, name, slug, business_type")
     .eq("slug", slug)
     .maybeSingle();
+  if (error) {
+    // Database not upgraded to v2.44 yet (no business_type column): every
+    // salon is a beauty salon — keep the page working.
+    ({ data, error } = await supabase.from("salons").select("id, name, slug").eq("slug", slug).maybeSingle());
+  }
   if (error || !data) {
     return { ok: false, error: "سالنی با این آدرس پیدا نشد" };
   }

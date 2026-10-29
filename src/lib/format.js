@@ -37,6 +37,45 @@ export function gregorianToJalali(gy, gm, gd) {
   }
   return { jy, jm, jd };
 }
+// Inverse of gregorianToJalali — returns { gy, gm, gd } (1-based month).
+export function jalaliToGregorian(jy, jm, jd) {
+  jy += 1595;
+  let days = -355668 + 365 * jy + Math.floor(jy / 33) * 8 + Math.floor(((jy % 33) + 3) / 4) + jd
+    + (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
+  let gy = 400 * Math.floor(days / 146097);
+  days %= 146097;
+  if (days > 36524) {
+    gy += 100 * Math.floor(--days / 36524);
+    days %= 36524;
+    if (days >= 365) days++;
+  }
+  gy += 4 * Math.floor(days / 1461);
+  days %= 1461;
+  if (days > 365) {
+    gy += Math.floor((days - 1) / 365);
+    days = (days - 1) % 365;
+  }
+  let gd = days + 1;
+  const monthDays = [31, (gy % 4 === 0 && gy % 100 !== 0) || gy % 400 === 0 ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let gm = 0;
+  while (gm < 12 && gd > monthDays[gm]) gd -= monthDays[gm++];
+  return { gy, gm: gm + 1, gd };
+}
+/** "YYYY-MM-DD" (ISO, what the database takes) for a Jalali date, or "" if it isn't one. */
+export function jalaliToIso(jy, jm, jd) {
+  if (!jy || !jm || !jd || jm < 1 || jm > 12 || jd < 1 || jd > (jm <= 6 ? 31 : 30)) return "";
+  const { gy, gm, gd } = jalaliToGregorian(jy, jm, jd);
+  const back = gregorianToJalali(gy, gm, gd);
+  if (back.jy !== jy || back.jm !== jm || back.jd !== jd) return ""; // e.g. 30 Esfand of a common year
+  return `${gy}-${String(gm).padStart(2, "0")}-${String(gd).padStart(2, "0")}`;
+}
+/** Jalali label ("۱۲ مهر ۱۴۰۵") for an ISO "YYYY-MM-DD", or "" for none. */
+export function isoToJalaliLabel(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || "");
+  if (!m) return "";
+  const { jy, jm, jd } = gregorianToJalali(+m[1], +m[2], +m[3]);
+  return `${toFa(jd)} ${MONTHS_FA[jm - 1]} ${toFa(jy)}`;
+}
 // Just the Jalali day-of-month number for a JS Date — every date-strip/grid in
 // this app is meant to show the Persian calendar day, never the raw Gregorian
 // one (which is what date.getDate() gives you).

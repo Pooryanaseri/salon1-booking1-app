@@ -1,7 +1,7 @@
-import React, { useState } from "react";
-import { CreditCard, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { CreditCard, PawPrint, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { fetchCustomerReferredBy } from "../lib/api";
+import { fetchCustomerReferredBy, fetchPets } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
 import { AIAnalysisTab } from "./AIAnalysisTab";
 import { AccountingTab } from "./AccountingTab";
@@ -9,10 +9,12 @@ import { BITab } from "./BITab";
 import { Badge, DayTimeline, GenderBadge, MenuItem, Modal, PanelSectionHeader, Row, StatCard, Switch } from "../components/ui";
 import { CancelModal, ReferralVerifyModal, RescheduleModal } from "../components/bookingModals";
 import { LoyaltyTab } from "./LoyaltyTab";
-import { SECTION_META, STATUS_META, makeSeedStylist, occupiedEndFor, schemaDayOf } from "../app/shared";
+import { PET_SIZE_LABEL, SECTION_META, STATUS_META, sectionFilters, sectionsFor, staffSectionsFor, makeSeedStylist, occupiedEndFor, schemaDayOf } from "../app/shared";
+import { getBusinessType } from "../lib/tenant";
 import { ScheduleTab } from "./ScheduleTab";
 import { ServicesTab } from "./ServicesTab";
 import { SmsTab } from "./SmsTab";
+import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings } from "./PetsTab";
 
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
@@ -22,11 +24,26 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
   const [pendingSmsSegment, setPendingSmsSegment] = useState(null);
   const currentStylist = stylists.find((s) => s.id === currentStylistId) || null;
 
+  // v2.44 pet salons: profiles of the animals (RLS: a groomer gets those of
+  // their own customers). Demo mode builds them from the bookings.
+  const petSalon = getBusinessType() === "pet";
+  const [pets, setPets] = useState([]);
+  useEffect(() => {
+    if (!petSalon) return;
+    if (!SUPABASE_ENABLED) { setPets(derivePetsFromBookings(bookings)); return; }
+    let alive = true;
+    fetchPets().then((list) => { if (alive) setPets(list); });
+    return () => { alive = false; };
+    // reload when bookings arrive (a new booking can create a profile)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [petSalon, bookings.length]);
+
   // Everyone gets the same tabs — each one shows only what belongs to the logged-in
   // person (their own bookings/revenue/hours). Only staff management is owner-only,
   // since letting a stylist add/remove colleagues doesn't make sense.
   const subTabs = [
     { id: "dashboard", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList, color: "var(--color-tab-book)" },
+    ...(petSalon ? [{ id: "pets", label: "حیوانات", Icon: PawPrint, color: "var(--color-pet-500)" }] : []),
     ...(currentStylist ? [] : [{ id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" }]),
     ...(currentStylist ? [] : [{ id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" }]),
     ...(currentStylist ? [] : [{ id: "staff", label: "آرایشگرها", Icon: Users, color: "var(--color-info)" }]),
@@ -94,7 +111,10 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       </div>
 
       {subTab === "dashboard" && (
-        <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} />
+        <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} pets={pets} setPets={setPets} notify={notify} />
+      )}
+      {subTab === "pets" && petSalon && (
+        <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} />
       )}
       {subTab === "accounting" && !currentStylist && (
         <AccountingTab
@@ -201,7 +221,7 @@ export function StaffTab({ stylists, addStylist, updateStylist, removeStylist, n
       <PanelSectionHeader Icon={Users} title="آرایشگرها" subtitle="افزودن، ویرایش، و مدیریت وضعیت فعال بودن هر آرایشگر" color="var(--color-info)" />
       <div className="flex items-center justify-between mb-3">
         <div className="flex gap-1" style={{ background: "var(--color-surface-raised)", padding: 3, borderRadius: "var(--radius-md)" }}>
-          {[{ v: "all", l: "همه" }, { v: "female", l: "زنانه" }, { v: "male", l: "مردانه" }].map((f) => (
+          {sectionFilters(staffSectionsFor(getBusinessType())).map((f) => (
             <button
               key={f.v}
               onClick={() => setGenderFilter(f.v)}
@@ -281,7 +301,7 @@ export function StaffTab({ stylists, addStylist, updateStylist, removeStylist, n
 
 export function StylistEditModal({ stylist, onClose, onSave }) {
   const [name, setName] = useState(stylist?.name || "");
-  const [gender, setGender] = useState(stylist?.gender || "female");
+  const [gender, setGender] = useState(stylist?.gender || staffSectionsFor(getBusinessType())[0]);
   const [phone, setPhone] = useState(stylist?.phone || "");
   const [password, setPassword] = useState(stylist?.password || "");
   const [reminderHours, setReminderHours] = useState(stylist?.reminder_hours_before ?? 3);
@@ -301,7 +321,7 @@ export function StylistEditModal({ stylist, onClose, onSave }) {
         <div>
           <label className="muted" style={{ fontSize: 12 }}>بخش</label>
           <div className="flex gap-2 mt-1">
-            {["female", "male"].map((g) => {
+            {staffSectionsFor(getBusinessType()).map((g) => {
               const meta = SECTION_META[g];
               const Icon = meta.Icon;
               return (
@@ -376,7 +396,10 @@ export function StylistEditModal({ stylist, onClose, onSave }) {
   );
 }
 
-export function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHours, timeOff, updateBooking, waitlist, removeWaitlistEntry }) {
+export function DashboardTab({ bookings, services, stylists, defaultStaffId, workingHours, timeOff, updateBooking, waitlist, removeWaitlistEntry, pets = [], setPets, notify }) {
+  const [petOpen, setPetOpen] = useState(null);
+  const petOf = (b) => (b.pet_id ? pets.find((p) => p.id === b.pet_id) : null)
+    || pets.find((p) => p.owner_phone === b.customer_phone && p.species === b.customer_gender && p.name === (b.pet_name || "").trim()) || null;
   const [menuFor, setMenuFor] = useState(null);
   const [action, setAction] = useState(null);
   const [verifyAction, setVerifyAction] = useState(null); // { booking } — pending referral-verification prompt
@@ -461,7 +484,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
         </div>
         {!locked && (
           <div className="flex gap-1" style={{ background: "var(--color-surface-raised)", padding: 3, borderRadius: "var(--radius-md)" }}>
-            {[{ v: "all", l: "همه" }, { v: "female", l: "زنانه" }, { v: "male", l: "مردانه" }].map((f) => (
+            {sectionFilters(sectionsFor(getBusinessType())).map((f) => (
               <button
                 key={f.v}
                 onClick={() => setGenderFilter(f.v)}
@@ -574,8 +597,8 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                 end: occupiedEndFor(b),
                 color: STATUS_META[b.status].bg,
                 textColor: STATUS_META[b.status].fg,
-                label: b.customer_name,
-                title: `${b.customer_name} · ${formatClock(b.start_min)}`,
+                label: b.pet_name ? `${b.pet_name} · ${b.customer_name}` : b.customer_name,
+                title: `${b.pet_name ? `${b.pet_name} · ` : ""}${b.customer_name} · ${formatClock(b.start_min)}`,
               }))}
             />
           )}
@@ -614,7 +637,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                 <div className="flex items-start gap-3">
                   <div className="tabular" style={{ textAlign: "center", minWidth: 44 }}>
                     <div style={{ fontWeight: 800, fontSize: 14, color: "var(--color-heading)" }}>{formatClock(b.start_min)}</div>
-                    <div className="muted" style={{ fontSize: 10 }}>{toFa(service?.duration_minutes)} د</div>
+                    <div className="muted" style={{ fontSize: 10 }}>{toFa(b.end_min - b.start_min)} د</div>
                   </div>
                   <div>
                     <div className="flex items-center gap-1.5">
@@ -623,6 +646,16 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                       </span>
                       <GenderBadge gender={b.customer_gender} />
                     </div>
+                    {b.pet_name && (() => {
+                      const pet = petOf(b);
+                      return (
+                        <button type="button" className="tap flex items-center gap-1.5 flex-wrap" onClick={() => pet && setPetOpen(pet)} disabled={!pet}
+                          style={{ fontSize: 12, marginTop: 2, color: "var(--color-pet-500)", fontWeight: 700 }} aria-label={`پروفایل ${b.pet_name}`}>
+                          <PawPrint size={12} /> {b.pet_name}{b.pet_size ? ` · ${PET_SIZE_LABEL[b.pet_size]}` : ""}{pet?.breed ? ` · ${pet.breed}` : ""}
+                          {pet && <TemperamentBadge temperament={pet.temperament} />}
+                        </button>
+                      );
+                    })()}
                     <div className="muted" style={{ fontSize: 12, marginTop: 1, textDecoration: meta.strike ? "line-through" : "none" }}>
                       {service?.name}{b.staff_name ? ` · ${b.staff_name}` : ""}
                     </div>
@@ -704,14 +737,26 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
           timeOff={timeOff}
           onClose={() => setAction(null)}
           onConfirm={(newStart, newDate) => {
-            const svc = services.find((s) => s.id === action.booking.service_id);
+            // the booked length — a pet booking was timed for the animal's size
+            const length = action.booking.end_min - action.booking.start_min;
             updateBooking(
               action.booking.id,
-              { pending_date: newDate, pending_start_min: newStart, pending_end_min: newStart + svc.duration_minutes, status: "reschedule_proposed" },
+              { pending_date: newDate, pending_start_min: newStart, pending_end_min: newStart + length, status: "reschedule_proposed" },
               "پیشنهاد زمان جدید ثبت شد؛ برای تایید نهایی منتظر پاسخ مشتری بمانید"
             );
             setAction(null);
           }}
+        />
+      )}
+      {petOpen && (
+        <PetProfileModal
+          pet={petOpen}
+          bookings={bookings}
+          services={services}
+          ownerName={bookings.find((x) => x.customer_phone === petOpen.owner_phone)?.customer_name}
+          notify={notify || (() => {})}
+          onClose={() => setPetOpen(null)}
+          onSaved={(saved) => setPets?.((list) => list.map((p) => (p.id === saved.id ? saved : p)))}
         />
       )}
       {verifyAction && (

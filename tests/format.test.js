@@ -4,7 +4,7 @@
 // app's real helpers from src/lib/format.js.
 
 import { describe, it, expect } from "vitest";
-import {
+import { jalaliToGregorian, jalaliToIso, isoToJalaliLabel,
   toFa, digitsOnly, normalizeMobile, gregorianToJalali, jalaliLabel,
   formatClock, hhmmToMin, formatToman, dateKey, parseDateKey, isRevenueEligible,
 } from "../src/lib/format.js";
@@ -79,5 +79,25 @@ describe("revenue eligibility", () => {
     expect(isRevenueEligible("completed")).toBe(true);
     expect(isRevenueEligible("confirmed")).toBe(false);
     expect(isRevenueEligible("pending_verification")).toBe(false);
+  });
+});
+
+describe("jalali → gregorian (v2.44 vaccination date)", () => {
+  it("round-trips every day for 11 years and checks known dates", () => {
+    expect(jalaliToGregorian(1405, 1, 1)).toEqual({ gy: 2026, gm: 3, gd: 21 });
+    expect(jalaliToGregorian(1405, 7, 10)).toEqual({ gy: 2026, gm: 10, gd: 2 });
+    const d = new Date(2020, 0, 1);
+    for (let i = 0; i < 4000; i++) {
+      const { jy, jm, jd } = gregorianToJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
+      expect(jalaliToGregorian(jy, jm, jd)).toEqual({ gy: d.getFullYear(), gm: d.getMonth() + 1, gd: d.getDate() });
+      d.setDate(d.getDate() + 1);
+    }
+  });
+  it("ISO conversion rejects dates that don't exist", () => {
+    expect(jalaliToIso(1403, 12, 30)).toBe("2025-03-20"); // leap year
+    expect(jalaliToIso(1404, 12, 30)).toBe("");
+    expect(jalaliToIso(1405, 7, 31)).toBe("");
+    expect(isoToJalaliLabel("2026-10-02")).toBe("۱۰ مهر ۱۴۰۵");
+    expect(isoToJalaliLabel(null)).toBe("");
   });
 });

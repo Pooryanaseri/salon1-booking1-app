@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { Scissors, Palette, Sparkles, Hand, Eye, Droplet, Clock, Check, X, CheckCircle2, XCircle, RotateCcw, CalendarX, Hourglass, Home, Package, Users, Megaphone, Zap, Receipt, CreditCard } from "lucide-react";
+import { Scissors, Palette, Sparkles, Hand, Eye, Droplet, Dog, Cat, PawPrint, Bath, Clock, Check, X, CheckCircle2, XCircle, RotateCcw, CalendarX, Hourglass, Home, Package, Users, Megaphone, Zap, Receipt, CreditCard } from "lucide-react";
 import { syncCollection, syncApprovedDates, saveWorkingHours, clearStaffWorkingHours } from "../lib/api";
 import { formatToman, dateKey } from "../lib/format";
 
@@ -8,17 +8,86 @@ import { formatToman, dateKey } from "../lib/format";
    ============================================================ */
 export const SALON_ABBR = "MN";
 export const SALON_GENDER_TYPE = "both"; // 'male' | 'female' | 'both'
-export const GENDER_TYPE_LABEL = { male: "مردانه", female: "زنانه", both: "زنانه و مردانه" };
+export const GENDER_TYPE_LABEL = { male: "مردانه", female: "زنانه", both: "زنانه و مردانه", dog: "سگ", cat: "گربه", pet: "سگ و گربه" };
 export const LOYALTY_REASON_FA = { visit: "ویزیت تکمیل‌شده", referral: "پاداش معرفی دوست", redeemed: "استفاده از تخفیف" };
 
 // Each customer-facing "section" is modeled independently — its own services, categories and accent tint.
 export const SECTION_META = {
   female: { label: "بخش زنانه", short: "زنانه", Icon: Sparkles, color: "var(--color-female-500)", tint: "var(--color-female-100)" },
   male: { label: "بخش مردانه", short: "مردانه", Icon: Scissors, color: "var(--color-male-500)", tint: "var(--color-male-100)" },
+  // v2.44 pet grooming salons. "pet" is only a groomer's section (serves both).
+  dog: { label: "سگ", short: "سگ", Icon: Dog, color: "var(--color-dog-500)", tint: "var(--color-dog-100)" },
+  cat: { label: "گربه", short: "گربه", Icon: Cat, color: "var(--color-cat-500)", tint: "var(--color-cat-100)" },
+  pet: { label: "سگ و گربه", short: "سگ و گربه", Icon: PawPrint, color: "var(--color-pet-500)", tint: "var(--color-pet-100)" },
 };
 
-export const CATEGORY_LABEL = { hair: "مو", beard: "ریش", color: "رنگ", makeup: "میکاپ", nails: "ناخن", skin: "پوست", permanent_makeup: "خدمات دائم" };
-export const SERVICE_ICONS = { hair: Scissors, beard: Scissors, color: Palette, makeup: Sparkles, nails: Hand, skin: Droplet, permanent_makeup: Eye };
+/* ---- v2.44: salon types ------------------------------------------------ */
+// Customer-facing sections, and the sections a staff member can belong to.
+export const BUSINESS_SECTIONS = { beauty: ["female", "male"], pet: ["dog", "cat"] };
+export const STAFF_SECTIONS = { beauty: ["female", "male"], pet: ["pet", "dog", "cat"] };
+export const sectionsFor = (type) => BUSINESS_SECTIONS[type] || BUSINESS_SECTIONS.beauty;
+export const staffSectionsFor = (type) => STAFF_SECTIONS[type] || STAFF_SECTIONS.beauty;
+/** Does this staff member take bookings in this section? ("pet" groomers do dogs and cats.) */
+export function staffServesSection(stylist, section) {
+  return !!stylist && (stylist.gender === section || (stylist.gender === "pet" && (section === "dog" || section === "cat")));
+}
+export const BUSINESS_TYPE_LABEL = { beauty: "سالن زیبایی", pet: "آرایشگاه حیوانات" };
+/** "همه" + one tab per section, for the panel's filter pills. */
+export function sectionFilters(sections) {
+  return [{ v: "all", l: "همه" }, ...sections.map((g) => ({ v: g, l: SECTION_META[g].short }))];
+}
+
+export const PET_SIZES = [
+  { v: "small", label: "کوچک", hint: "تا ۱۰ کیلو" },
+  { v: "medium", label: "متوسط", hint: "۱۰ تا ۲۵ کیلو" },
+  { v: "large", label: "بزرگ", hint: "۲۵ تا ۴۰ کیلو" },
+  { v: "giant", label: "خیلی بزرگ", hint: "بیش از ۴۰ کیلو" },
+];
+export const PET_SIZE_LABEL = Object.fromEntries(PET_SIZES.map((x) => [x.v, x.label]));
+export const PET_TEMPERAMENTS = [
+  { v: "calm", label: "آرام" },
+  { v: "nervous", label: "مضطرب / ترسو" },
+  { v: "aggressive", label: "پرخاشگر" },
+];
+export const PET_TEMPERAMENT_LABEL = Object.fromEntries(PET_TEMPERAMENTS.map((x) => [x.v, x.label]));
+/** A size from a weight in kg (the form suggests it; the owner can override). */
+export function sizeFromWeight(kg) {
+  const w = Number(kg);
+  if (!Number.isFinite(w) || w <= 0) return null;
+  return w <= 10 ? "small" : w <= 25 ? "medium" : w <= 40 ? "large" : "giant";
+}
+/**
+ * The service as booked for an animal of this size — mirrors the server's
+ * service_at_size(): price/duration from size_pricing when set, otherwise
+ * the service's own. Everything downstream (slots, totals) just uses it.
+ */
+export function sizedService(service, size) {
+  const tier = service && size ? service.size_pricing?.[size] : null;
+  if (!tier || typeof tier !== "object") return service;
+  const price = Number.isFinite(tier.price) && tier.price >= 0 ? Math.round(tier.price) : service.price;
+  const duration = Number.isFinite(tier.duration) && tier.duration >= 5 && tier.duration <= 600 ? Math.round(tier.duration) : service.duration_minutes;
+  return { ...service, price, duration_minutes: duration };
+}
+/** "۳۵۰٬۰۰۰ تا ۸۰۰٬۰۰۰" style range for a size-priced service, or null. */
+export function sizePriceRange(service) {
+  const prices = Object.values(service?.size_pricing || {}).map((t) => t?.price).filter((p) => Number.isFinite(p) && p > 0);
+  if (prices.length === 0) return null;
+  return { min: Math.min(...prices), max: Math.max(...prices) };
+}
+
+export const CATEGORY_LABEL = {
+  hair: "مو", beard: "ریش", color: "رنگ", makeup: "میکاپ", nails: "ناخن", skin: "پوست", permanent_makeup: "خدمات دائم",
+  // v2.44 pet salons
+  bath: "حمام و شستشو", grooming: "اصلاح و آرایش", nails_pet: "ناخن", hygiene: "بهداشتی (گوش، دندان)", spa: "اسپا و ماساژ",
+};
+export const SERVICE_ICONS = {
+  hair: Scissors, beard: Scissors, color: Palette, makeup: Sparkles, nails: Hand, skin: Droplet, permanent_makeup: Eye,
+  bath: Bath, grooming: Scissors, nails_pet: PawPrint, hygiene: Sparkles, spa: Droplet,
+};
+export const CATEGORIES_BY_TYPE = {
+  beauty: ["hair", "beard", "color", "makeup", "nails", "skin", "permanent_makeup"],
+  pet: ["bath", "grooming", "nails_pet", "hygiene", "spa"],
+};
 
 // Business expenses tracked in the accounting tab — categorized so the dashboard can
 // break spending down visually (each category gets its own icon + accent color).
@@ -48,6 +117,23 @@ export const SEED_SERVICES = [
   { id: "m3", name: "پکیج مو و ریش", gender: "male", category: "hair", duration_minutes: 45, price: 270000, is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 0 },
   { id: "m4", name: "رنگ مو و ریش", gender: "male", category: "color", duration_minutes: 40, price: 300000, is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 10 },
   { id: "m5", name: "پاکسازی پوست صورت", gender: "male", category: "skin", duration_minutes: 40, price: 400000, is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 0 },
+];
+
+// Demo menu of a pet salon (the /pets demo) — the same starter menu a new
+// pet salon gets on the server (seed_pet_services).
+const PET_BASE = { is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 0 };
+export const SEED_PET_SERVICES = [
+  { ...PET_BASE, id: "pd1", name: "حمام و سشوار", gender: "dog", category: "bath", duration_minutes: 60, price: 450000,
+    size_pricing: { small: { price: 350000, duration: 45 }, medium: { price: 450000, duration: 60 }, large: { price: 600000, duration: 90 }, giant: { price: 800000, duration: 120 } } },
+  { ...PET_BASE, id: "pd2", name: "اصلاح کامل (حمام + کوتاهی + ناخن)", gender: "dog", category: "grooming", duration_minutes: 120, price: 900000, buffer_minutes: 15,
+    size_pricing: { small: { price: 700000, duration: 90 }, medium: { price: 900000, duration: 120 }, large: { price: 1200000, duration: 150 }, giant: { price: 1500000, duration: 180 } } },
+  { ...PET_BASE, id: "pd3", name: "کوتاهی ناخن", gender: "dog", category: "nails_pet", duration_minutes: 15, price: 150000, size_pricing: {} },
+  { ...PET_BASE, id: "pd4", name: "تمیز کردن گوش و دندان", gender: "dog", category: "hygiene", duration_minutes: 20, price: 200000, size_pricing: {} },
+  { ...PET_BASE, id: "pc1", name: "حمام گربه", gender: "cat", category: "bath", duration_minutes: 60, price: 500000,
+    size_pricing: { small: { price: 450000, duration: 45 }, medium: { price: 500000, duration: 60 }, large: { price: 600000, duration: 75 } } },
+  { ...PET_BASE, id: "pc2", name: "اصلاح کامل گربه", gender: "cat", category: "grooming", duration_minutes: 90, price: 900000,
+    size_pricing: { small: { price: 800000, duration: 75 }, medium: { price: 900000, duration: 90 }, large: { price: 1100000, duration: 105 } } },
+  { ...PET_BASE, id: "pc3", name: "کوتاهی ناخن گربه", gender: "cat", category: "nails_pet", duration_minutes: 15, price: 150000, size_pricing: {} },
 ];
 
 // schema day_of_week: 0=Saturday .. 6=Friday (Iran week)
@@ -187,6 +273,10 @@ export const SEED_STYLISTS = [
   { id: "st1", name: "مهسا کریمی", gender: "female", active: true, phone: "09121110001", password: "1234", reminder_hours_before: 3 },
   { id: "st2", name: "نیلوفر صادقی", gender: "female", active: true, phone: "09121110002", password: "1234", reminder_hours_before: 3 },
   { id: "st3", name: "رضا احمدی", gender: "male", active: true, phone: "09121110003", password: "1234", reminder_hours_before: 3 },
+];
+export const SEED_PET_STYLISTS = [
+  { id: "st1", name: "سمیرا نادری", gender: "pet", active: true, phone: "09121110001", password: "1234", reminder_hours_before: 3 },
+  { id: "st2", name: "کاوه رحیمی", gender: "dog", active: true, phone: "09121110002", password: "1234", reminder_hours_before: 3 },
 ];
 export function makeSeedStylist(overrides) {
   return { id: uid(), name: "", gender: "female", active: true, phone: "", password: "", reminder_hours_before: 3, ...overrides };
