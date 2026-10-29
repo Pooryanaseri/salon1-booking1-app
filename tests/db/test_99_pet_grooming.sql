@@ -15,7 +15,7 @@ select tst.ok(exists (select 1 from public.admin_list_salons() where slug = 'tst
 reset role;
 
 select id as pet_salon from public.salons where slug = 'tst-pets' \gset
-select tst.ok((select count(*) from public.services where salon_id = :'pet_salon') = 7, 'starter dog/cat menu seeded');
+select tst.ok((select count(*) from public.services where salon_id = :'pet_salon') = 12, 'starter dog/cat menu seeded (v2.45 menu)');
 select tst.ok((select bool_and(gender in ('dog', 'cat')) from public.services where salon_id = :'pet_salon'), 'starter services are dog/cat');
 select tst.ok(not exists (select 1 from public.services s join public.salons x on x.id = s.salon_id where x.slug = 'tst-pets2'), 'beauty salon gets no pet menu');
 select tst.ok(public.salon_sections(:'pet_salon') = array['dog', 'cat'], 'pet sections');
@@ -43,7 +43,7 @@ select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.sal
 select public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'dog', null,
   '{"name":" پاپی ","size":"large","breed":"گلدن","temperament":"aggressive","weight_kg":"32","notes":"به سشوار حساس است"}') as b1 \gset
 select tst.ok((:'b1'::json ->> 'ok')::boolean, 'dog booked');
-select tst.ok((:'b1'::json ->> 'final_price')::bigint = 600000, 'priced for a large dog');
+select tst.ok((:'b1'::json ->> 'final_price')::bigint = 1800000, 'priced for a large dog');
 -- the same slot cannot be taken for a smaller dog either: 19:30 + 90 min is past closing
 select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 3, 1140, 'علی', '09351117777', 'dog', null, '{"name":"پاپی","size":"large"}') ->> 'error' = 'خارج از ساعات کاری است', 'large-dog duration checked against closing time');
 select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 3, 1140, 'علی', '09351117777', 'dog', null, '{"name":"کوچولو","size":"small"}') ->> 'ok' = 'true', 'small dog fits (45 min)');
@@ -71,7 +71,7 @@ select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.sal
 select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.salon_today() + 5, 600, 'مینا', '09351118888', 'cat', null,
   json_build_object('name', 'ملوس', 'size', 'small', 'vaccine_valid_until', public.salon_today() + 4)::jsonb) ->> 'ok' = 'false', 'vaccination expiring before the visit refused');
 select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.salon_today() + 5, 600, 'مینا', '09351118888', 'cat', null,
-  json_build_object('name', 'ملوس', 'size', 'small', 'vaccine_valid_until', public.salon_today() + 200)::jsonb) ->> 'final_price' = '450000', 'valid vaccination: small cat booked');
+  json_build_object('name', 'ملوس', 'size', 'small', 'vaccine_valid_until', public.salon_today() + 200)::jsonb) ->> 'final_price' = '800000', 'valid vaccination: cat booked');
 reset role;
 update public.app_settings set pet_require_vaccination = false where salon_id = :'pet_salon';
 
@@ -95,7 +95,7 @@ reset role;
 set role anon;
 select public.create_booking_from_rebooking_token(:'rtok', public.salon_today() + 8, 600) as rb \gset
 reset role;
-select tst.ok((:'rb'::json ->> 'final_price')::bigint = 450000, 'link booking priced for the pet''s current (medium) size');
+select tst.ok((:'rb'::json ->> 'final_price')::bigint = 700000, 'link booking priced for the pet''s current (medium) size');
 select tst.ok((select pet_name = 'پاپی' and end_min - start_min = 60 from public.appointments where id = :'rb'::json ->> 'id'), 'link booking carries the pet and its duration');
 
 -- ---- beauty salons are unchanged; pets stay inside their salon ---------------
@@ -118,11 +118,11 @@ select tst.as_user('aaaaaaaa-0000-0000-0000-000000000001', '09120001111@salon.lo
 select tst.ok(public.admin_update_salon(:'pet_salon', p_business_type => 'beauty') ->> 'ok' = 'false', 'salon with bookings keeps its type');
 select tst.ok(public.admin_update_salon((select id from public.salons where slug = 'tst-pets2'), p_business_type => 'pet') ->> 'ok' = 'true', 'unused salon switches type');
 reset role;
-select tst.ok((select count(*) from public.services s join public.salons x on x.id = s.salon_id where x.slug = 'tst-pets2' and s.gender in ('dog', 'cat')) = 7, 'switch seeds the pet menu');
+select tst.ok((select count(*) from public.services s join public.salons x on x.id = s.salon_id where x.slug = 'tst-pets2' and s.gender in ('dog', 'cat')) = 12, 'switch seeds the pet menu');
 
 -- ---- service_at_size --------------------------------------------------------
-select tst.ok((select (public.service_at_size(s, 'giant')).duration_minutes = 120 and (public.service_at_size(s, null)).price = 450000
-                 and (public.service_at_size(s, 'small')).price = 350000
+select tst.ok((select (public.service_at_size(s, 'giant')).duration_minutes = 90 and (public.service_at_size(s, null)).price = 1800000
+                 and (public.service_at_size(s, 'small')).price = 500000 and (public.service_at_size(s, 'small')).duration_minutes = 45
                from public.services s where id = :'bath'), 'size tiers and fallback');
 select tst.ok((select (public.service_at_size(s, 'giant')).price = s.price from public.services s where id = :'nails'), 'no tier: base price');
 
