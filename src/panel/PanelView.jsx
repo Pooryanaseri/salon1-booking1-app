@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { CreditCard, PawPrint, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck } from "lucide-react";
+import { CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { fetchCustomerReferredBy, fetchPets } from "../lib/api";
+import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
 import { AIAnalysisTab } from "./AIAnalysisTab";
 import { AccountingTab } from "./AccountingTab";
@@ -14,6 +14,7 @@ import { getBusinessType } from "../lib/tenant";
 import { ScheduleTab } from "./ScheduleTab";
 import { ServicesTab } from "./ServicesTab";
 import { SmsTab } from "./SmsTab";
+import { QuotesTab } from "./QuotesTab";
 import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
 
 /* ============================================================
@@ -38,11 +39,19 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [petSalon, bookings.length]);
 
+  // v2.46: open price requests (badge on the tab)
+  const [quotesPending, setQuotesPending] = useState(0);
+  useEffect(() => {
+    if (!petSalon) return;
+    fetchQuotes().then((list) => setQuotesPending(list.filter((q) => q.status === "pending").length));
+  }, [petSalon, subTab]);
+
   // Everyone gets the same tabs — each one shows only what belongs to the logged-in
   // person (their own bookings/revenue/hours). Only staff management is owner-only,
   // since letting a stylist add/remove colleagues doesn't make sense.
   const subTabs = [
     { id: "dashboard", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList, color: "var(--color-tab-book)" },
+    ...(petSalon ? [{ id: "quotes", label: quotesPending ? `استعلام قیمت (${toFa(quotesPending)})` : "استعلام قیمت", Icon: QuoteIcon, color: "var(--color-pet-500)" }] : []),
     ...(petSalon ? [{ id: "pets", label: "حیوانات", Icon: PawPrint, color: "var(--color-pet-500)" }] : []),
     ...(currentStylist ? [] : [{ id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" }]),
     ...(currentStylist ? [] : [{ id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" }]),
@@ -112,6 +121,9 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
 
       {subTab === "dashboard" && (
         <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} pets={pets} setPets={setPets} notify={notify} automation={automation} />
+      )}
+      {subTab === "quotes" && petSalon && (
+        <QuotesTab services={services} stylists={stylists} pets={pets} automation={automation} notify={notify} onPendingChange={setQuotesPending} />
       )}
       {subTab === "pets" && petSalon && (
         <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} />
@@ -665,7 +677,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                       );
                     })()}
                     <div className="muted" style={{ fontSize: 12, marginTop: 1, textDecoration: meta.strike ? "line-through" : "none" }}>
-                      {service?.name}{b.staff_name ? ` · ${b.staff_name}` : ""}
+                      {b.services_label || service?.name}{b.staff_name ? ` · ${b.staff_name}` : ""}
                     </div>
                     {(b.extra_charges || []).length > 0 && (
                       <div className="muted tabular" style={{ fontSize: 11, marginTop: 1 }}>

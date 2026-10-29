@@ -109,6 +109,7 @@ export default function BookingRecoveryPage({ token }) {
           <CheckCircle2 size={52} color="#4caf7d" style={{ margin: "0 auto 14px" }} />
           <h2 style={{ fontSize: 18, marginBottom: 6 }}>نوبت شما تایید شد!</h2>
           <p style={{ fontSize: 13.5, color: "#555" }}>کد پیگیری: {result?.tracking_code}</p>
+          {result?.final_price != null && <p style={{ fontSize: 13, color: "#555", marginTop: 4 }}>مبلغ: {toFa(Number(result.final_price).toLocaleString("en-US"))} تومان</p>}
         </div>
       </div>
     );
@@ -124,6 +125,21 @@ export default function BookingRecoveryPage({ token }) {
         <p style={{ fontSize: 12.5, color: "#888" }}>
           {offer?.salon_name} · {offer?.service_name}{offer?.staff_name ? ` · ${offer.staff_name}` : ""}
         </p>
+        {offer?.is_quote && (
+          <div style={{ marginTop: 10, padding: 12, borderRadius: 12, background: "#f6efe8" }}>
+            <p style={{ fontSize: 12, color: "#8a6a4b", fontWeight: 700 }}>پیشنهاد قیمت سالن{offer.pet_name ? ` برای ${offer.pet_name}` : ""}</p>
+            <p style={{ fontSize: 18, fontWeight: 800, marginTop: 4 }}>
+              {offer.price != null ? `${toFa(Number(offer.price).toLocaleString("en-US"))} تومان` : "قیمت در سالن"}
+              {offer.duration ? <span style={{ fontSize: 12.5, fontWeight: 400, color: "#777" }}> · حدود {toFa(offer.duration)} دقیقه</span> : null}
+            </p>
+            {offer.quote_note && <p style={{ fontSize: 12.5, color: "#555", marginTop: 4, lineHeight: 1.8 }}>{offer.quote_note}</p>}
+            {offer.quote_expires_at && (
+              <p style={{ fontSize: 11.5, color: "#999", marginTop: 4 }}>
+                این قیمت تا {new Date(offer.quote_expires_at).toLocaleDateString("fa-IR", { day: "numeric", month: "long" })} معتبر است
+              </p>
+            )}
+          </div>
+        )}
         {offer?.reason === "waitlist" && (
           <p style={{ fontSize: 13, color: "#3a8f5c", fontWeight: 700, marginTop: 8 }}>
             نوبتی که منتظرش بودید خالی شد — هر کس زودتر رزرو کند، نوبت مال اوست.

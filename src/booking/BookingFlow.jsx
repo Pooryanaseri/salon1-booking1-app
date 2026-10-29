@@ -7,6 +7,7 @@ import { WEEKDAYS_FA_FULL, toFa, normalizeMobile, formatToman, jalaliLabel, form
 import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, PET_SIZE_LABEL, SECTION_META, SERVICE_ICONS, extraChargesTotal, petService, petSurcharge, pricedBreeds, sectionsFor, staffServesSection, discountAmountFor, finalPriceFor, fitsWithoutOverlap, hasPrice, isOccupied, occupiedEndFor, priceLabel, schemaDayOf, uid } from "../app/shared";
 import { DateStrip, Row } from "../components/ui";
 import { PetForm, EMPTY_PET, loadSavedPets, rememberPet } from "./PetForm";
+import { QuoteContactForm, QuoteSent, QuoteServicePicker } from "./QuoteRequest";
 
 /* ============================================================
    Booking flow (customer) — gender section chosen first, each
@@ -145,6 +146,11 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const requireVaccination = petSalon && !!automation?.pet_require_vaccination;
   const forPet = (s) => (petSalon ? petService(s, pet.size, pet.breed) : s);
   const surchargePct = petSalon ? automation?.pet_aggressive_surcharge_percent || 0 : 0;
+  // v2.46: 'all' — every pet visit is priced by the groomer first; 'unpriced'
+  // — only services with no price for this animal. Steps 20/21 = quote form/sent.
+  const quoteMode = petSalon ? automation?.pet_quote_mode || "off" : "off";
+  const [quoteIds, setQuoteIds] = useState([]);
+  const [quoteDemo, setQuoteDemo] = useState(false);
 
   // v2.45: add-ons (e.g. detangling) are added by staff at checkout, not booked online
   const sectionServices = services.filter((s) => s.is_active && !s.is_addon && s.gender === gender).map(forPet);
@@ -481,7 +487,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   function resetState() {
     setStep(1); setGender(null); setServiceId(null); setStaffId(null); setSelectedSlot(null); setAssignedStaffId(null); setPhone(""); setLookedUp(false);
     setKnownCustomer(false); setKnownCustomerName(""); setLoyaltyDiscountPct(0);
-    setName(""); setReferralCode(""); setResult(null); setCategory("all"); setPet(EMPTY_PET);
+    setName(""); setReferralCode(""); setResult(null); setCategory("all"); setPet(EMPTY_PET); setQuoteIds([]);
     onSectionChange(null);
   }
 
@@ -505,8 +511,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     if (n >= 2 && !hasGuard()) window.history.pushState({ salonBookingFlow: true }, "");
     setStep(n);
   }
+  // the quote form (20) goes back to the services (2)
+  const prevStep = (cur) => (cur === 20 ? 2 : cur - 1);
   function goBack() {
-    const target = step - 1;
+    const target = prevStep(step);
     if (target <= 1 && hasGuard()) { window.history.back(); return; } // popstate handler applies it
     applyBackStep(target);
   }
@@ -523,8 +531,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
       if (petFormOpenRef.current) { setGender(null); onSectionChange(null); }
       return;
     }
-    if (cur === 7) { resetState(); return; } // never step back into an already-submitted confirm screen
-    const target = cur - 1;
+    if (cur === 7 || cur === 21) { resetState(); return; } // never step back into an already-submitted screen
+    const target = prevStep(cur);
     applyBackStep(target);
     if (target > 1 || (target === 1 && petSalon)) window.history.pushState({ salonBookingFlow: true }, "");
   };
@@ -622,8 +630,37 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
         </div>
       )}
 
+      {step === 2 && section && quoteMode === "all" && (
+        <QuoteServicePicker
+          services={sectionServices}
+          section={section}
+          pet={pet}
+          selected={quoteIds}
+          onToggle={(id) => setQuoteIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].slice(0, 6)))}
+          onBack={goBack}
+          onContinue={() => goTo(20)}
+        />
+      )}
+      {step === 20 && section && (
+        <QuoteContactForm
+          species={gender}
+          pet={pet}
+          section={section}
+          services={sectionServices.filter((s) => quoteIds.includes(s.id))}
+          onBack={goBack}
+          onSent={({ phone: p }) => {
+            rememberPet(getCurrentSalonId(), { ...pet, species: gender, name: pet.name.trim() });
+            setSavedPets(loadSavedPets(getCurrentSalonId()));
+            setPhone(p); setQuoteDemo(!SUPABASE_ENABLED); goTo(21);
+          }}
+        />
+      )}
+      {step === 21 && (
+        <QuoteSent petName={pet.name.trim()} demo={quoteDemo} onNew={reset} onTrack={onTrack ? () => onTrack(phone) : null} />
+      )}
+
       {/* Step 2 — service selection, scoped to the chosen section */}
-      {step === 2 && section && (
+      {step === 2 && section && quoteMode !== "all" && (
         <div>
           <button
             className="flex items-center gap-1.5 mb-3"
@@ -666,7 +703,11 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               return (
                 <button
                   key={s.id}
-                  onClick={() => { setServiceId(s.id); setStaffId(null); goTo(3); }}
+                  onClick={() => {
+                    // v2.46: no price for this animal → ask the groomer for one
+                    if (quoteMode === "unpriced" && !hasPrice(s)) { setQuoteIds([s.id]); goTo(20); return; }
+                    setServiceId(s.id); setStaffId(null); goTo(3);
+                  }}
                   className="tap card"
                   style={{ padding: 14, display: "flex", alignItems: "center", gap: 12, textAlign: "right" }}
                 >
@@ -681,7 +722,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                     <div className="muted tabular" style={{ fontSize: 12, marginTop: 2 }}>
                       {toFa(s.duration_minutes)} دقیقه
                       {!hasPrice(s) ? (
-                        <> · {priceLabel(s)}</>
+                        <> · {quoteMode === "unpriced" ? <b style={{ color: section.color }}>استعلام قیمت از آرایشگر</b> : priceLabel(s)}</>
                       ) : dAmt > 0 ? (
                         <>
                           {" · "}<span style={{ textDecoration: "line-through" }}>{formatToman(s.price)}</span>{" "}

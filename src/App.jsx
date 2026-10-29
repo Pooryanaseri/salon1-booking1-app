@@ -159,7 +159,8 @@ export default function App() {
 
   // v2.28 per-salon automation switches (auto-confirm, rolling booking
   // window, morning digests). Demo mode runs with the defaults.
-  const [automation, setAutomation] = useState(DEFAULT_AUTOMATION);
+  // the demo pet salon shows the v2.46 quote flow (real salons load their setting)
+  const [automation, setAutomation] = useState(() => (!SUPABASE_ENABLED && isPetSalon() ? { ...DEFAULT_AUTOMATION, pet_quote_mode: "all" } : DEFAULT_AUTOMATION));
   // v2.37 online deposit terms ({enabled, percent, min_price}); off in demo.
   const [depositTerms, setDepositTerms] = useState({ enabled: false, percent: 0, min_price: 0 });
   const automationRef = useRef(automation);

@@ -200,6 +200,22 @@ function PetPricingSettings({ automation, save, saving }) {
   return (
     <div style={{ padding: "10px 0", borderTop: "1px solid var(--color-border)" }}>
       <div style={{ fontSize: 13, fontWeight: 700, color: "var(--color-heading)" }}>تعرفهٔ حیوانات</div>
+      <label className="flex items-center gap-2 mt-2 muted" style={{ fontSize: 11.5, flexWrap: "wrap" }}>
+        قیمت‌گذاری:
+        <select value={automation.pet_quote_mode || "off"} disabled={saving != null} onChange={(e) => save("pet_quote_mode", e.target.value)} style={sel}>
+          <option value="all">همهٔ نوبت‌ها با استعلام قیمت از آرایشگر</option>
+          <option value="unpriced">استعلام فقط برای خدمات بدون قیمت</option>
+          <option value="off">رزرو مستقیم با قیمت ثابت</option>
+        </select>
+      </label>
+      {automation.pet_quote_mode !== "off" && (
+        <label className="flex items-center gap-2 mt-2 muted" style={{ fontSize: 11.5 }}>
+          اعتبار قیمت پیشنهادی:
+          <select value={automation.pet_quote_valid_days || 3} disabled={saving != null} onChange={(e) => save("pet_quote_valid_days", Number(e.target.value))} style={sel}>
+            {[1, 2, 3, 5, 7, 14].map((n) => <option key={n} value={n}>{toFa(n)} روز</option>)}
+          </select>
+        </label>
+      )}
       <label className="flex items-center gap-2 mt-2 muted" style={{ fontSize: 11.5 }}>
         افزایش قیمت برای حیوان پرخاشگر:
         <select value={automation.pet_aggressive_surcharge_percent || 0} disabled={saving != null}

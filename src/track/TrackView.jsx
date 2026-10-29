@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo } from "react";
 import { Clock, Percent, Copy, TrendingUp, TrendingDown, ChevronLeft, CalendarCheck, UserPlus, Award, Crown, LayoutDashboard } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, revokeBookingToken, requestBookingOtpTestMode, fetchMyLoyaltyWithToken } from "../lib/api";
+import { fetchMyQuotes, verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, revokeBookingToken, requestBookingOtpTestMode, fetchMyLoyaltyWithToken } from "../lib/api";
 import { requestBookingOtp } from "../lib/sms";
 import { toFa, digitsOnly, normalizeMobile, formatToman, jalaliLabel, formatClock, parseDateKey } from "../lib/format";
 import { Badge, Row } from "../components/ui";
 import { CancelModal, RescheduleModal } from "../components/bookingModals";
 import { LOYALTY_REASON_FA, PET_SIZE_LABEL, extraChargesTotal, sizedService } from "../app/shared";
+import { MyQuotes } from "./MyQuotes";
 
 /* ============================================================
    Track view (public, restricted fields only)
@@ -168,7 +169,17 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
     return () => { cancelled = true; };
   }, [searched, accessToken]);
 
-  const hasAnything = matches.length > 0 || loyalty?.found;
+  // v2.46: price quotes (pet salons)
+  const [quotes, setQuotes] = useState([]);
+  const [quotesTick, setQuotesTick] = useState(0);
+  useEffect(() => {
+    if (!searched || !accessToken || !SUPABASE_ENABLED) { setQuotes([]); return; }
+    let cancelled = false;
+    fetchMyQuotes(accessToken).then((list) => { if (!cancelled) setQuotes(list); });
+    return () => { cancelled = true; };
+  }, [searched, accessToken, quotesTick]);
+
+  const hasAnything = matches.length > 0 || loyalty?.found || quotes.length > 0;
 
   return (
     <div className="fade-in">
@@ -268,6 +279,10 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
         <div className="card fade-in mt-4" style={{ padding: 20, textAlign: "center" }}>
           <p className="muted" style={{ fontSize: 13 }}>نوبتی با این شماره پیدا نشد</p>
         </div>
+      )}
+
+      {searched && quotes.length > 0 && (
+        <MyQuotes quotes={quotes} token={accessToken} notify={notify} onChanged={() => setQuotesTick((t) => t + 1)} />
       )}
 
       {searched && hasAnything && (
@@ -372,7 +387,7 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
                 return (
                   <div key={b.id} className="card fade-in" style={{ padding: 16 }}>
                     <div className="flex items-center justify-between mb-3">
-                      <h3 style={{ fontSize: 15 }}>{service.name}</h3>
+                      <h3 style={{ fontSize: 15 }}>{b.services_label || service.name}</h3>
                       <Badge status={b.status} />
                     </div>
                     {b.pet_name && <Row label={b.customer_gender === "cat" ? "گربه" : "سگ"} value={`${b.pet_name}${b.pet_size ? ` (${PET_SIZE_LABEL[b.pet_size]})` : ""}`} />}

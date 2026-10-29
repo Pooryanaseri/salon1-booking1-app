@@ -115,6 +115,8 @@ const map = {
       pet_name: r.pet_name ?? null,   // the size the booking was priced for
       pet_size: r.pet_size ?? null,
       extra_charges: Array.isArray(r.extra_charges) ? r.extra_charges : [], // v2.45: [{label, amount}], in final_price
+      quote_id: r.quote_id ?? null,            // v2.46: booked from a price quote
+      services_label: r.services_label ?? null, // v2.46: the quoted services
       created_at: ms(r.created_at),
     }),
     toRow: (b) => {
@@ -795,14 +797,17 @@ export const DEFAULT_AUTOMATION = {
   pet_require_vaccination: false, // v2.44 — pet salons: booking needs a vaccination valid on the visit day
   pet_size_limits: [5, 15, 30],    // v2.45 — kg upper bounds of small / medium / large
   pet_aggressive_surcharge_percent: 0, // v2.45
+  pet_quote_mode: "off",          // v2.46 — 'all' | 'unpriced' | 'off' (read from the database for pet salons)
+  pet_quote_valid_days: 3,        // v2.46
 };
 // The pet columns are read separately (pet salons only), so a database that
 // hasn't run v2.44/v2.45 yet still loads every other setting.
-const PET_SETTING_KEYS = ["pet_require_vaccination", "pet_size_limits", "pet_aggressive_surcharge_percent"];
+const PET_SETTING_KEYS = ["pet_require_vaccination", "pet_size_limits", "pet_aggressive_surcharge_percent", "pet_quote_mode", "pet_quote_valid_days"];
 const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).filter((k) => !PET_SETTING_KEYS.includes(k)).join(", ");
 
 export async function fetchAutomationSettings() {
-  if (!SUPABASE_ENABLED) return { ...DEFAULT_AUTOMATION };
+  // v2.46: the demo pet salon shows the quote flow
+  if (!SUPABASE_ENABLED) return { ...DEFAULT_AUTOMATION, ...(isPetSalon() ? { pet_quote_mode: "all" } : {}) };
   const { data, error } = await supabase.from("app_settings").select(AUTOMATION_COLUMNS).eq("salon_id", getCurrentSalonId()).maybeSingle();
   // Before v2.28 is applied these columns don't exist yet — fall back to the
   // old manual behavior rather than claiming automation that isn't running.
@@ -812,11 +817,17 @@ export async function fetchAutomationSettings() {
   }
   const out = { ...DEFAULT_AUTOMATION, ...data };
   if (isPetSalon()) {
-    let { data: pet, error: petErr } = await supabase.from("app_settings").select(PET_SETTING_KEYS.join(", ")).eq("salon_id", getCurrentSalonId()).maybeSingle();
-    if (petErr) ({ data: pet } = await supabase.from("app_settings").select("pet_require_vaccination").eq("salon_id", getCurrentSalonId()).maybeSingle()); // before v2.45
+    // newest first; an older database lacks the later columns
+    let pet = null;
+    for (const keys of [PET_SETTING_KEYS, PET_SETTING_KEYS.slice(0, 3), PET_SETTING_KEYS.slice(0, 1)]) {
+      const { data: row, error: petErr } = await supabase.from("app_settings").select(keys.join(", ")).eq("salon_id", getCurrentSalonId()).maybeSingle();
+      if (!petErr) { pet = row; break; }
+    }
     out.pet_require_vaccination = !!pet?.pet_require_vaccination;
     if (Array.isArray(pet?.pet_size_limits) && pet.pet_size_limits.length === 3) out.pet_size_limits = pet.pet_size_limits.map(Number);
     if (Number.isFinite(pet?.pet_aggressive_surcharge_percent)) out.pet_aggressive_surcharge_percent = pet.pet_aggressive_surcharge_percent;
+    if (["all", "unpriced", "off"].includes(pet?.pet_quote_mode)) out.pet_quote_mode = pet.pet_quote_mode;
+    if (Number.isFinite(pet?.pet_quote_valid_days)) out.pet_quote_valid_days = pet.pet_quote_valid_days;
   }
   return out;
 }
@@ -1216,4 +1227,81 @@ export async function fetchRecentCampaignPhones(days = 14) {
   const { data, error } = await fetchAllPages(() => supabase.rpc("recent_campaign_phones", { p_days: days }).order("phone"));
   if (error) { fail("recent_campaign_phones", error); return new Set(); }
   return new Set((data || []).map((r) => r.phone));
+}
+
+/* ------------------------------------------------ v2.46: price quotes ---- */
+// Demo mode keeps quotes in memory so the whole flow can be tried out.
+const demoQuotes = [];
+const demoId = () => `demo-q-${Math.random().toString(36).slice(2, 10)}`;
+
+/** Customer: ask the salon for a price. → {ok, id} | {ok:false, error} */
+export async function requestQuote({ name, phone, species, pet, serviceIds, servicesLabel, note, preferredTime }) {
+  if (!SUPABASE_ENABLED) {
+    demoQuotes.unshift({
+      id: demoId(), customer_phone: phone, customer_name: name || "مشتری", pet_name: pet.name, pet_species: species, pet_size: pet.size,
+      service_ids: serviceIds, services_label: servicesLabel, customer_note: note || "", preferred_time: preferredTime || "",
+      status: "pending", created_at: new Date().toISOString(), demoPet: pet,
+    });
+    return { ok: true, demo: true };
+  }
+  const { data, error } = await supabase.rpc("request_quote", {
+    p_customer_name: name || "", p_customer_phone: phone, p_species: species, p_pet: pet,
+    p_service_ids: serviceIds, p_note: note || "", p_preferred_time: preferredTime || "",
+  });
+  if (error) { fail("request_quote", error); return { ok: false, error: "ثبت درخواست ناموفق بود" }; }
+  return data;
+}
+
+/** Staff: the salon's quote requests, newest first. */
+export async function fetchQuotes() {
+  if (!SUPABASE_ENABLED) return demoQuotes.map((q) => ({ ...q }));
+  const { data, error } = await supabase.from("quote_requests").select("*")
+    .gte("created_at", new Date(Date.now() - 60 * 86400000).toISOString())
+    .order("created_at", { ascending: false }).limit(300);
+  if (error) { fail("quote_requests", error); return []; }
+  return data || [];
+}
+
+export async function sendQuote(id, { price, duration, staffId, note }) {
+  if (!SUPABASE_ENABLED) {
+    const q = demoQuotes.find((x) => x.id === id);
+    if (q) Object.assign(q, { status: "quoted", quoted_price: price, quoted_duration: duration, quoted_staff_id: staffId || null, quote_note: note || "",
+      quoted_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3 * 86400000).toISOString() });
+    return { ok: true, demo: true };
+  }
+  const { data, error } = await supabase.rpc("send_quote", { p_id: id, p_price: price, p_duration: duration, p_staff_id: staffId || null, p_note: note || "" });
+  if (error) { fail("send_quote", error); return { ok: false, error: "ارسال قیمت ناموفق بود" }; }
+  return data;
+}
+
+export async function declineQuote(id, reason) {
+  if (!SUPABASE_ENABLED) {
+    const q = demoQuotes.find((x) => x.id === id);
+    if (q) Object.assign(q, { status: "declined", quote_note: reason || "" });
+    return { ok: true, demo: true };
+  }
+  const { data, error } = await supabase.rpc("decline_quote", { p_id: id, p_reason: reason || "" });
+  if (error) { fail("decline_quote", error); return { ok: false, error: "ثبت ناموفق بود" }; }
+  return data;
+}
+
+/** Customer dashboard (OTP token): their quotes. */
+export async function fetchMyQuotes(token) {
+  if (!SUPABASE_ENABLED || !token) return [];
+  const { data, error } = await supabase.rpc("my_quotes_with_token", { p_token: token });
+  if (error) { fail("my_quotes_with_token", error); return []; }
+  return Array.isArray(data) ? data : [];
+}
+/** A fresh booking link for a quoted price → {ok, token}. */
+export async function myQuoteLink(token, quoteId) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("my_quote_link", { p_token: token, p_quote_id: quoteId });
+  if (error) { fail("my_quote_link", error); return { ok: false, error: "ساخت لینک ناموفق بود" }; }
+  return data;
+}
+export async function cancelMyQuote(token, quoteId) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("cancel_my_quote", { p_token: token, p_quote_id: quoteId });
+  if (error) { fail("cancel_my_quote", error); return { ok: false, error: "لغو ناموفق بود" }; }
+  return data;
 }
