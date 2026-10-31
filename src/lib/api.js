@@ -78,11 +78,16 @@ const map = {
       active: r.active,
       reminder_hours_before: r.reminder_hours_before ?? 3,
       self_registered: !!r.self_registered, // v2.35: signed up themselves, waits for approval while inactive
+      commission_pct: r.commission_pct ?? 0,                 // v2.50
+      package_commission_pct: r.package_commission_pct ?? 0,
     }),
     toRow: (s) => ({
       id: s.id, name: s.name ?? "", gender: s.gender ?? "female", phone: s.phone ?? "",
       active: s.active ?? true,
       reminder_hours_before: s.reminder_hours_before ?? 3,
+      // only sent when set, so a database without v2.50 still saves stylists
+      ...(s.commission_pct != null ? { commission_pct: s.commission_pct } : {}),
+      ...(s.package_commission_pct != null ? { package_commission_pct: s.package_commission_pct } : {}),
     }),
   },
 
@@ -121,6 +126,10 @@ const map = {
       transport_address: r.transport_address ?? null, // v2.49: pick-up & drop-off
       transport_fee: r.transport_fee == null ? null : Number(r.transport_fee),
       package_purchase_id: r.package_purchase_id ?? null, // v2.49: paid from a prepaid package
+      checked_in_at: r.checked_in_at ?? null,           // v2.51: QR check-in
+      coupon_code: r.coupon_code ?? null,               // v2.50
+      coupon_discount: r.coupon_discount == null ? null : Number(r.coupon_discount),
+      gift_card_amount: r.gift_card_amount == null ? null : Number(r.gift_card_amount),
       created_at: ms(r.created_at),
     }),
     toRow: (b) => {
@@ -622,7 +631,7 @@ export async function fetchPets() {
   return (data || []).map((p) => ({ ...p, weight_kg: p.weight_kg == null ? null : Number(p.weight_kg) }));
 }
 
-const PET_EDITABLE = ["name", "breed", "size", "weight_kg", "temperament", "vaccine_valid_until", "owner_notes", "grooming_notes", "birth_date", "groom_every_days", "vaccine_card_path"];
+const PET_EDITABLE = ["name", "breed", "size", "weight_kg", "temperament", "vaccine_valid_until", "owner_notes", "grooming_notes", "birth_date", "groom_every_days", "vaccine_card_path", "allergies", "medications", "vet_name", "vet_phone"];
 export async function updatePet(id, patch) {
   if (!SUPABASE_ENABLED) return { ok: true };
   const row = Object.fromEntries(Object.entries(patch).filter(([k]) => PET_EDITABLE.includes(k)));
@@ -824,6 +833,9 @@ export async function fetchAutomationSettings() {
     return Object.fromEntries(Object.entries(DEFAULT_AUTOMATION).map(([k, v]) => [k, typeof v === "boolean" ? false : v]));
   }
   const out = { ...DEFAULT_AUTOMATION, ...data };
+  // v2.50 smart deposit — read on its own so an older database still loads
+  const { data: dm } = await supabase.from("app_settings").select("deposit_mode").eq("salon_id", getCurrentSalonId()).maybeSingle();
+  out.deposit_mode = dm?.deposit_mode === "risky" ? "risky" : "all";
   if (isPetSalon()) {
     // newest first; an older database lacks the later columns
     let pet = null;

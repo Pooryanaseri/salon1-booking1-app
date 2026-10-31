@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ShoppingBag, ShoppingCart, Plus, Minus, Trash2, ArrowRight, Loader2, Package, Store, Truck, CreditCard, Wallet, CheckCircle2, Search } from "lucide-react";
 import { formatToman, toFa, normalizeMobile, digitsOnly } from "../lib/format";
 import { startOrderPayment } from "../lib/api";
-import { fetchShop, placeOrder, priceCart, shippingFor, productPhotoUrl, categoryLabel, loadCart, saveCart } from "../lib/shop";
+import { checkCoupon } from "../lib/business";
+import { groupVariants, fetchShop, placeOrder, priceCart, shippingFor, productPhotoUrl, categoryLabel, loadCart, saveCart } from "../lib/shop";
 
 /* ============================================================
    v2.48 — the salon's shop: catalog → cart → checkout → done.
@@ -118,7 +119,9 @@ function Catalog({ shop, products, qtyOf, setQty, priced, onCart }) {
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
-        {shown.map((p) => <ProductCard key={p.id} p={p} qty={qtyOf(p.id)} setQty={setQty} />)}
+        {groupVariants(shown).map((g) => (g.items.length > 1
+          ? <VariantCard key={g.key} group={g} qtyOf={qtyOf} setQty={setQty} />
+          : <ProductCard key={g.key} p={g.items[0]} qty={qtyOf(g.items[0].id)} setQty={setQty} />))}
       </div>
       {priced.count > 0 && (
         <div style={{ position: "fixed", bottom: 0, insetInline: 0, padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", zIndex: 40, background: "linear-gradient(transparent, var(--color-bg, #f5f2ee) 30%)" }}>
@@ -189,6 +192,27 @@ function ProductCard({ p, qty, setQty }) {
   );
 }
 
+// v2.51: one card for a product sold in several sizes/weights
+function VariantCard({ group, qtyOf, setQty }) {
+  const [sel, setSel] = useState(group.items.find((p) => p.stock == null || p.stock > 0)?.id || group.items[0].id);
+  const p = group.items.find((x) => x.id === sel) || group.items[0];
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }} data-variant-group={group.name}>
+      <div className="flex gap-1 flex-wrap" style={{ marginBottom: 4 }} role="radiogroup" aria-label={`اندازهٔ ${group.name}`}>
+        {group.items.map((v) => (
+          <button key={v.id} type="button" role="radio" aria-checked={v.id === sel} className="tap" onClick={() => setSel(v.id)}
+            style={{ padding: "3px 9px", minHeight: 28, borderRadius: "var(--radius-full)", fontSize: 11.5, fontWeight: 700,
+              border: `1px solid ${v.id === sel ? "var(--color-accent-500)" : "var(--color-border)"}`,
+              background: v.id === sel ? "var(--color-accent-50)" : "var(--color-surface)", opacity: v.stock != null && v.stock <= 0 ? 0.5 : 1 }}>
+            {v.variant_label || v.name}
+          </button>
+        ))}
+      </div>
+      <ProductCard p={{ ...p, name: group.name + (p.variant_label ? ` — ${p.variant_label}` : "") }} qty={qtyOf(p.id)} setQty={setQty} />
+    </div>
+  );
+}
+
 /* --------------------------------------------------------------- cart --- */
 function CartView({ shop, priced, setQty, onBack, onCheckout }) {
   return (
@@ -247,9 +271,16 @@ function Checkout({ shop, priced, onBack, onPlaced, onRefresh }) {
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [couponInput, setCouponInput] = useState(""); // v2.50
+  const [coupon, setCoupon] = useState(null);
 
   const fee = shippingFor(shop, priced.subtotal, delivery);
-  const total = priced.subtotal + fee;
+  const disc = coupon?.discount ? Math.min(coupon.discount, priced.subtotal) : 0;
+  const total = priced.subtotal - disc + fee;
+  async function tryCoupon() {
+    const r = await checkCoupon(couponInput, "shop", priced.subtotal, /^09\d{9}$/.test(phone) ? phone : null);
+    setCoupon(r?.ok ? { code: r.code || couponInput.trim().toUpperCase(), discount: Number(r.discount) || 0 } : { error: r?.error || "کد معتبر نیست" });
+  }
   const phoneValid = /^09\d{9}$/.test(phone);
   const ready = phoneValid && name.trim() && priced.lines.length && (delivery !== "shipping" || address.trim().length >= 10)
     && (!postal || postal.length === 10);
@@ -261,6 +292,7 @@ function Checkout({ shop, priced, onBack, onPlaced, onRefresh }) {
     const res = await placeOrder({
       name: name.trim(), phone, delivery, payment, address: address.trim(), postalCode: postal, note: note.trim(),
       items: priced.lines.map((l) => ({ product_id: l.product.id, qty: l.qty })),
+      coupon: coupon?.code || null,
     });
     if (!res?.ok) {
       setSending(false);
@@ -353,8 +385,16 @@ function Checkout({ shop, priced, onBack, onPlaced, onRefresh }) {
           </div>
         )}
 
+        <div className="flex gap-2">
+          <input dir="ltr" value={couponInput} onChange={(e) => { setCouponInput(e.target.value.toUpperCase()); setCoupon(null); }} placeholder="کد تخفیف" aria-label="کد تخفیف"
+            style={{ flex: 1, minWidth: 0, padding: "10px 12px", fontSize: 14, textAlign: "left" }} />
+          <button type="button" className="tap ghost-btn" style={{ padding: "0 14px", fontSize: 13 }} disabled={!couponInput.trim()} onClick={tryCoupon}>اعمال</button>
+        </div>
+        {coupon?.error && <p style={{ fontSize: 12.5, color: "var(--color-danger)", marginTop: -8 }}>{coupon.error}</p>}
+
         <div className="card" style={{ padding: "10px 14px", lineHeight: 2.1, fontSize: 13 }}>
           <div className="flex justify-between"><span>جمع کالاها ({toFa(priced.count)} عدد)</span><span className="tabular">{formatToman(priced.subtotal)}</span></div>
+          {disc > 0 && <div className="flex justify-between" style={{ color: "var(--color-success)" }}><span>کد تخفیف {coupon.code}</span><span className="tabular">- {formatToman(disc)}</span></div>}
           {delivery === "shipping" && <div className="flex justify-between"><span>هزینهٔ ارسال</span><span className="tabular">{fee ? formatToman(fee) : "رایگان"}</span></div>}
           <div className="flex justify-between" style={{ fontWeight: 800, fontSize: 14 }}><span>مبلغ نهایی</span><span className="tabular">{formatToman(total)}</span></div>
           <p className="muted" style={{ fontSize: 11.5 }}>

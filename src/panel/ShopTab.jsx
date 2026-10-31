@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { ShoppingBag, Package, Settings, Plus, Pencil, Loader2, Phone, MapPin, Camera, Trash2, Truck, Store, AlertTriangle } from "lucide-react";
+import { Boxes, ShoppingBag, Package, Settings, Plus, Pencil, Loader2, Phone, MapPin, Camera, Trash2, Truck, Store, AlertTriangle } from "lucide-react";
 import { formatToman, toFa, digitsOnly } from "../lib/format";
 import { Modal, Switch } from "../components/ui";
+import { SuppliesSection } from "./BusinessTools";
 import {
   fetchOrders, setOrderStatus, markOrderRefunded, fetchProducts, saveProduct, deleteProduct, uploadProductPhoto,
   fetchShopSettings, saveShopSettings, ORDER_STATUS, shopCategories, categoryLabel, productPhotoUrl,
@@ -21,7 +22,9 @@ export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChang
   const [segment, setSegment] = useState("orders");
   const segs = [
     { id: "orders", label: "سفارش‌ها", Icon: ShoppingBag },
-    ...(isManager ? [{ id: "products", label: "کالاها", Icon: Package }, { id: "settings", label: "تنظیمات", Icon: Settings }] : []),
+    ...(isManager ? [{ id: "products", label: "کالاها", Icon: Package }] : []),
+    { id: "supplies", label: "انبار مواد", Icon: Boxes },
+    ...(isManager ? [{ id: "settings", label: "تنظیمات", Icon: Settings }] : []),
   ];
   return (
     <div className="fade-in">
@@ -40,6 +43,7 @@ export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChang
       {segment === "orders" && <OrdersSection isManager={isManager} notify={notify} onPendingChange={onPendingChange} />}
       {segment === "products" && isManager && <ProductsSection notify={notify} />}
       {segment === "settings" && isManager && <SettingsSection notify={notify} onShopEnabledChange={onShopEnabledChange} />}
+      {segment === "supplies" && <SuppliesSection isManager={isManager} notify={notify} />}
     </div>
   );
 }
@@ -62,9 +66,9 @@ function OrdersSection({ isManager, notify, onPendingChange }) {
     return () => { alive = false; };
   }, [tick, onPendingChange]);
 
-  async function move(o, status, note = "") {
+  async function move(o, status, note = "", tracking = {}) {
     setBusy(o.id);
-    const res = await setOrderStatus(o.id, status, note);
+    const res = await setOrderStatus(o.id, status, note, tracking);
     setBusy(null);
     if (!res?.ok) { notify(res?.error || "ثبت ناموفق بود"); return false; }
     notify(`سفارش ${toFa(o.code)}: ${ORDER_STATUS[status].label}`);
@@ -153,6 +157,8 @@ function OrdersSection({ isManager, notify, onPendingChange }) {
                 )}
                 {o.customer_note && <span className="muted">توضیح مشتری: {o.customer_note}</span>}
                 {o.staff_note && <span className="muted">یادداشت: {o.staff_note}</span>}
+                {o.tracking_code && <span>کد رهگیری{o.carrier ? ` ${o.carrier}` : ""}: <b className="tabular" dir="ltr">{o.tracking_code}</b></span>}
+                {o.coupon_code && <span className="muted">کد تخفیف {o.coupon_code}{o.coupon_discount ? ` (−${formatToman(o.coupon_discount)})` : ""}</span>}
                 {o.status === "cancelled" && o.cancel_reason && <span style={{ color: "var(--color-danger)" }}>دلیل لغو: {o.cancel_reason === "expired" ? "پرداخت نشد" : o.cancel_reason}</span>}
               </div>
               <OrderActions o={o} busy={busy === o.id} onMove={move} onCancel={() => setCancelFor(o)} />
@@ -169,7 +175,8 @@ function OrdersSection({ isManager, notify, onPendingChange }) {
 }
 
 function OrderActions({ o, busy, onMove, onCancel }) {
-  const [note, setNote] = useState("");
+  const [track, setTrack] = useState(""); // v2.51
+  const [carrier, setCarrier] = useState("پست");
   const next = {
     pending: [["confirmed", "تایید و آماده‌سازی"]],
     confirmed: [o.delivery === "shipping" ? ["shipped", "ارسال شد"] : ["ready", "آمادهٔ تحویل"]],
@@ -181,13 +188,18 @@ function OrderActions({ o, busy, onMove, onCancel }) {
   return (
     <div style={{ marginTop: 10 }}>
       {needsNote && (
-        <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} placeholder="کد رهگیری مرسوله یا توضیح (اختیاری، پیامک می‌شود)"
-          aria-label="کد رهگیری مرسوله" style={{ ...input, marginTop: 0, marginBottom: 6, fontSize: 13 }} />
+        <div className="flex gap-2" style={{ marginBottom: 6 }}>
+          <select value={carrier} onChange={(e) => setCarrier(e.target.value)} aria-label="شرکت ارسال" style={{ ...input, marginTop: 0, width: 110, fontSize: 13 }}>
+            {["پست", "تیپاکس", "پیک", "چاپار", "ماهکس"].map((c) => <option key={c}>{c}</option>)}
+          </select>
+          <input dir="ltr" value={track} onChange={(e) => setTrack(e.target.value)} maxLength={40} placeholder="کد رهگیری (اختیاری)"
+            aria-label="کد رهگیری مرسوله" style={{ ...input, marginTop: 0, fontSize: 13, textAlign: "left" }} />
+        </div>
       )}
       <div className="flex gap-2">
         {next.map(([status, label]) => (
           <button key={status} disabled={busy} className="tap accent-btn flex-1 flex items-center justify-center gap-1" style={{ padding: "9px 8px", fontSize: 12.5 }}
-            onClick={() => onMove(o, status, needsNote ? note.trim() : "")}>
+            onClick={() => onMove(o, status, "", needsNote ? { code: track.trim(), carrier } : {})}>
             {busy && <Loader2 size={13} className="salon-spin" />} {label}
           </button>
         ))}
@@ -325,6 +337,15 @@ function ProductModal({ product, onClose, onSaved, notify }) {
               onChange={(e) => set("stock")(digitsOnly(e.target.value, 6))} style={{ ...input, textAlign: "left" }} />
           </label>
         </div>
+        <div className="flex gap-2">
+          <label className="muted" style={{ fontSize: 12, flex: 2 }}>گروه اندازه (اختیاری)
+            <input value={p.variant_group || ""} maxLength={80} placeholder="مثلاً غذای سگ بالغ" onChange={(e) => set("variant_group")(e.target.value)} style={input} />
+          </label>
+          <label className="muted" style={{ fontSize: 12, flex: 1 }}>اندازه
+            <input value={p.variant_label || ""} maxLength={40} placeholder="۲ کیلو" onChange={(e) => set("variant_label")(e.target.value)} style={input} />
+          </label>
+        </div>
+        <p className="muted" style={{ fontSize: 11, marginTop: -6 }}>کالاهایی با «گروه اندازه»ی یکسان در فروشگاه یک کارت با انتخاب اندازه می‌شوند.</p>
         <label className="muted" style={{ fontSize: 12 }}>دسته
           <select value={p.category} onChange={(e) => set("category")(e.target.value)} style={input}>
             {shopCategories().map(([k, label]) => <option key={k} value={k}>{label}</option>)}

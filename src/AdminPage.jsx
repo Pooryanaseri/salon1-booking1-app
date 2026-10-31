@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Building2, Plus, Search, LogOut, Loader2, CheckCircle2, AlertTriangle, Power, Pencil, Copy, ExternalLink, ShieldCheck, Sparkles, PawPrint } from "lucide-react";
+import { Building2, Plus, Search, LogOut, Loader2, CheckCircle2, AlertTriangle, Power, Pencil, Copy, ExternalLink, ShieldCheck, Sparkles, PawPrint, GitBranch } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSession, signOut, signInPlatformAdmin, registerPlatformAdmin } from "./lib/auth";
 import { isPlatformAdmin, adminListSalons, adminCreateSalon, adminUpdateSalon } from "./lib/api";
+import { adminLinkBranch } from "./lib/business";
 import { toFa, normalizeMobile, jalaliLabel, parseDateKey } from "./lib/format";
 
 /**
@@ -128,6 +129,7 @@ function AdminDashboard({ onLogout }) {
   const [shown, setShown] = useState(PAGE_SIZE);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [linking, setLinking] = useState(false);
   const [toast, setToast] = useState("");
 
   async function reload() {
@@ -173,6 +175,7 @@ function AdminDashboard({ onLogout }) {
         </p>
         <div style={{ display: "flex", gap: 8 }}>
           <button style={S.btn} onClick={() => setCreating(true)}><Plus size={16} /> سالن جدید</button>
+          <button style={S.ghost} onClick={() => setLinking(true)}><GitBranch size={15} /> اتصال شعبه</button>
           <button style={S.ghost} onClick={onLogout} aria-label="خروج"><LogOut size={15} /></button>
         </div>
       </div>
@@ -216,6 +219,7 @@ function AdminDashboard({ onLogout }) {
 
       {creating && <CreateSalonDialog onClose={() => setCreating(false)} onCreated={() => { reload(); }} />}
       {editing && <EditSalonDialog salon={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); setToast("ذخیره شد"); reload(); }} />}
+      {linking && <LinkBranchDialog salons={salons || []} onClose={() => setLinking(false)} onDone={(msg) => { setLinking(false); setToast(msg); }} />}
       {toast && (
         <div role="status" style={{ position: "fixed", bottom: 20, insetInlineStart: "50%", transform: "translateX(50%)", background: C.text, color: "#fff", padding: "10px 16px", borderRadius: 10, fontSize: 13, zIndex: 100 }}>{toast}</div>
       )}
@@ -308,6 +312,46 @@ function Dialog({ title, onClose, children }) {
         {children}
       </div>
     </div>
+  );
+}
+
+/* v2.51 — give an owner access to another salon as a branch. */
+function LinkBranchDialog({ salons, onClose, onDone }) {
+  const [phone, setPhone] = useState("");
+  const [slug, setSlug] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    const res = await adminLinkBranch(phone, slug);
+    setBusy(false);
+    if (res?.ok) onDone("شعبه متصل شد — مدیر می‌تواند از پنل بین شعبه‌ها جابه‌جا شود");
+    else setError(res?.error || "ناموفق بود");
+  }
+  return (
+    <Dialog title="اتصال شعبه به مدیر" onClose={onClose}>
+      <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <p style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.9 }}>
+          مدیری که سالن اصلی را دارد، به این سالن هم به‌عنوان شعبه دسترسی پیدا می‌کند و در پنل خود بین شعبه‌ها جابه‌جا می‌شود.
+        </p>
+        <div>
+          <label style={S.label} htmlFor="lb-phone">موبایل مدیر (باید قبلاً در یکی از سالن‌ها ثبت‌نام کرده باشد)</label>
+          <input id="lb-phone" dir="ltr" type="tel" inputMode="tel" value={phone} onChange={(e) => setPhone(normalizeMobile(e.target.value))} placeholder="09xxxxxxxxx" style={S.input} />
+        </div>
+        <div>
+          <label style={S.label} htmlFor="lb-slug">سالنِ شعبه</label>
+          <select id="lb-slug" value={slug} onChange={(e) => setSlug(e.target.value)} style={S.input}>
+            <option value="">انتخاب کنید…</option>
+            {salons.filter((s) => s.active).map((s) => <option key={s.id} value={s.slug}>{s.name} ({s.slug})</option>)}
+          </select>
+        </div>
+        {error && <p role="alert" style={{ color: C.danger, fontSize: 12.5 }}>{error}</p>}
+        <button type="submit" style={{ ...S.btn, opacity: busy ? 0.6 : 1 }} disabled={busy || !/^09\d{9}$/.test(phone) || !slug}>
+          {busy && <Loader2 size={15} className="adm-spin" />} اتصال
+        </button>
+      </form>
+    </Dialog>
   );
 }
 

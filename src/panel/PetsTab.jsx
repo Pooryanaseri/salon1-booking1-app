@@ -7,6 +7,7 @@ import { PET_SIZES, PET_SIZE_LABEL, PET_TEMPERAMENTS, PET_TEMPERAMENT_LABEL, STA
 import { JalaliDateInput } from "../booking/PetForm";
 import { PackagesSection } from "./PetCare";
 import { fetchPetReports, petPhotoUrl, uploadPetPhoto, HEALTH_CHECKS, BEHAVIOR_LABEL } from "../lib/petcare";
+import { fetchPetWeights } from "../lib/business";
 
 /* ============================================================
    v2.44 pet salons — the animals the salon grooms. Profiles are
@@ -69,12 +70,37 @@ export function TemperamentBadge({ temperament }) {
   );
 }
 
+/** v2.51 — weight over time (simple SVG line, newest on the left in RTL reading). */
+function WeightChart({ weights }) {
+  const w = 280, h = 90, pad = 14;
+  const kgs = weights.map((x) => x.kg);
+  const min = Math.min(...kgs), max = Math.max(...kgs), span = max - min || 1;
+  const pts = weights.map((x, i) => [pad + (i * (w - pad * 2)) / (weights.length - 1), h - pad - ((x.kg - min) * (h - pad * 2)) / span]);
+  const last = weights[weights.length - 1], first = weights[0];
+  const diff = Math.round((last.kg - first.kg) * 10) / 10;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <p className="muted" style={{ fontSize: 12 }}>
+        نمودار وزن — الان {toFa(last.kg)} کیلو
+        {diff !== 0 && <span style={{ color: Math.abs(diff) >= first.kg * 0.1 ? "var(--color-warning)" : "var(--color-muted)" }}> ({diff > 0 ? "+" : ""}{toFa(diff)} از اولین ثبت)</span>}
+      </p>
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} role="img" aria-label="نمودار وزن" style={{ direction: "ltr" }}>
+        <polyline points={pts.map((p) => p.join(",")).join(" ")} fill="none" stroke="var(--color-pet-500)" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        {pts.map(([x, y], i) => <circle key={i} cx={x} cy={y} r="3.5" fill="var(--color-pet-500)"><title>{`${weights[i].date}: ${weights[i].kg} kg`}</title></circle>)}
+      </svg>
+    </div>
+  );
+}
+
 export function PetProfileModal({ pet, bookings, services, ownerName, onClose, onSaved, notify }) {
   const [draft, setDraft] = useState({
     breed: pet.breed || "", size: pet.size, weight_kg: pet.weight_kg ?? "", temperament: pet.temperament,
     vaccine_valid_until: pet.vaccine_valid_until || "", owner_notes: pet.owner_notes || "", grooming_notes: pet.grooming_notes || "",
     birth_date: pet.birth_date || "", groom_every_days: pet.groom_every_days ?? "", vaccine_card_path: pet.vaccine_card_path || "",
+    allergies: pet.allergies || "", medications: pet.medications || "", vet_name: pet.vet_name || "", vet_phone: pet.vet_phone || "",
   });
+  const [weights, setWeights] = useState([]); // v2.51
+  useEffect(() => { fetchPetWeights(pet.id).then(setWeights); }, [pet.id]);
   // v2.49: visit reports (photos + health checklist) of this pet
   const [reports, setReports] = useState([]);
   const [cardBusy, setCardBusy] = useState(false);
@@ -110,6 +136,8 @@ export function PetProfileModal({ pet, bookings, services, ownerName, onClose, o
       birth_date: draft.birth_date || null,
       groom_every_days: draft.groom_every_days === "" ? null : Math.min(365, Math.max(7, Number(draft.groom_every_days) || 42)),
       vaccine_card_path: draft.vaccine_card_path || null,
+      allergies: draft.allergies.trim().slice(0, 300), medications: draft.medications.trim().slice(0, 300),
+      vet_name: draft.vet_name.trim().slice(0, 80), vet_phone: draft.vet_phone.trim().slice(0, 20),
     };
     const res = await updatePet(pet.id, patch);
     setSaving(false);
@@ -186,6 +214,21 @@ export function PetProfileModal({ pet, bookings, services, ownerName, onClose, o
         <div>
           <label htmlFor="pp-cycle" className="muted" style={{ fontSize: 12 }}>هر چند روز یک‌بار آرایش؟ (خالی = پیش‌فرض سالن؛ برای یادآوری)</label>
           <input id="pp-cycle" type="number" min={7} max={365} value={draft.groom_every_days} onChange={(e) => set({ groom_every_days: e.target.value })} className="tabular" style={input} />
+        </div>
+        <div className="card" style={{ padding: 12 }}>
+          <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>پروندهٔ سلامت</p>
+          <label className="muted" style={{ fontSize: 12 }}>حساسیت‌ها
+            <input value={draft.allergies} maxLength={300} placeholder="مثلاً شامپوی عطردار" onChange={(e) => set({ allergies: e.target.value })} style={input} />
+          </label>
+          <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 8 }}>داروها
+            <input value={draft.medications} maxLength={300} onChange={(e) => set({ medications: e.target.value })} style={input} />
+          </label>
+          <div className="flex gap-2" style={{ marginTop: 8 }}>
+            <label className="muted" style={{ fontSize: 12, flex: 1 }}>دامپزشک<input value={draft.vet_name} maxLength={80} onChange={(e) => set({ vet_name: e.target.value })} style={input} /></label>
+            <label className="muted" style={{ fontSize: 12, flex: 1 }}>تلفن دامپزشک<input dir="ltr" value={draft.vet_phone} maxLength={20} onChange={(e) => set({ vet_phone: e.target.value })} style={{ ...input, textAlign: "left" }} /></label>
+          </div>
+          {weights.length > 1 && <WeightChart weights={weights} />}
+          {weights.length === 1 && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>وزن ثبت‌شده: {toFa(weights[0].kg)} کیلو</p>}
         </div>
         {pet.consent_at && (
           <p className="flex items-center gap-1.5" style={{ fontSize: 12.5, color: "var(--color-success)" }}>

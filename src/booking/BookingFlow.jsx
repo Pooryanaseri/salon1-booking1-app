@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Sparkles, Phone, Check, Sun, Moon, Clock, PawPrint, Ticket, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
+import { Sparkles, Phone, Check, Sun, Moon, Clock, PawPrint, Ticket, Gift, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
 import { SUPABASE_ENABLED, getCurrentSalonId } from "../lib/supabase";
 import { getSalonName, getBusinessType } from "../lib/tenant";
 import { fetchCustomerLoyalty, applyReferral, startDepositPayment } from "../lib/api";
@@ -9,6 +9,8 @@ import { DateStrip, Row } from "../components/ui";
 import { PetForm, EMPTY_PET, loadSavedPets, rememberPet } from "./PetForm";
 import { QuoteContactForm, QuoteSent, QuoteServicePicker } from "./QuoteRequest";
 import { fetchPublicPetCare, fetchPublicPackages, consentRequired, largeDogsAt } from "../lib/petcare";
+import { checkCoupon } from "../lib/business";
+import { BuyPackageModal } from "./BuyPackageModal";
 
 /* ============================================================
    Booking flow (customer) — gender section chosen first, each
@@ -80,6 +82,8 @@ export function WaitlistJoinCard({ onJoin, alreadyJoined, autoOffer }) {
     </div>
   );
 }
+
+const salonSlug = () => window.location.pathname.split("/").filter(Boolean)[0] || "";
 
 export const BOOKING_STEP_LABELS = { 2: "انتخاب خدمت", 3: "انتخاب آرایشگر", 4: "تاریخ و ساعت", 5: "اطلاعات تماس", 6: "تایید نهایی" };
 
@@ -158,6 +162,16 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     return () => { alive = false; };
   }, [petSalon]);
   const [consentOk, setConsentOk] = useState(false);
+  // v2.50 discount code (checked here, applied by the server after booking)
+  const [couponInput, setCouponInput] = useState("");
+  const [coupon, setCoupon] = useState(null); // {code, discount} | {error}
+  async function tryCoupon() {
+    const total = finalPrice || 0;
+    const r = await checkCoupon(couponInput, "booking", total, phone);
+    setCoupon(r?.ok ? { code: r.code || couponInput.trim().toUpperCase(), discount: Number(r.discount) || 0 } : { error: r?.error || "کد معتبر نیست" });
+  }
+  // packages bought online (v2.50)
+  const [buyPkg, setBuyPkg] = useState(null);
   // v2.49: another pet in the same visit — book it right after this one
   const [nextPetAfter, setNextPetAfter] = useState(null); // { date, start, staffId }
   const [wantTransport, setWantTransport] = useState(false);
@@ -431,7 +445,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
 
   // v2.37 online deposit — what the server will ask for on this booking
   // (mirrors hold_for_deposit; the server's answer is what actually counts).
-  const expectedDeposit = depositTerms?.enabled && service && hasPrice(service) && finalPrice != null
+  const expectedDeposit = depositTerms?.enabled && depositTerms.mode !== "risky" && service && hasPrice(service) && finalPrice != null
     && finalPrice > 0 && finalPrice >= (depositTerms.min_price || 0)
     ? Math.max(1000, Math.round((finalPrice * depositTerms.percent) / 100))
     : 0;
@@ -476,6 +490,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             birth_date: pet.birth_date || null, ...(needConsent && consentOk ? { consent: "true" } : {}),
           } : null,
           transportAddress: petSalon && wantTransport && petCare?.transport_enabled ? transportAddress.trim() : null,
+          couponCode: coupon?.code || null,
         },
         !knownCustomer && referralCode.trim()
           ? async () => {
@@ -511,6 +526,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     setKnownCustomer(false); setKnownCustomerName(""); setLoyaltyDiscountPct(0);
     setName(""); setReferralCode(""); setResult(null); setCategory("all"); setPet(EMPTY_PET); setQuoteIds([]);
     setConsentOk(false); setWantTransport(false); setTransportAddress(""); setNextPetAfter(null);
+    setCouponInput(""); setCoupon(null);
     onSectionChange(null);
   }
 
@@ -636,6 +652,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             <div className="flex flex-wrap gap-1.5" style={{ marginTop: 12 }}>
               <span className="hero-chip"><Clock size={12} /> رزرو در کمتر از یک دقیقه</span>
               <span className="hero-chip"><Bell size={12} /> یادآوری پیامکی</span>
+              <a className="hero-chip" href={`/${salonSlug()}/about`} style={{ color: "white", textDecoration: "none" }}><Info size={12} /> درباره سالن</a>
+              <a className="hero-chip" href={`/${salonSlug()}/gift`} style={{ color: "white", textDecoration: "none" }}><Gift size={12} /> کارت هدیه</a>
             </div>
           </div>
           <h2 style={{ fontSize: 17, marginBottom: 12 }}>{petSalon ? "نوبت برای سگ یا گربه؟" : "بخش مورد نظر را انتخاب کنید"}</h2>
@@ -678,7 +696,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
                 <Ticket size={15} color="var(--color-tab-panel)" /> بسته‌های پیش‌پرداخت
               </p>
-              <p className="muted" style={{ fontSize: 11.5, marginTop: 2, marginBottom: 6 }}>در سالن خریداری کنید؛ هر نوبت یک جلسه از بسته کم می‌شود.</p>
+              <p className="muted" style={{ fontSize: 11.5, marginTop: 2, marginBottom: 6 }}>
+                {depositTerms?.online ? "آنلاین یا در سالن بخرید" : "در سالن خریداری کنید"}؛ هر نوبت یک جلسه از بسته کم می‌شود.
+              </p>
               {packagesOffer.map((k) => {
                 const full = (k.single_price || 0) * k.sessions;
                 return (
@@ -687,12 +707,14 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                     <span className="tabular" style={{ fontWeight: 800, whiteSpace: "nowrap" }}>
                       {formatToman(k.price)}
                       {full > k.price && <span style={{ color: "var(--color-success)", fontSize: 11, fontWeight: 700 }}> · {toFa(Math.round(100 - (k.price * 100) / full))}٪ کمتر</span>}
+                      {depositTerms?.online && <button className="tap accent-btn" style={{ padding: "5px 10px", fontSize: 11.5, marginRight: 8, minHeight: 0 }} onClick={() => setBuyPkg(k)}>خرید</button>}
                     </span>
                   </div>
                 );
               })}
             </div>
           )}
+          {buyPkg && <BuyPackageModal pkg={buyPkg} onClose={() => setBuyPkg(null)} />}
         </div>
       )}
 
@@ -1187,6 +1209,18 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             </div>
           )}
 
+          {hasPrice(service) && finalPrice > 0 && (
+            <div className="card mt-3" style={{ padding: 12 }}>
+              <div className="flex gap-2">
+                <input dir="ltr" value={couponInput} onChange={(e) => { setCouponInput(e.target.value.toUpperCase()); setCoupon(null); }}
+                  placeholder="کد تخفیف" aria-label="کد تخفیف" style={{ flex: 1, minWidth: 0, padding: "10px 12px", fontSize: 14, textAlign: "left" }} />
+                <button className="tap ghost-btn" style={{ padding: "0 14px", fontSize: 13 }} disabled={!couponInput.trim()} onClick={tryCoupon}>اعمال</button>
+              </div>
+              {coupon?.discount > 0 && <p style={{ fontSize: 12.5, marginTop: 6, color: "var(--color-success)" }}>{formatToman(coupon.discount)} تخفیف — مبلغ نهایی {formatToman(Math.max(0, finalPrice - coupon.discount))}</p>}
+              {coupon?.error && <p style={{ fontSize: 12.5, marginTop: 6, color: "var(--color-danger)" }}>{coupon.error}</p>}
+            </div>
+          )}
+
           <p className="muted flex items-center gap-1.5 mt-3" style={{ fontSize: 11.5, lineHeight: 1.7 }}>
             <Info size={13} style={{ flexShrink: 0 }} />
             تا قبل از نوبت می‌توانید از تب «داشبورد من» آن را لغو یا جابه‌جا کنید.
@@ -1250,6 +1284,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                   </>
                 )}
                 {(result.extra_charges || []).map((x, i) => <Row key={i} label={x.label} value={"+ " + formatToman(x.amount)} />)}
+                {result.coupon_discount > 0 && <Row label={`کد تخفیف ${result.coupon_code}`} value={"- " + formatToman(result.coupon_discount)} />}
                 <Row label="مبلغ نهایی" value={formatToman(result.final_price)} bold />
               </>
             )}

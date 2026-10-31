@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Lock, Loader2 } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { signIn, registerOwner as authRegisterOwner, registerStylist as authRegisterStylist } from "../lib/auth";
+import { signIn, verifyLoginCode, registerOwner as authRegisterOwner, registerStylist as authRegisterStylist } from "../lib/auth";
 import { toFa, normalizeMobile } from "../lib/format";
 import { SECTION_META, STAFF_PHONE, staffSectionsFor, makeSeedStylist } from "../app/shared";
 import { getBusinessType } from "../lib/tenant";
@@ -61,6 +61,7 @@ export function OwnerAuthPanel({ ownerAccount, registerOwner, notify, onSuccess 
   const [busy, setBusy] = useState(false);
 
   const phoneValid = /^09\d{9}$/.test(phone);
+  const [mfa, setMfa] = useState(null); // v2.51 second step
 
   // Real auth against Supabase. When Supabase isn't configured we fall back to
   // the original in-memory credential check so the demo still works offline.
@@ -69,6 +70,7 @@ export function OwnerAuthPanel({ ownerAccount, registerOwner, notify, onSuccess 
     if (SUPABASE_ENABLED) {
       const res = await signIn(phone, password, "owner");
       setBusy(false);
+      if (res.mfa) { setMfa({ factorId: res.factorId, done: () => onSuccess(res.role) }); return; }
       if (!res.ok) { setError(res.error || "ورود ناموفق بود"); return; }
       if (res.role === "stylist") { setError("این حساب آرایشگر است — از تب «ورود آرایشگر» وارد شوید"); return; }
       onSuccess(res.role);
@@ -98,6 +100,7 @@ export function OwnerAuthPanel({ ownerAccount, registerOwner, notify, onSuccess 
     onSuccess("owner");
   }
 
+  if (mfa) return <MfaStep mfa={mfa} onCancel={() => setMfa(null)} />;
   return (
     <div>
       <p className="muted" style={{ fontSize: 13, marginTop: 8, marginBottom: 16 }}>
@@ -165,12 +168,14 @@ export function StylistAuthPanel({ stylists, addStylist, notify, onSuccess }) {
 
   const [busy, setBusy] = useState(false);
   const phoneValid = /^09\d{9}$/.test(phone);
+  const [mfa, setMfa] = useState(null); // v2.51 second step
 
   async function handleLogin() {
     setBusy(true); setError("");
     if (SUPABASE_ENABLED) {
       const res = await signIn(phone, password, "stylist");
       setBusy(false);
+      if (res.mfa) { setMfa({ factorId: res.factorId, done: () => onSuccess(res.stylistId) }); return; }
       if (!res.ok) { setError(res.error || "ورود ناموفق بود"); return; }
       if (res.role !== "stylist") { setError("این حساب مدیر است — از تب «ورود مدیر سالن» وارد شوید"); return; }
       onSuccess(res.stylistId);
@@ -203,6 +208,7 @@ export function StylistAuthPanel({ stylists, addStylist, notify, onSuccess }) {
     onSuccess(s.id);
   }
 
+  if (mfa) return <MfaStep mfa={mfa} onCancel={() => setMfa(null)} />;
   return (
     <div>
       <p className="muted" style={{ fontSize: 13, marginTop: 8, marginBottom: 16 }}>
@@ -281,6 +287,33 @@ export function StylistAuthPanel({ stylists, addStylist, notify, onSuccess }) {
       >
         {authMode === "login" ? "حساب ندارید؟ ثبت‌نام کنید" : "قبلاً ثبت‌نام کرده‌اید؟ وارد شوید"}
       </button>
+    </div>
+  );
+}
+
+/* v2.51 — second step of the login (authenticator app code). */
+export function MfaStep({ mfa, onCancel }) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  async function go() {
+    setBusy(true); setErr("");
+    const r = await verifyLoginCode(mfa.factorId, code);
+    setBusy(false);
+    if (!r.ok) { setErr(r.error); return; }
+    mfa.done();
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <p style={{ fontSize: 13.5, fontWeight: 700 }}>ورود دومرحله‌ای</p>
+      <p className="muted" style={{ fontSize: 12.5, lineHeight: 1.8 }}>کد ۶ رقمی برنامهٔ احراز هویت (Google/Microsoft Authenticator) را وارد کنید.</p>
+      <input dir="ltr" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={6} aria-label="کد ۶ رقمی"
+        onChange={(e) => setCode(e.target.value.replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)).replace(/\D/g, "").slice(0, 6))}
+        onKeyDown={(e) => { if (e.key === "Enter" && code.length === 6) go(); }}
+        style={{ width: "100%", padding: "12px 14px", fontSize: 20, letterSpacing: 6, textAlign: "center" }} />
+      {err && <p role="alert" style={{ color: "var(--color-danger)", fontSize: 12.5 }}>{err}</p>}
+      <button disabled={busy || code.length !== 6} className="tap accent-btn w-full" style={{ padding: 12 }} onClick={go}>تایید و ورود</button>
+      <button className="tap ghost-btn w-full" style={{ padding: 10 }} onClick={onCancel}>انصراف</button>
     </div>
   );
 }

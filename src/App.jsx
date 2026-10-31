@@ -16,6 +16,7 @@ import { TrackView } from "./track/TrackView";
 import { ShopView } from "./shop/ShopView";
 import { fetchShop } from "./lib/shop";
 import { requestPetTransport } from "./lib/petcare";
+import { applyBookingCoupon } from "./lib/business";
 
 /* ============================================================
    Main App
@@ -420,6 +421,17 @@ export default function App() {
           final_price: booking.final_price != null && fee ? booking.final_price + fee : booking.final_price };
       } else {
         notify(t?.error || "ثبت سرویس رفت‌وبرگشت ناموفق بود — با سالن هماهنگ کنید");
+      }
+    }
+
+    // v2.50: a discount code, applied by the server to the fresh booking
+    if (params.couponCode && booking.final_price != null) {
+      const c = await applyBookingCoupon(booking.id, params.customerPhone, params.couponCode, booking.final_price);
+      if (c?.ok) {
+        const disc = Number(c.discount) || 0;
+        booking = { ...booking, coupon_code: params.couponCode.toUpperCase(), coupon_discount: disc, final_price: Math.max(0, booking.final_price - disc) };
+      } else {
+        notify(c?.error || "کد تخفیف اعمال نشد");
       }
     }
 
