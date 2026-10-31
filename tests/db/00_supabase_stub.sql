@@ -27,3 +27,19 @@ create extension if not exists pgcrypto;
 grant usage on schema public to anon, authenticated, service_role;
 alter default privileges in schema public grant all on tables to service_role;
 alter default privileges in schema public grant all on sequences to service_role;
+
+-- Supabase Storage: just the two tables policies are written against (the
+-- real service inserts/reads storage.objects as the calling role).
+create schema if not exists storage;
+create table if not exists storage.buckets (
+  id text primary key, name text not null, public boolean default false,
+  file_size_limit bigint, allowed_mime_types text[], created_at timestamptz default now()
+);
+create table if not exists storage.objects (
+  id uuid primary key default gen_random_uuid(), bucket_id text references storage.buckets (id),
+  name text, owner uuid, metadata jsonb, created_at timestamptz default now()
+);
+alter table storage.objects enable row level security;
+grant usage on schema storage to anon, authenticated, service_role;
+grant select, insert, update, delete on storage.objects to anon, authenticated, service_role;
+grant select on storage.buckets to anon, authenticated, service_role;
