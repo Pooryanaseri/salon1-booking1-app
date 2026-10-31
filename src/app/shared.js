@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { Scissors, Palette, Sparkles, Hand, Eye, Droplet, Clock, Check, X, CheckCircle2, XCircle, RotateCcw, CalendarX, Hourglass, Home, Package, Users, Megaphone, Zap, Receipt, CreditCard } from "lucide-react";
+import { Scissors, Palette, Sparkles, Hand, Eye, Droplet, Dog, Cat, PawPrint, Bath, Clock, Check, X, CheckCircle2, XCircle, RotateCcw, CalendarX, Hourglass, Home, Package, Users, Megaphone, Zap, Receipt, CreditCard } from "lucide-react";
 import { syncCollection, syncApprovedDates, saveWorkingHours, clearStaffWorkingHours } from "../lib/api";
 import { formatToman, dateKey } from "../lib/format";
 
@@ -8,17 +8,138 @@ import { formatToman, dateKey } from "../lib/format";
    ============================================================ */
 export const SALON_ABBR = "MN";
 export const SALON_GENDER_TYPE = "both"; // 'male' | 'female' | 'both'
-export const GENDER_TYPE_LABEL = { male: "مردانه", female: "زنانه", both: "زنانه و مردانه" };
+export const GENDER_TYPE_LABEL = { male: "مردانه", female: "زنانه", both: "زنانه و مردانه", dog: "سگ", cat: "گربه", pet: "سگ و گربه" };
 export const LOYALTY_REASON_FA = { visit: "ویزیت تکمیل‌شده", referral: "پاداش معرفی دوست", redeemed: "استفاده از تخفیف" };
 
 // Each customer-facing "section" is modeled independently — its own services, categories and accent tint.
 export const SECTION_META = {
   female: { label: "بخش زنانه", short: "زنانه", Icon: Sparkles, color: "var(--color-female-500)", tint: "var(--color-female-100)" },
   male: { label: "بخش مردانه", short: "مردانه", Icon: Scissors, color: "var(--color-male-500)", tint: "var(--color-male-100)" },
+  // v2.44 pet grooming salons. "pet" is only a groomer's section (serves both).
+  dog: { label: "سگ", short: "سگ", Icon: Dog, color: "var(--color-dog-500)", tint: "var(--color-dog-100)" },
+  cat: { label: "گربه", short: "گربه", Icon: Cat, color: "var(--color-cat-500)", tint: "var(--color-cat-100)" },
+  pet: { label: "سگ و گربه", short: "سگ و گربه", Icon: PawPrint, color: "var(--color-pet-500)", tint: "var(--color-pet-100)" },
 };
 
-export const CATEGORY_LABEL = { hair: "مو", beard: "ریش", color: "رنگ", makeup: "میکاپ", nails: "ناخن", skin: "پوست", permanent_makeup: "خدمات دائم" };
-export const SERVICE_ICONS = { hair: Scissors, beard: Scissors, color: Palette, makeup: Sparkles, nails: Hand, skin: Droplet, permanent_makeup: Eye };
+/* ---- v2.44: salon types ------------------------------------------------ */
+// Customer-facing sections, and the sections a staff member can belong to.
+export const BUSINESS_SECTIONS = { beauty: ["female", "male"], pet: ["dog", "cat"] };
+export const STAFF_SECTIONS = { beauty: ["female", "male"], pet: ["pet", "dog", "cat"] };
+export const sectionsFor = (type) => BUSINESS_SECTIONS[type] || BUSINESS_SECTIONS.beauty;
+export const staffSectionsFor = (type) => STAFF_SECTIONS[type] || STAFF_SECTIONS.beauty;
+/** Does this staff member take bookings in this section? ("pet" groomers do dogs and cats.) */
+export function staffServesSection(stylist, section) {
+  return !!stylist && (stylist.gender === section || (stylist.gender === "pet" && (section === "dog" || section === "cat")));
+}
+export const BUSINESS_TYPE_LABEL = { beauty: "سالن زیبایی", pet: "آرایشگاه حیوانات" };
+/** "همه" + one tab per section, for the panel's filter pills. */
+export function sectionFilters(sections) {
+  return [{ v: "all", l: "همه" }, ...sections.map((g) => ({ v: g, l: SECTION_META[g].short }))];
+}
+
+// v2.45: each salon sets its own weight bounds (kg) for small/medium/large.
+export const DEFAULT_PET_SIZE_LIMITS = [5, 15, 30];
+const faNum = (n) => String(n).replace(/[0-9]/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+export function petSizes(limits = DEFAULT_PET_SIZE_LIMITS) {
+  const [a, b, c] = Array.isArray(limits) && limits.length === 3 ? limits : DEFAULT_PET_SIZE_LIMITS;
+  return [
+    { v: "small", label: "کوچک", hint: `تا ${faNum(a)} کیلو` },
+    { v: "medium", label: "متوسط", hint: `${faNum(a)} تا ${faNum(b)} کیلو` },
+    { v: "large", label: "بزرگ", hint: `${faNum(b)} تا ${faNum(c)} کیلو` },
+    { v: "giant", label: "خیلی بزرگ", hint: `بیش از ${faNum(c)} کیلو` },
+  ];
+}
+export const PET_SIZES = petSizes();
+export const PET_SIZE_LABEL = Object.fromEntries(PET_SIZES.map((x) => [x.v, x.label]));
+export const PET_TEMPERAMENTS = [
+  { v: "calm", label: "آرام" },
+  { v: "nervous", label: "مضطرب / ترسو" },
+  { v: "aggressive", label: "پرخاشگر" },
+];
+export const PET_TEMPERAMENT_LABEL = Object.fromEntries(PET_TEMPERAMENTS.map((x) => [x.v, x.label]));
+/** A size from a weight in kg (the form suggests it; the owner can override). */
+export function sizeFromWeight(kg, limits = DEFAULT_PET_SIZE_LIMITS) {
+  const w = Number(kg);
+  if (!Number.isFinite(w) || w <= 0) return null;
+  const [a, b, c] = Array.isArray(limits) && limits.length === 3 ? limits : DEFAULT_PET_SIZE_LIMITS;
+  return w <= a ? "small" : w <= b ? "medium" : w <= c ? "large" : "giant";
+}
+
+/** Mirrors the server's norm_breed(): spacing, ZWNJ and Arabic ی/ک don't matter. */
+export function normBreed(name) {
+  const map = { "\u064A": "\u06CC", "\u0643": "\u06A9", "\u06C0": "\u0647", "\u0629": "\u0647" }; // ي ك ۀ ة → ی ک ه ه
+  return String(name || "").toLowerCase().replace(/[\u064A\u0643\u06C0\u0629]/g, (ch) => map[ch]).replace(/(?:\s|\u200c|\u200d|_|-)+/g, "");
+}
+/** The breed tier of a service for this breed, or null. */
+export function breedTier(service, breed) {
+  const key = normBreed(breed);
+  if (!key || !service?.breed_pricing) return null;
+  const hit = Object.entries(service.breed_pricing).find(([name]) => normBreed(name) === key);
+  return hit && typeof hit[1] === "object" ? hit[1] : null;
+}
+/** Breed names that have their own price in any of these services. */
+export function pricedBreeds(services, species) {
+  const names = new Map();
+  for (const s of services) {
+    if (species && s.gender !== species) continue;
+    for (const name of Object.keys(s.breed_pricing || {})) names.set(normBreed(name), name);
+  }
+  return [...names.values()];
+}
+/**
+ * The service as booked for this animal — mirrors service_for_pet(): the
+ * size's price/duration, then the breed's own price/duration on top.
+ */
+export function petService(service, size, breed) {
+  const sized = sizedService(service, size);
+  const tier = breedTier(service, breed);
+  if (!tier) return sized;
+  return {
+    ...sized,
+    price: Number.isFinite(tier.price) && tier.price >= 0 ? Math.round(tier.price) : sized.price,
+    duration_minutes: Number.isFinite(tier.duration) && tier.duration >= 5 && tier.duration <= 600 ? Math.round(tier.duration) : sized.duration_minutes,
+    breed_priced: true,
+  };
+}
+/** v2.45: the aggression surcharge (percent of the price after the service's discount). */
+export function petSurcharge(priceAfterDiscount, temperament, percent) {
+  if (temperament !== "aggressive" || !percent || priceAfterDiscount == null || priceAfterDiscount <= 0) return 0;
+  return Math.round((priceAfterDiscount * percent) / 100);
+}
+export const extraChargesTotal = (b) => (Array.isArray(b?.extra_charges) ? b.extra_charges : []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+/**
+ * The service as booked for an animal of this size — mirrors the server's
+ * service_at_size(): price/duration from size_pricing when set, otherwise
+ * the service's own. Everything downstream (slots, totals) just uses it.
+ */
+export function sizedService(service, size) {
+  const tier = service && size ? service.size_pricing?.[size] : null;
+  if (!tier || typeof tier !== "object") return service;
+  const price = Number.isFinite(tier.price) && tier.price >= 0 ? Math.round(tier.price) : service.price;
+  const duration = Number.isFinite(tier.duration) && tier.duration >= 5 && tier.duration <= 600 ? Math.round(tier.duration) : service.duration_minutes;
+  return { ...service, price, duration_minutes: duration };
+}
+/** "۳۵۰٬۰۰۰ تا ۸۰۰٬۰۰۰" style range for a size-priced service, or null. */
+export function sizePriceRange(service) {
+  const prices = Object.values(service?.size_pricing || {}).map((t) => t?.price).filter((p) => Number.isFinite(p) && p > 0);
+  if (prices.length === 0) return null;
+  return { min: Math.min(...prices), max: Math.max(...prices) };
+}
+
+export const CATEGORY_LABEL = {
+  hair: "مو", beard: "ریش", color: "رنگ", makeup: "میکاپ", nails: "ناخن", skin: "پوست", permanent_makeup: "خدمات دائم",
+  // v2.44 pet salons
+  bath: "حمام و شستشو", grooming: "اصلاح و آرایش", nails_pet: "ناخن", hygiene: "بهداشتی", spa: "اسپا و ماساژ",
+  addon: "افزودنی (پایان کار)",
+};
+export const SERVICE_ICONS = {
+  hair: Scissors, beard: Scissors, color: Palette, makeup: Sparkles, nails: Hand, skin: Droplet, permanent_makeup: Eye,
+  bath: Bath, grooming: Scissors, nails_pet: PawPrint, hygiene: Sparkles, spa: Droplet, addon: Clock,
+};
+export const CATEGORIES_BY_TYPE = {
+  beauty: ["hair", "beard", "color", "makeup", "nails", "skin", "permanent_makeup"],
+  pet: ["bath", "grooming", "nails_pet", "hygiene", "spa", "addon"],
+};
 
 // Business expenses tracked in the accounting tab — categorized so the dashboard can
 // break spending down visually (each category gets its own icon + accent color).
@@ -48,6 +169,28 @@ export const SEED_SERVICES = [
   { id: "m3", name: "پکیج مو و ریش", gender: "male", category: "hair", duration_minutes: 45, price: 270000, is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 0 },
   { id: "m4", name: "رنگ مو و ریش", gender: "male", category: "color", duration_minutes: 40, price: 300000, is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 10 },
   { id: "m5", name: "پاکسازی پوست صورت", gender: "male", category: "skin", duration_minutes: 40, price: 400000, is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 0 },
+];
+
+// Demo menu of a pet salon (the /pets demo) — the same starter menu a new
+// pet salon gets on the server (seed_pet_services).
+const PET_BASE = { is_active: true, discount_type: "none", discount_value: 0, discount_reason: "", buffer_minutes: 0, size_pricing: {}, breed_pricing: {}, is_addon: false };
+export const SEED_PET_SERVICES = [
+  { ...PET_BASE, id: "pd1", name: "کوتاهی ناخن", gender: "dog", category: "nails_pet", duration_minutes: 15, price: 200000 },
+  { ...PET_BASE, id: "pd2", name: "تخلیهٔ کیسهٔ مقعدی", gender: "dog", category: "hygiene", duration_minutes: 15, price: 200000 },
+  { ...PET_BASE, id: "pd3", name: "شستشو (حمام)", gender: "dog", category: "bath", duration_minutes: 90, price: 1800000,
+    size_pricing: { small: { price: 500000, duration: 45 }, medium: { price: 700000, duration: 60 }, large: { price: 1800000, duration: 90 } } },
+  { ...PET_BASE, id: "pd4", name: "اصلاح ساده با موزر", gender: "dog", category: "grooming", duration_minutes: 90, price: 1300000,
+    size_pricing: { small: { price: 900000, duration: 60 }, medium: { price: 900000, duration: 75 }, large: { price: 1300000, duration: 90 } } },
+  { ...PET_BASE, id: "pd5", name: "اصلاح ساده با قیچی", gender: "dog", category: "grooming", duration_minutes: 90, price: 1000000,
+    size_pricing: { medium: { price: 1000000, duration: 90 }, large: { price: 1500000, duration: 120 } } },
+  { ...PET_BASE, id: "pd6", name: "اصلاح کامل + حمام", gender: "dog", category: "grooming", duration_minutes: 150, price: null,
+    breed_pricing: { "پامرانین": { price: 1900000, duration: 120 }, "پامر": { price: 1900000, duration: 120 }, "چاو چاو": { price: 3500000, duration: 180 } } },
+  { ...PET_BASE, id: "pd7", name: "گره‌زدایی (هر نیم ساعت)", gender: "dog", category: "addon", duration_minutes: 30, price: 350000, is_addon: true },
+  { ...PET_BASE, id: "pc1", name: "کوتاهی ناخن", gender: "cat", category: "nails_pet", duration_minutes: 15, price: 200000 },
+  { ...PET_BASE, id: "pc2", name: "تخلیهٔ کیسهٔ مقعدی", gender: "cat", category: "hygiene", duration_minutes: 15, price: 200000 },
+  { ...PET_BASE, id: "pc3", name: "شستشو (حمام) گربه", gender: "cat", category: "bath", duration_minutes: 60, price: 800000 },
+  { ...PET_BASE, id: "pc4", name: "شیو سادهٔ گربه", gender: "cat", category: "grooming", duration_minutes: 60, price: 900000 },
+  { ...PET_BASE, id: "pc5", name: "گره‌زدایی (هر نیم ساعت)", gender: "cat", category: "addon", duration_minutes: 30, price: 350000, is_addon: true },
 ];
 
 // schema day_of_week: 0=Saturday .. 6=Friday (Iran week)
@@ -187,6 +330,10 @@ export const SEED_STYLISTS = [
   { id: "st1", name: "مهسا کریمی", gender: "female", active: true, phone: "09121110001", password: "1234", reminder_hours_before: 3 },
   { id: "st2", name: "نیلوفر صادقی", gender: "female", active: true, phone: "09121110002", password: "1234", reminder_hours_before: 3 },
   { id: "st3", name: "رضا احمدی", gender: "male", active: true, phone: "09121110003", password: "1234", reminder_hours_before: 3 },
+];
+export const SEED_PET_STYLISTS = [
+  { id: "st1", name: "سمیرا نادری", gender: "pet", active: true, phone: "09121110001", password: "1234", reminder_hours_before: 3 },
+  { id: "st2", name: "کاوه رحیمی", gender: "dog", active: true, phone: "09121110002", password: "1234", reminder_hours_before: 3 },
 ];
 export function makeSeedStylist(overrides) {
   return { id: uid(), name: "", gender: "female", active: true, phone: "", password: "", reminder_hours_before: 3, ...overrides };

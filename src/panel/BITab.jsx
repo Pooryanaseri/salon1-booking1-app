@@ -1,8 +1,9 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Clock, Percent, Banknote, XCircle, TrendingUp, TrendingDown, ChevronLeft, Wallet, Users, UserPlus, Repeat2, Award, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
+import { Clock, Percent, Banknote, XCircle, TrendingUp, TrendingDown, ChevronLeft, Wallet, Users, UserPlus, Repeat2, Award, AlertTriangle, ChevronDown, ChevronUp, PawPrint } from "lucide-react";
 import { gregorianToJalali, jalaliDayNum, MONTHS_FA, WEEKDAYS_FA_FULL, SCHEMA_DAY_LABELS, toFa, formatToman, jalaliLabel, hhmmToMin, dateKey, parseDateKey, bookingTimestamp } from "../lib/format";
 import { BookingHeatmap, CampaignPerformanceCard, CampaignReturnRateCard, FeedbackStatsCard, RevenueTrendChart, ServiceShareDonut } from "./biCards";
-import { GENDER_TYPE_LABEL, schemaDayOf } from "../app/shared";
+import { GENDER_TYPE_LABEL, PET_SIZES, PET_SIZE_LABEL, schemaDayOf } from "../app/shared";
+import { getBusinessType } from "../lib/tenant";
 import { GenderBadge } from "../components/ui";
 import { fetchRfmSegments, fetchBiActionHistory, fetchCampaignPerformance } from "../lib/api";
 import { segmentMembers } from "../lib/campaigns";
@@ -39,12 +40,20 @@ export const BI_DRILL_LEVELS = [
   { key: "invoice", label: "فاکتور" },
 ];
 
+// v2.44 pet salons: "نوع حیوان" instead of "جنسیت", plus a size level.
+export function biDrillLevels(businessType) {
+  if (businessType !== "pet") return BI_DRILL_LEVELS;
+  return BI_DRILL_LEVELS.flatMap((l) => (l.key === "gender" ? [{ key: "gender", label: "نوع حیوان" }, { key: "pet_size", label: "جثه" }] : [l]));
+}
+
 export function biDeriveKey(levelKey, b, services) {
   switch (levelKey) {
     case "branch":
       return { raw: b.branch || "شعبه اصلی", label: b.branch || "شعبه اصلی" };
     case "gender":
       return { raw: b.customer_gender, label: GENDER_TYPE_LABEL[b.customer_gender] || b.customer_gender };
+    case "pet_size":
+      return { raw: b.pet_size || "none", label: PET_SIZE_LABEL[b.pet_size] || "نامشخص" };
     case "service": {
       const svc = services.find((s) => s.id === b.service_id);
       return { raw: b.service_id, label: svc ? svc.name : "نامشخص" };
@@ -61,6 +70,7 @@ export function biEntryMatches(b, entry) {
   switch (entry.levelKey) {
     case "branch": return (b.branch || "شعبه اصلی") === entry.rawValue;
     case "gender": return b.customer_gender === entry.rawValue;
+    case "pet_size": return (b.pet_size || "none") === entry.rawValue;
     case "service": return b.service_id === entry.rawValue;
     case "staff": return (b.staff_id || "none") === entry.rawValue;
     case "day": return b.date === entry.rawValue;
@@ -384,6 +394,21 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
     return top;
   }, [periodPricedCompleted, services]);
 
+  // v2.44 pet salons: revenue and average ticket per size — tells the
+  // manager whether the size tiers are priced right.
+  const petMix = useMemo(() => {
+    if (getBusinessType() !== "pet") return null;
+    const rows = PET_SIZES.map(({ v, label }) => ({ v, label, dog: 0, cat: 0, revenue: 0, count: 0 }));
+    for (const b of periodPricedCompleted) {
+      const row = rows.find((r) => r.v === b.pet_size);
+      if (!row) continue;
+      row.count += 1; row.revenue += b.final_price;
+      if (b.customer_gender === "cat") row.cat += 1; else row.dog += 1;
+    }
+    const total = rows.reduce((s, r) => s + r.revenue, 0);
+    return { rows: rows.filter((r) => r.count > 0), total };
+  }, [periodPricedCompleted]);
+
   // A customer counts as "returning" if they had a completed visit before this period
   // started, anywhere in baseFiltered (branch/staff-filtered but not date-filtered).
   const customerMix = useMemo(() => {
@@ -442,7 +467,8 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
   }, [spanDays, periodBookings, prevPeriodBookings, baseFiltered, periodStart, prevPeriodStart, services, heatmapGrid, heatmapHours, paretoData, demandForecast, serviceShareSlices, stylistPerf, automation, rfmRows, campaignStats, recentActions]);
 
   const activeKpi = drill ? BI_KPIS.find((k) => k.id === drill.kpiId) : null;
-  const currentLevel = drill && drill.path.length < BI_DRILL_LEVELS.length ? BI_DRILL_LEVELS[drill.path.length] : null;
+  const drillLevels = biDrillLevels(getBusinessType());
+  const currentLevel = drill && drill.path.length < drillLevels.length ? drillLevels[drill.path.length] : null;
 
   const levelRows = useMemo(() => {
     if (!activeKpi || !currentLevel) return [];
@@ -635,6 +661,31 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
             <p className="muted" style={{ fontSize: 12.5 }}>هنوز نوبت تکمیل‌شده‌ای در این بازه ثبت نشده</p>
           ) : (
             <ServiceShareDonut slices={serviceShareSlices} />
+          )}
+        </div>
+      )}
+
+      {!drill && petMix && (
+        <div className="card mb-4" style={{ padding: 14 }}>
+          <p className="flex items-center gap-1.5 mb-3" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-pet-500)" }}>
+            <PawPrint size={13} /> درآمد بر اساس جثه
+          </p>
+          {petMix.rows.length === 0 ? (
+            <p className="muted" style={{ fontSize: 12.5 }}>هنوز نوبت تکمیل‌شده‌ای در این بازه ثبت نشده</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {petMix.rows.map((r) => (
+                <div key={r.v}>
+                  <div className="flex items-center justify-between tabular" style={{ fontSize: 12.5 }}>
+                    <span style={{ fontWeight: 700, color: "var(--color-heading)" }}>{r.label}</span>
+                    <span className="muted">{toFa(r.dog)} سگ · {toFa(r.cat)} گربه · میانگین {formatToman(Math.round(r.revenue / r.count))}</span>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 3, background: "var(--color-surface-raised)", marginTop: 4 }}>
+                    <div style={{ width: `${(r.revenue / (petMix.total || 1)) * 100}%`, height: "100%", borderRadius: 3, background: "var(--color-pet-500)" }} />
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}

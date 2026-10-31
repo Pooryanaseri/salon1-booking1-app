@@ -3,7 +3,8 @@ import { Lock, Loader2 } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { signIn, registerOwner as authRegisterOwner, registerStylist as authRegisterStylist } from "../lib/auth";
 import { toFa, normalizeMobile } from "../lib/format";
-import { SECTION_META, STAFF_PHONE, makeSeedStylist } from "../app/shared";
+import { SECTION_META, STAFF_PHONE, staffSectionsFor, makeSeedStylist } from "../app/shared";
+import { getBusinessType } from "../lib/tenant";
 
 /* ============================================================
    Login screen (staff — phone + OTP, demo only)
@@ -160,7 +161,7 @@ export function StylistAuthPanel({ stylists, addStylist, notify, onSuccess }) {
 
   // Registration fields
   const [name, setName] = useState("");
-  const [gender, setGender] = useState("female");
+  const [gender, setGender] = useState(staffSectionsFor(getBusinessType())[0]);
 
   const [busy, setBusy] = useState(false);
   const phoneValid = /^09\d{9}$/.test(phone);
@@ -213,7 +214,7 @@ export function StylistAuthPanel({ stylists, addStylist, notify, onSuccess }) {
           <div>
             <label className="muted" style={{ fontSize: 12 }}>بخش</label>
             <div className="flex gap-2 mt-1">
-              {["female", "male"].map((g) => {
+              {staffSectionsFor(getBusinessType()).map((g) => {
                 const meta = SECTION_META[g];
                 const Icon = meta.Icon;
                 return (

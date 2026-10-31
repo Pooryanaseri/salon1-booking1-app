@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo } from "react";
 import { Clock, Percent, Copy, TrendingUp, TrendingDown, ChevronLeft, CalendarCheck, UserPlus, Award, Crown, LayoutDashboard } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, revokeBookingToken, requestBookingOtpTestMode, fetchMyLoyaltyWithToken } from "../lib/api";
+import { fetchMyQuotes, verifyBookingOtp, fetchMyBookingsWithToken, cancelMyBookingWithToken, rescheduleMyBookingWithToken, revokeBookingToken, requestBookingOtpTestMode, fetchMyLoyaltyWithToken } from "../lib/api";
 import { requestBookingOtp } from "../lib/sms";
 import { toFa, digitsOnly, normalizeMobile, formatToman, jalaliLabel, formatClock, parseDateKey } from "../lib/format";
 import { Badge, Row } from "../components/ui";
 import { CancelModal, RescheduleModal } from "../components/bookingModals";
-import { LOYALTY_REASON_FA } from "../app/shared";
+import { LOYALTY_REASON_FA, PET_SIZE_LABEL, extraChargesTotal, sizedService } from "../app/shared";
+import { MyQuotes } from "./MyQuotes";
 
 /* ============================================================
    Track view (public, restricted fields only)
@@ -148,9 +149,10 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
   // picked) still needs to move through the same server-validated path —
   // reschedule to the exact pending date/time already proposed.
   async function acceptProposedReschedule(b) {
-    const svc = services.find((s) => s.id === b.service_id);
+    const svc = sizedService(services.find((s) => s.id === b.service_id), b.pet_size);
     const newStart = b.pending_start_min;
-    const newEnd = svc ? newStart + svc.duration_minutes : b.pending_end_min;
+    // pet bookings keep their booked length (size and breed); the server recomputes either way
+    const newEnd = b.pet_name ? newStart + (b.end_min - b.start_min) : svc ? newStart + svc.duration_minutes : b.pending_end_min;
     await rescheduleMyBooking(b.id, b.pending_date, newStart, newEnd);
   }
 
@@ -167,7 +169,17 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
     return () => { cancelled = true; };
   }, [searched, accessToken]);
 
-  const hasAnything = matches.length > 0 || loyalty?.found;
+  // v2.46: price quotes (pet salons)
+  const [quotes, setQuotes] = useState([]);
+  const [quotesTick, setQuotesTick] = useState(0);
+  useEffect(() => {
+    if (!searched || !accessToken || !SUPABASE_ENABLED) { setQuotes([]); return; }
+    let cancelled = false;
+    fetchMyQuotes(accessToken).then((list) => { if (!cancelled) setQuotes(list); });
+    return () => { cancelled = true; };
+  }, [searched, accessToken, quotesTick]);
+
+  const hasAnything = matches.length > 0 || loyalty?.found || quotes.length > 0;
 
   return (
     <div className="fade-in">
@@ -269,6 +281,10 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
         </div>
       )}
 
+      {searched && quotes.length > 0 && (
+        <MyQuotes quotes={quotes} token={accessToken} notify={notify} onChanged={() => setQuotesTick((t) => t + 1)} />
+      )}
+
       {searched && hasAnything && (
         <div className="fade-in mt-4">
           {/* Hero welcome card — one clear, well-organized summary instead of
@@ -364,15 +380,17 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
               ) : matches.map((b) => {
                 const service = services.find((s) => s.id === b.service_id);
                 if (!service) return null;
-                const hasDiscount = b.final_price != null && b.original_price > b.final_price;
+                const extras = extraChargesTotal(b); // v2.45: surcharge / add-ons, included in final_price
+                const hasDiscount = b.final_price != null && b.original_price > b.final_price - extras;
                 const isProposed = b.status === "reschedule_proposed";
                 const changeable = ["pending", "confirmed", "rescheduled"].includes(b.status);
                 return (
                   <div key={b.id} className="card fade-in" style={{ padding: 16 }}>
                     <div className="flex items-center justify-between mb-3">
-                      <h3 style={{ fontSize: 15 }}>{service.name}</h3>
+                      <h3 style={{ fontSize: 15 }}>{b.services_label || service.name}</h3>
                       <Badge status={b.status} />
                     </div>
+                    {b.pet_name && <Row label={b.customer_gender === "cat" ? "گربه" : "سگ"} value={`${b.pet_name}${b.pet_size ? ` (${PET_SIZE_LABEL[b.pet_size]})` : ""}`} />}
                     <Row label="تاریخ" value={jalaliLabel(parseDateKey(b.date), { short: true })} />
                     <Row label="ساعت" value={formatClock(b.start_min)} />
                     {b.staff_name && <Row label="آرایشگر" value={b.staff_name} />}
@@ -382,7 +400,8 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
                     ) : (
                       <>
                         {hasDiscount && <Row label="قیمت اصلی" value={formatToman(b.original_price)} strike />}
-                        {hasDiscount && <Row label="تخفیف" value={"- " + formatToman(b.original_price - b.final_price)} />}
+                        {hasDiscount && <Row label="تخفیف" value={"- " + formatToman(b.original_price - (b.final_price - extras))} />}
+                        {(b.extra_charges || []).map((x, i) => <Row key={i} label={x.label} value={"+ " + formatToman(x.amount)} />)}
                         <Row label="مبلغ نهایی" value={formatToman(b.final_price)} bold />
                       </>
                     )}
@@ -547,8 +566,9 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
           variant="customer"
           onClose={() => setActionFor(null)}
           onConfirm={(newStart, newDate) => {
-            const svc = services.find((s) => s.id === actionBooking.service_id);
-            rescheduleMyBooking(actionBooking.id, newDate, newStart, newStart + svc.duration_minutes);
+            const svc = sizedService(services.find((s) => s.id === actionBooking.service_id), actionBooking.pet_size);
+            const length = actionBooking.pet_name ? actionBooking.end_min - actionBooking.start_min : svc.duration_minutes;
+            rescheduleMyBooking(actionBooking.id, newDate, newStart, newStart + length);
             setActionFor(null);
           }}
         />

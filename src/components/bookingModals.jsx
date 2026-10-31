@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey } from "../lib/format";
 import { DateStrip, Modal } from "./ui";
-import { OCCUPYING_STATUSES, fitsWithoutOverlap, isOccupied, occupiedEndFor, schemaDayOf } from "../app/shared";
+import { OCCUPYING_STATUSES, fitsWithoutOverlap, isOccupied, occupiedEndFor, schemaDayOf, sizedService } from "../app/shared";
 
 // Shown when marking a booking "انجام شد" (completed) if the customer has a
 // referrer on file. The referrer's reward is only awarded once staff
@@ -63,7 +63,11 @@ export function CancelModal({ booking, onClose, onConfirm, variant = "staff" }) 
 }
 
 export function RescheduleModal({ booking, services, bookings, workingHours, staffWorkingHours, timeOff, approvedDates, onClose, onConfirm, variant = "staff" }) {
-  const service = services.find((s) => s.id === booking.service_id);
+  // v2.44/45: a pet booking keeps the length it was booked for (size and breed)
+  const baseService = services.find((s) => s.id === booking.service_id);
+  const service = baseService && booking.pet_name && booking.end_min > booking.start_min
+    ? { ...baseService, duration_minutes: booking.end_min - booking.start_min }
+    : sizedService(baseService, booking.pet_size);
   const [date, setDate] = useState(() => parseDateKey(booking.date));
   const [slot, setSlot] = useState(null);
   const [confirming, setConfirming] = useState(false);

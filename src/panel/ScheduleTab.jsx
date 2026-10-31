@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useData } from "../hooks/useData";
-import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity, CreditCard } from "lucide-react";
+import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity, CreditCard, Syringe } from "lucide-react";
+import { isPetSalon } from "../lib/tenant";
 import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors, fetchPaymentSettings, savePaymentSettings } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey, digitsOnly } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
@@ -141,6 +142,13 @@ function AutomationCard({ automation, onAutomationChange, notify }) {
       on: "صبح‌ها یک پیامک کوتاه: تعداد نوبت‌های روز و فقط مواردی که به شما نیاز دارند.",
       off: "پیامک خلاصه‌ای برای مدیر ارسال نمی‌شود.",
     },
+    // v2.44 pet salons
+    ...(isPetSalon() ? [{
+      key: "pet_require_vaccination", Icon: Syringe,
+      title: "الزام واکسن معتبر",
+      on: "مشتری هنگام رزرو تاریخ اعتبار واکسن را وارد می‌کند و نوبت فقط وقتی ثبت می‌شود که واکسن تا روز نوبت معتبر باشد.",
+      off: "وارد کردن تاریخ واکسن هنگام رزرو اختیاری است.",
+    }] : []),
   ];
   return (
     <div className="card mb-6" style={{ padding: 14 }}>
@@ -175,6 +183,57 @@ function AutomationCard({ automation, onAutomationChange, notify }) {
           </div>
         </div>
       ))}
+      {isPetSalon() && <PetPricingSettings automation={automation} save={save} saving={saving} />}
+    </div>
+  );
+}
+
+// v2.45 pet salons: the aggression surcharge and where small / medium /
+// large end (kg) — both straight from the salon's own price list.
+function PetPricingSettings({ automation, save, saving }) {
+  const limits = Array.isArray(automation.pet_size_limits) ? automation.pet_size_limits : [5, 15, 30];
+  const [draft, setDraft] = useState(limits.map(String));
+  const nums = draft.map(Number);
+  const valid = nums.every((n) => Number.isInteger(n) && n > 0 && n <= 150) && nums[0] < nums[1] && nums[1] < nums[2];
+  const changed = nums.some((n, i) => n !== limits[i]);
+  const sel = { padding: "4px 8px", fontSize: 12 };
+  return (
+    <div style={{ padding: "10px 0", borderTop: "1px solid var(--color-border)" }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--color-heading)" }}>تعرفهٔ حیوانات</div>
+      <label className="flex items-center gap-2 mt-2 muted" style={{ fontSize: 11.5, flexWrap: "wrap" }}>
+        قیمت‌گذاری:
+        <select value={automation.pet_quote_mode || "off"} disabled={saving != null} onChange={(e) => save("pet_quote_mode", e.target.value)} style={sel}>
+          <option value="all">همهٔ نوبت‌ها با استعلام قیمت از آرایشگر</option>
+          <option value="unpriced">استعلام فقط برای خدمات بدون قیمت</option>
+          <option value="off">رزرو مستقیم با قیمت ثابت</option>
+        </select>
+      </label>
+      {automation.pet_quote_mode !== "off" && (
+        <label className="flex items-center gap-2 mt-2 muted" style={{ fontSize: 11.5 }}>
+          اعتبار قیمت پیشنهادی:
+          <select value={automation.pet_quote_valid_days || 3} disabled={saving != null} onChange={(e) => save("pet_quote_valid_days", Number(e.target.value))} style={sel}>
+            {[1, 2, 3, 5, 7, 14].map((n) => <option key={n} value={n}>{toFa(n)} روز</option>)}
+          </select>
+        </label>
+      )}
+      <label className="flex items-center gap-2 mt-2 muted" style={{ fontSize: 11.5 }}>
+        افزایش قیمت برای حیوان پرخاشگر:
+        <select value={automation.pet_aggressive_surcharge_percent || 0} disabled={saving != null}
+          onChange={(e) => save("pet_aggressive_surcharge_percent", Number(e.target.value))} style={sel}>
+          {[0, 10, 20, 25, 30, 40, 50].map((n) => <option key={n} value={n}>{n ? `${toFa(n)}٪` : "ندارد"}</option>)}
+        </select>
+      </label>
+      <div className="muted mt-2" style={{ fontSize: 11.5 }}>مرز جثه‌ها (کیلوگرم): کوچک تا / متوسط تا / بزرگ تا</div>
+      <div className="flex items-center gap-2 mt-1">
+        {draft.map((v, i) => (
+          <input key={i} type="number" min={1} max={150} value={v} aria-label={["حداکثر وزن کوچک", "حداکثر وزن متوسط", "حداکثر وزن بزرگ"][i]}
+            onChange={(e) => setDraft((d) => d.map((x, j) => (j === i ? e.target.value : x)))}
+            className="tabular" style={{ width: 64, padding: "5px 8px", fontSize: 12.5 }} />
+        ))}
+        <button className="tap ghost-btn" disabled={!valid || !changed || saving != null} style={{ padding: "5px 12px", fontSize: 12 }}
+          onClick={() => save("pet_size_limits", nums)}>ذخیره</button>
+      </div>
+      {!valid && <p style={{ fontSize: 11, color: "var(--color-danger)", marginTop: 4 }}>اعداد باید صعودی و بین ۱ تا ۱۵۰ باشند</p>}
     </div>
   );
 }

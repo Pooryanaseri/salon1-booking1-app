@@ -13,6 +13,7 @@
 //  app degrades to the original demo behaviour instead of crashing.
 // ============================================================================
 import { supabase, SUPABASE_ENABLED, getCurrentSalonId } from "./supabase";
+import { isPetSalon } from "./tenant";
 
 /* ---------------------------------------------------------------- date glue */
 // The app's dateKey() produces an UNPADDED key: "2026-8-31".
@@ -43,6 +44,12 @@ const map = {
       discount_type: r.discount_type, discount_value: Number(r.discount_value || 0),
       discount_reason: r.discount_reason || "", is_active: r.is_active,
       loyalty_points: r.loyalty_points ?? 10,
+      size_pricing: r.size_pricing && typeof r.size_pricing === "object" ? r.size_pricing : {}, // v2.44 pet salons
+      breed_pricing: r.breed_pricing && typeof r.breed_pricing === "object" ? r.breed_pricing : {}, // v2.45
+      is_addon: !!r.is_addon,                                                                     // v2.45
+      // v2.26 rebooking cycle — was never mapped, so the services tab field
+      // neither loaded nor saved and the predictive reminders never ran.
+      average_cycle_days: r.average_cycle_days ?? null,
     }),
     toRow: (s) => ({
       id: s.id, name: s.name ?? "", gender: s.gender ?? "female", category: s.category ?? "hair",
@@ -50,6 +57,11 @@ const map = {
       price: s.price ?? null, discount_type: s.discount_type ?? "none",
       discount_value: s.discount_value ?? 0, discount_reason: s.discount_reason ?? "",
       is_active: s.is_active ?? true, loyalty_points: s.loyalty_points ?? 10,
+      average_cycle_days: s.average_cycle_days ?? null,
+      // Only pet salons (always on v2.44+) send it, so a beauty salon keeps
+      // saving even before its database has the column.
+      ...(isPetSalon() || Object.keys(s.size_pricing || {}).length ? { size_pricing: s.size_pricing ?? {} } : {}),
+      ...(isPetSalon() ? { breed_pricing: s.breed_pricing ?? {}, is_addon: !!s.is_addon } : {}), // v2.45
     }),
   },
 
@@ -99,6 +111,12 @@ const map = {
       sms_sent_reminder: r.sms_sent_reminder,
       campaign_id: r.campaign_id ?? null,
       points_awarded: r.points_awarded ?? 0,
+      pet_id: r.pet_id ?? null,       // v2.44 pet salons: the animal and
+      pet_name: r.pet_name ?? null,   // the size the booking was priced for
+      pet_size: r.pet_size ?? null,
+      extra_charges: Array.isArray(r.extra_charges) ? r.extra_charges : [], // v2.45: [{label, amount}], in final_price
+      quote_id: r.quote_id ?? null,            // v2.46: booked from a price quote
+      services_label: r.services_label ?? null, // v2.46: the quoted services
       created_at: ms(r.created_at),
     }),
     toRow: (b) => {
@@ -500,12 +518,14 @@ export async function requestBookingOtpTestMode(phone) {
 // create_public_booking from services/loyalty tables, never trusted from
 // this call's arguments beyond the customer's own choices (service,
 // staff, date, time, name, phone, gender, optional referral code).
-export async function createPublicBooking({ serviceId, staffId, date, startMin, customerName, customerPhone, customerGender, referralCode }) {
+export async function createPublicBooking({ serviceId, staffId, date, startMin, customerName, customerPhone, customerGender, referralCode, pet }) {
   if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
   const { data, error } = await supabase.rpc("create_public_booking", {
     p_service_id: serviceId, p_staff_id: staffId ?? null, p_date: date, p_start_min: startMin,
     p_customer_name: customerName, p_customer_phone: customerPhone, p_customer_gender: customerGender,
     p_referral_code: referralCode ?? null,
+    // v2.44: only sent by pet salons — the server validates and saves it
+    ...(pet ? { p_pet: pet } : {}),
   });
   if (error) { fail("create_public_booking", error); return { ok: false, error: "ثبت نوبت ناموفق بود" }; }
   return data;
@@ -579,6 +599,28 @@ export async function fetchCustomers() {
     .order("phone"));
   if (error) { fail("customers", error); return []; }
   return setCache(key, data || []);
+}
+
+/* ------------------------------------------------- v2.44 pet profiles --- */
+// Managers see every pet of the salon; a groomer sees the pets of customers
+// they have served (RLS). Profiles are created by the booking itself.
+export async function fetchPets() {
+  if (!SUPABASE_ENABLED) return [];
+  const { data, error } = await fetchAllPages(() => supabase
+    .from("pets")
+    .select("id, owner_phone, name, species, breed, size, weight_kg, temperament, vaccine_valid_until, owner_notes, grooming_notes, last_visit_date, created_at")
+    .order("owner_phone").order("id"));
+  if (error) { fail("pets", error); return []; }
+  return (data || []).map((p) => ({ ...p, weight_kg: p.weight_kg == null ? null : Number(p.weight_kg) }));
+}
+
+const PET_EDITABLE = ["name", "breed", "size", "weight_kg", "temperament", "vaccine_valid_until", "owner_notes", "grooming_notes"];
+export async function updatePet(id, patch) {
+  if (!SUPABASE_ENABLED) return { ok: true };
+  const row = Object.fromEntries(Object.entries(patch).filter(([k]) => PET_EDITABLE.includes(k)));
+  const { error } = await supabase.from("pets").update(row).eq("id", id);
+  if (error) { fail("pets.update", error); return { ok: false, error: "ذخیرهٔ پروفایل حیوان ناموفق بود" }; }
+  return { ok: true };
 }
 
 // Links a new customer to whoever referred them, and awards points to both
@@ -752,11 +794,20 @@ export const DEFAULT_AUTOMATION = {
   deposit_percent: 0,             // v2.37 — 0 = no online deposit
   deposit_min_price: 0,           // v2.37 — toman; deposit only for services at/above this
   reminder_hours_before: 3,       // v2.39 — customer reminder, hours before the visit (0 = off)
+  pet_require_vaccination: false, // v2.44 — pet salons: booking needs a vaccination valid on the visit day
+  pet_size_limits: [5, 15, 30],    // v2.45 — kg upper bounds of small / medium / large
+  pet_aggressive_surcharge_percent: 0, // v2.45
+  pet_quote_mode: "off",          // v2.46 — 'all' | 'unpriced' | 'off' (read from the database for pet salons)
+  pet_quote_valid_days: 3,        // v2.46
 };
-const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).join(", ");
+// The pet columns are read separately (pet salons only), so a database that
+// hasn't run v2.44/v2.45 yet still loads every other setting.
+const PET_SETTING_KEYS = ["pet_require_vaccination", "pet_size_limits", "pet_aggressive_surcharge_percent", "pet_quote_mode", "pet_quote_valid_days"];
+const AUTOMATION_COLUMNS = Object.keys(DEFAULT_AUTOMATION).filter((k) => !PET_SETTING_KEYS.includes(k)).join(", ");
 
 export async function fetchAutomationSettings() {
-  if (!SUPABASE_ENABLED) return { ...DEFAULT_AUTOMATION };
+  // v2.46: the demo pet salon shows the quote flow
+  if (!SUPABASE_ENABLED) return { ...DEFAULT_AUTOMATION, ...(isPetSalon() ? { pet_quote_mode: "all" } : {}) };
   const { data, error } = await supabase.from("app_settings").select(AUTOMATION_COLUMNS).eq("salon_id", getCurrentSalonId()).maybeSingle();
   // Before v2.28 is applied these columns don't exist yet — fall back to the
   // old manual behavior rather than claiming automation that isn't running.
@@ -764,7 +815,21 @@ export async function fetchAutomationSettings() {
     if (error) fail("app_settings.fetchAutomation", error);
     return Object.fromEntries(Object.entries(DEFAULT_AUTOMATION).map(([k, v]) => [k, typeof v === "boolean" ? false : v]));
   }
-  return { ...DEFAULT_AUTOMATION, ...data };
+  const out = { ...DEFAULT_AUTOMATION, ...data };
+  if (isPetSalon()) {
+    // newest first; an older database lacks the later columns
+    let pet = null;
+    for (const keys of [PET_SETTING_KEYS, PET_SETTING_KEYS.slice(0, 3), PET_SETTING_KEYS.slice(0, 1)]) {
+      const { data: row, error: petErr } = await supabase.from("app_settings").select(keys.join(", ")).eq("salon_id", getCurrentSalonId()).maybeSingle();
+      if (!petErr) { pet = row; break; }
+    }
+    out.pet_require_vaccination = !!pet?.pet_require_vaccination;
+    if (Array.isArray(pet?.pet_size_limits) && pet.pet_size_limits.length === 3) out.pet_size_limits = pet.pet_size_limits.map(Number);
+    if (Number.isFinite(pet?.pet_aggressive_surcharge_percent)) out.pet_aggressive_surcharge_percent = pet.pet_aggressive_surcharge_percent;
+    if (["all", "unpriced", "off"].includes(pet?.pet_quote_mode)) out.pet_quote_mode = pet.pet_quote_mode;
+    if (Number.isFinite(pet?.pet_quote_valid_days)) out.pet_quote_valid_days = pet.pet_quote_valid_days;
+  }
+  return out;
 }
 
 /** Saves the patch; when the booking window is (re)enabled or resized, opens
@@ -1107,13 +1172,19 @@ export async function adminListSalons() {
   if (error) { fail("admin_list_salons", error); return null; }
   return data || [];
 }
-export async function adminCreateSalon({ slug, name, ownerPhone }) {
-  const { data, error } = await supabase.rpc("admin_create_salon", { p_slug: slug, p_name: name, p_owner_phone: ownerPhone });
+export async function adminCreateSalon({ slug, name, ownerPhone, businessType = "beauty" }) {
+  const { data, error } = await supabase.rpc("admin_create_salon", {
+    p_slug: slug, p_name: name, p_owner_phone: ownerPhone,
+    ...(businessType !== "beauty" ? { p_business_type: businessType } : {}), // v2.44
+  });
   if (error) { failWrite("admin_create_salon", error); return { ok: false, error: "ساخت سالن ناموفق بود" }; }
   return data || { ok: false };
 }
-export async function adminUpdateSalon(id, { name = null, ownerPhone = null, active = null } = {}) {
-  const { data, error } = await supabase.rpc("admin_update_salon", { p_id: id, p_name: name, p_owner_phone: ownerPhone, p_active: active });
+export async function adminUpdateSalon(id, { name = null, ownerPhone = null, active = null, businessType = null } = {}) {
+  const { data, error } = await supabase.rpc("admin_update_salon", {
+    p_id: id, p_name: name, p_owner_phone: ownerPhone, p_active: active,
+    ...(businessType ? { p_business_type: businessType } : {}), // v2.44
+  });
   if (error) { failWrite("admin_update_salon", error); return { ok: false, error: "ذخیره ناموفق بود" }; }
   return data || { ok: false };
 }
@@ -1156,4 +1227,135 @@ export async function fetchRecentCampaignPhones(days = 14) {
   const { data, error } = await fetchAllPages(() => supabase.rpc("recent_campaign_phones", { p_days: days }).order("phone"));
   if (error) { fail("recent_campaign_phones", error); return new Set(); }
   return new Set((data || []).map((r) => r.phone));
+}
+
+/* ------------------------------------------------ v2.46: price quotes ---- */
+// Demo mode keeps quotes in memory so the whole flow can be tried out.
+const demoQuotes = [];
+const demoId = () => `demo-q-${Math.random().toString(36).slice(2, 10)}`;
+
+/** Customer: ask the salon for a price. → {ok, id} | {ok:false, error} */
+export async function requestQuote({ name, phone, species, pet, serviceIds, servicesLabel, note, preferredTime }) {
+  if (!SUPABASE_ENABLED) {
+    demoQuotes.unshift({
+      id: demoId(), customer_phone: phone, customer_name: name || "مشتری", pet_name: pet.name, pet_species: species, pet_size: pet.size,
+      service_ids: serviceIds, services_label: servicesLabel, customer_note: note || "", preferred_time: preferredTime || "",
+      status: "pending", created_at: new Date().toISOString(), demoPet: pet,
+    });
+    return { ok: true, demo: true, id: demoQuotes[0].id };
+  }
+  const { data, error } = await supabase.rpc("request_quote", {
+    p_customer_name: name || "", p_customer_phone: phone, p_species: species, p_pet: pet,
+    p_service_ids: serviceIds, p_note: note || "", p_preferred_time: preferredTime || "",
+  });
+  if (error) { fail("request_quote", error); return { ok: false, error: "ثبت درخواست ناموفق بود" }; }
+  return data;
+}
+
+/* v2.47 — photos with a quote request (private bucket; see the migration). */
+const QUOTE_PHOTO_BUCKET = "quote-photos";
+export const MAX_QUOTE_PHOTOS = 4;
+
+/** Shrinks a phone photo to ~1600 px JPEG (a few hundred KB) before upload. */
+export async function shrinkImage(file, maxDim = 1600, quality = 0.82) {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close?.();
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+    if (blob) return blob;
+  } catch { /* undecodable here (e.g. HEIC on desktop) — fall through */ }
+  return /^image\/(jpeg|png|webp)$/.test(file.type) && file.size <= 3 * 1024 * 1024 ? file : null;
+}
+
+/** Uploads the request's photos → {uploaded, failed}. */
+export async function uploadQuotePhotos(quoteId, files) {
+  const list = files.slice(0, MAX_QUOTE_PHOTOS);
+  if (!SUPABASE_ENABLED) {
+    const q = demoQuotes.find((x) => x.id === quoteId);
+    if (q) q.demoPhotos = list.map((f) => URL.createObjectURL(f));
+    return { uploaded: list.length, failed: 0 };
+  }
+  let uploaded = 0, failed = 0;
+  for (const file of list) {
+    const blob = await shrinkImage(file);
+    if (!blob) { failed++; continue; }
+    const ext = blob.type === "image/png" ? "png" : blob.type === "image/webp" ? "webp" : "jpg";
+    const name = `${(crypto.randomUUID?.() || Math.random().toString(36).slice(2)).replace(/[^a-z0-9-]/g, "")}.${ext}`;
+    const { error } = await supabase.storage.from(QUOTE_PHOTO_BUCKET)
+      .upload(`${getCurrentSalonId()}/${quoteId}/${name}`, blob, { contentType: blob.type || "image/jpeg", upsert: false });
+    if (error) { fail("quote photo upload", error); failed++; } else uploaded++;
+  }
+  return { uploaded, failed };
+}
+
+/** Staff: signed URLs (1 hour) of a request's photos. */
+export async function fetchQuotePhotos(quote) {
+  if (!SUPABASE_ENABLED) return quote.demoPhotos || [];
+  const folder = `${getCurrentSalonId()}/${quote.id}`;
+  const { data: files, error } = await supabase.storage.from(QUOTE_PHOTO_BUCKET).list(folder, { limit: MAX_QUOTE_PHOTOS + 2 });
+  if (error) { fail("quote photos list", error); return []; }
+  const paths = (files || []).filter((f) => f.name && !f.name.startsWith(".")).map((f) => `${folder}/${f.name}`);
+  if (!paths.length) return [];
+  const { data: signed, error: signErr } = await supabase.storage.from(QUOTE_PHOTO_BUCKET).createSignedUrls(paths, 3600);
+  if (signErr) { fail("quote photos sign", signErr); return []; }
+  return (signed || []).map((x) => x.signedUrl).filter(Boolean);
+}
+
+/** Staff: the salon's quote requests, newest first. */
+export async function fetchQuotes() {
+  if (!SUPABASE_ENABLED) return demoQuotes.map((q) => ({ ...q }));
+  const { data, error } = await supabase.from("quote_requests").select("*")
+    .gte("created_at", new Date(Date.now() - 60 * 86400000).toISOString())
+    .order("created_at", { ascending: false }).limit(300);
+  if (error) { fail("quote_requests", error); return []; }
+  return data || [];
+}
+
+export async function sendQuote(id, { price, duration, staffId, note }) {
+  if (!SUPABASE_ENABLED) {
+    const q = demoQuotes.find((x) => x.id === id);
+    if (q) Object.assign(q, { status: "quoted", quoted_price: price, quoted_duration: duration, quoted_staff_id: staffId || null, quote_note: note || "",
+      quoted_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3 * 86400000).toISOString() });
+    return { ok: true, demo: true };
+  }
+  const { data, error } = await supabase.rpc("send_quote", { p_id: id, p_price: price, p_duration: duration, p_staff_id: staffId || null, p_note: note || "" });
+  if (error) { fail("send_quote", error); return { ok: false, error: "ارسال قیمت ناموفق بود" }; }
+  return data;
+}
+
+export async function declineQuote(id, reason) {
+  if (!SUPABASE_ENABLED) {
+    const q = demoQuotes.find((x) => x.id === id);
+    if (q) Object.assign(q, { status: "declined", quote_note: reason || "" });
+    return { ok: true, demo: true };
+  }
+  const { data, error } = await supabase.rpc("decline_quote", { p_id: id, p_reason: reason || "" });
+  if (error) { fail("decline_quote", error); return { ok: false, error: "ثبت ناموفق بود" }; }
+  return data;
+}
+
+/** Customer dashboard (OTP token): their quotes. */
+export async function fetchMyQuotes(token) {
+  if (!SUPABASE_ENABLED || !token) return [];
+  const { data, error } = await supabase.rpc("my_quotes_with_token", { p_token: token });
+  if (error) { fail("my_quotes_with_token", error); return []; }
+  return Array.isArray(data) ? data : [];
+}
+/** A fresh booking link for a quoted price → {ok, token}. */
+export async function myQuoteLink(token, quoteId) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("my_quote_link", { p_token: token, p_quote_id: quoteId });
+  if (error) { fail("my_quote_link", error); return { ok: false, error: "ساخت لینک ناموفق بود" }; }
+  return data;
+}
+export async function cancelMyQuote(token, quoteId) {
+  if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
+  const { data, error } = await supabase.rpc("cancel_my_quote", { p_token: token, p_quote_id: quoteId });
+  if (error) { fail("cancel_my_quote", error); return { ok: false, error: "لغو ناموفق بود" }; }
+  return data;
 }

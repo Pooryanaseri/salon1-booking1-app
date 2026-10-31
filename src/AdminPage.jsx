@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Building2, Plus, Search, LogOut, Loader2, CheckCircle2, AlertTriangle, Power, Pencil, Copy, ExternalLink, ShieldCheck } from "lucide-react";
+import { Building2, Plus, Search, LogOut, Loader2, CheckCircle2, AlertTriangle, Power, Pencil, Copy, ExternalLink, ShieldCheck, Sparkles, PawPrint } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSession, signOut, signInPlatformAdmin, registerPlatformAdmin } from "./lib/auth";
 import { isPlatformAdmin, adminListSalons, adminCreateSalon, adminUpdateSalon } from "./lib/api";
@@ -252,6 +252,7 @@ function SalonRow({ s, onToggle, onEdit }) {
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
         {!s.active && <span style={S.chip(C.danger)}>غیرفعال</span>}
+        {s.business_type === "pet" && <span style={S.chip(C.brand)}><PawPrint size={12} /> آرایشگاه حیوانات</span>}
         <span style={S.chip(s.owner_registered ? C.ok : C.warn)}>
           {s.owner_registered ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
           {s.owner_registered ? "مدیر ثبت‌نام کرده" : `منتظر ثبت‌نام مدیر${s.owner_phone ? ` (${toFa(s.owner_phone)})` : ""}`}
@@ -266,6 +267,29 @@ function SalonRow({ s, onToggle, onEdit }) {
         {toFa(s.stylists)} آرایشگر · {toFa(s.services)} خدمت · {toFa(s.bookings_30d)} نوبت در ۳۰ روز ({toFa(s.completed_30d)} انجام‌شده) · {toFa(s.sms_sent_30d)} پیامک
         {s.last_booking_date ? ` · آخرین نوبت: ${jalaliLabel(parseDateKey(s.last_booking_date), { short: true })}` : " · هنوز نوبتی ندارد"}
       </p>
+    </div>
+  );
+}
+
+// v2.44: beauty salon (female/male) or pet grooming salon (dog/cat).
+const TYPE_OPTIONS = [
+  { v: "beauty", l: "سالن زیبایی", d: "بخش زنانه و مردانه", Icon: Sparkles },
+  { v: "pet", l: "آرایشگاه حیوانات", d: "سگ و گربه — منوی اولیه ساخته می‌شود", Icon: PawPrint },
+];
+function TypePicker({ value, onChange, disabled }) {
+  return (
+    <div style={{ display: "flex", gap: 8 }} role="radiogroup" aria-label="نوع سالن">
+      {TYPE_OPTIONS.map((o) => {
+        const on = value === o.v;
+        return (
+          <button key={o.v} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => onChange(o.v)}
+            style={{ ...S.ghost, flex: 1, flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "10px 12px", opacity: disabled && !on ? 0.5 : 1,
+              borderColor: on ? C.brand : undefined, background: on ? `${C.brand}1a` : undefined }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 800 }}><o.Icon size={14} /> {o.l}</span>
+            <span style={{ fontSize: 11, color: C.muted, fontWeight: 400 }}>{o.d}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -291,6 +315,7 @@ function CreateSalonDialog({ onClose, onCreated }) {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [ownerPhone, setOwnerPhone] = useState("");
+  const [businessType, setBusinessType] = useState("beauty");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState(null);
@@ -299,16 +324,16 @@ function CreateSalonDialog({ onClose, onCreated }) {
   async function submit(e) {
     e.preventDefault();
     setBusy(true); setError("");
-    const res = await adminCreateSalon({ slug, name: name.trim(), ownerPhone });
+    const res = await adminCreateSalon({ slug, name: name.trim(), ownerPhone, businessType });
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
-    setCreated({ ...res, name: name.trim(), ownerPhone });
+    setCreated({ ...res, name: name.trim(), ownerPhone, businessType });
     onCreated();
   }
 
   if (created) {
     const url = `${window.location.origin}/${created.slug}`;
-    const message = `سالن «${created.name}» در سامانهٔ نوبت‌دهی ساخته شد.\nآدرس: ${url}\nبرای ورود: «پنل مدیریت ← ورود مدیر سالن ← ثبت‌نام» با شمارهٔ ${created.ownerPhone}.\nبعد از ورود: ساعات کاری، خدمات، آرایشگرها و «پیامک ← حساب پیامک سالن» را تنظیم کنید.`;
+    const message = `سالن «${created.name}» در سامانهٔ نوبت‌دهی ساخته شد.\nآدرس: ${url}\nبرای ورود: «پنل مدیریت ← ورود مدیر سالن ← ثبت‌نام» با شمارهٔ ${created.ownerPhone}.\nبعد از ورود: ساعات کاری، ${created.businessType === "pet" ? "قیمت خدمات سگ و گربه (بر اساس جثه)" : "خدمات"}، آرایشگرها و «پیامک ← حساب پیامک سالن» را تنظیم کنید.`;
     return (
       <Dialog title="سالن ساخته شد" onClose={onClose}>
         <p style={{ fontSize: 13, color: C.muted, marginBottom: 8 }}>این پیام را برای مدیر سالن بفرستید:</p>
@@ -325,8 +350,12 @@ function CreateSalonDialog({ onClose, onCreated }) {
     <Dialog title="سالن جدید" onClose={onClose}>
       <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div>
+          <span style={S.label}>نوع سالن</span>
+          <TypePicker value={businessType} onChange={setBusinessType} />
+        </div>
+        <div>
           <label style={S.label} htmlFor="ns-name">نام سالن</label>
-          <input id="ns-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="آرایشگاه …" style={S.input} />
+          <input id="ns-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={businessType === "pet" ? "پت‌شاپ …" : "آرایشگاه …"} style={S.input} />
         </div>
         <div>
           <label style={S.label} htmlFor="ns-slug">آدرس صفحه (حروف کوچک انگلیسی، عدد، خط تیره)</label>
@@ -352,13 +381,18 @@ function CreateSalonDialog({ onClose, onCreated }) {
 function EditSalonDialog({ salon, onClose, onSaved }) {
   const [name, setName] = useState(salon.name);
   const [ownerPhone, setOwnerPhone] = useState(salon.owner_phone || "");
+  const currentType = salon.business_type || "beauty";
+  const [businessType, setBusinessType] = useState(currentType);
+  // The server refuses a type change once the salon has bookings.
+  const typeLocked = !!salon.last_booking_date;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   async function submit(e) {
     e.preventDefault();
+    if (businessType !== currentType && !window.confirm("نوع سالن تغییر کند؟ خدمات بخش‌های قبلی حذف می‌شوند.")) return;
     setBusy(true); setError("");
-    const res = await adminUpdateSalon(salon.id, { name: name.trim(), ownerPhone: ownerPhone || null });
+    const res = await adminUpdateSalon(salon.id, { name: name.trim(), ownerPhone: ownerPhone || null, businessType: businessType !== currentType ? businessType : null });
     setBusy(false);
     if (!res.ok) { setError(res.error); return; }
     onSaved();
@@ -370,6 +404,11 @@ function EditSalonDialog({ salon, onClose, onSaved }) {
         <div>
           <label style={S.label} htmlFor="es-name">نام سالن</label>
           <input id="es-name" value={name} onChange={(e) => setName(e.target.value)} style={S.input} />
+        </div>
+        <div>
+          <span style={S.label}>نوع سالن</span>
+          <TypePicker value={businessType} onChange={setBusinessType} disabled={typeLocked} />
+          {typeLocked && <p style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>این سالن نوبت ثبت‌شده دارد؛ نوع آن قابل تغییر نیست.</p>}
         </div>
         <div>
           <label style={S.label} htmlFor="es-owner">موبایل مدیر سالن</label>

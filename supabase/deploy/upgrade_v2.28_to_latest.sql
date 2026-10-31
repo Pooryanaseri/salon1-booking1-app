@@ -2666,6 +2666,7 @@ $fn$;
 
 -- One row per salon with what the platform owner needs to run 300+ of them:
 -- is it set up, is it used, is its SMS working.
+drop function if exists public.admin_list_salons(); -- v2.44 adds a column; keeps re-runs working
 create or replace function public.admin_list_salons()
 returns table (
   id uuid, slug text, name text, active boolean, owner_phone text, created_at timestamptz,
@@ -3297,4 +3298,1979 @@ end;
 $fn$;
 revoke all on function public.claim_due_sms(int) from public, anon, authenticated;
 grant execute on function public.claim_due_sms(int) to service_role;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.44_pet_grooming.sql
+-- ============================================================================
+-- Migration v2.44 — pet grooming salons (run after v2.43)
+-- ============================================================================
+--  A salon is now one of two kinds, set by the platform admin:
+--    beauty — as before: female / male sections.
+--    pet    — a dog & cat grooming salon: dog / cat sections.
+--  The existing "section" column (services.gender, appointments.
+--  customer_gender, stylists.gender) carries the new values, so the booking,
+--  scheduling, waitlist and reporting machinery works unchanged. Groomers
+--  can be dog-only, cat-only, or "pet" (both).
+--
+--  1. salons.business_type; section helpers.
+--  2. pets — one profile per animal (owner phone, species, breed, size,
+--     weight, temperament, vaccination, notes for and from the groomer).
+--  3. services.size_pricing — price and duration per size (small … giant);
+--     anything not set falls back to the service's base price/duration.
+--  4. appointments.pet_id / pet_name / pet_size — the animal and the size
+--     the booking was priced for.
+--  5. create_public_booking takes the pet (p_pet jsonb): validates it,
+--     upserts the profile, prices and times the booking for its size, and
+--     enforces the salon's "valid vaccination required" setting.
+--     Reschedule and salon-sent booking links keep the size-based duration.
+--  6. SMS: {{pet}} variable, pet wording for the default texts, and the
+--     groomer's new-booking SMS names the animal and flags an aggressive one.
+--  7. Admin: create a pet salon (with starter dog/cat services), type in
+--     the salon list, change type while the salon has no bookings.
+-- ============================================================================
+
+-- ------------------------------------------------------ 1. salon type ------
+alter table public.salons add column if not exists business_type text not null default 'beauty';
+alter table public.salons drop constraint if exists salons_business_type_check;
+alter table public.salons add constraint salons_business_type_check check (business_type in ('beauty', 'pet'));
+grant select (business_type) on public.salons to anon, authenticated;
+
+-- Sections are stored in the existing gender columns.
+alter table public.services drop constraint if exists services_gender_check;
+alter table public.services add constraint services_gender_check check (gender in ('female', 'male', 'dog', 'cat'));
+alter table public.appointments drop constraint if exists appointments_customer_gender_check;
+alter table public.appointments add constraint appointments_customer_gender_check check (customer_gender in ('female', 'male', 'dog', 'cat'));
+alter table public.customers drop constraint if exists customers_gender_check;
+alter table public.customers add constraint customers_gender_check check (gender in ('female', 'male', 'dog', 'cat'));
+alter table public.stylists drop constraint if exists stylists_gender_check;
+alter table public.stylists add constraint stylists_gender_check check (gender in ('female', 'male', 'dog', 'cat', 'pet'));
+
+create or replace function public.salon_sections(p_salon uuid)
+returns text[]
+language sql stable security definer set search_path = public as $fn$
+  select case when business_type = 'pet' then array['dog', 'cat'] else array['female', 'male'] end
+    from public.salons where id = p_salon;
+$fn$;
+revoke all on function public.salon_sections(uuid) from public, anon, authenticated;
+
+alter table public.app_settings add column if not exists pet_require_vaccination boolean not null default false;
+
+-- --------------------------------------------------------- 2. pets ---------
+create table if not exists public.pets (
+  id                  uuid primary key default gen_random_uuid(),
+  salon_id            uuid not null default public.current_salon_id() references public.salons (id) on delete cascade,
+  owner_phone         text not null check (owner_phone ~ '^09[0-9]{9}$'),
+  name                text not null check (length(trim(name)) between 1 and 40),
+  species             text not null check (species in ('dog', 'cat')),
+  breed               text not null default '' check (length(breed) <= 40),
+  size                text not null default 'medium' check (size in ('small', 'medium', 'large', 'giant')),
+  weight_kg           numeric(5, 1) check (weight_kg is null or (weight_kg > 0 and weight_kg <= 150)),
+  temperament         text not null default 'calm' check (temperament in ('calm', 'nervous', 'aggressive')),
+  vaccine_valid_until date,
+  owner_notes         text not null default '' check (length(owner_notes) <= 300),
+  grooming_notes      text not null default '' check (length(grooming_notes) <= 1000),
+  last_visit_date     date,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+create unique index if not exists pets_owner_name_uidx on public.pets (salon_id, owner_phone, species, lower(name));
+create index if not exists pets_salon_owner_idx on public.pets (salon_id, owner_phone);
+
+alter table public.pets enable row level security;
+revoke all on public.pets from anon;
+grant select, insert, update, delete on public.pets to authenticated;
+
+drop policy if exists p_pets_mgr on public.pets;
+create policy p_pets_mgr on public.pets for all
+  using ((select public.is_manager()) and salon_id = (select public.current_salon_id()))
+  with check ((select public.is_manager()) and salon_id = (select public.current_salon_id()));
+-- A groomer sees, and can add notes to, the animals of customers they serve.
+drop policy if exists p_pets_staff_read on public.pets;
+create policy p_pets_staff_read on public.pets for select
+  using (salon_id = (select public.current_salon_id())
+         and exists (select 1 from public.appointments a
+                      where a.salon_id = pets.salon_id and a.customer_phone = pets.owner_phone
+                        and a.staff_id = (select public.my_stylist_id())));
+drop policy if exists p_pets_staff_update on public.pets;
+create policy p_pets_staff_update on public.pets for update
+  using (salon_id = (select public.current_salon_id())
+         and exists (select 1 from public.appointments a
+                      where a.salon_id = pets.salon_id and a.customer_phone = pets.owner_phone
+                        and a.staff_id = (select public.my_stylist_id())))
+  with check (salon_id = (select public.current_salon_id()));
+
+create or replace function public.touch_pet()
+returns trigger
+language plpgsql as $fn$
+begin
+  new.updated_at := now();
+  new.name := trim(new.name);
+  new.breed := trim(new.breed);
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_touch_pet on public.pets;
+create trigger trg_touch_pet before insert or update on public.pets
+  for each row execute function public.touch_pet();
+
+-- ------------------------------------------------- 3. size pricing ---------
+alter table public.services add column if not exists size_pricing jsonb not null default '{}'::jsonb;
+alter table public.services drop constraint if exists services_size_pricing_check;
+alter table public.services add constraint services_size_pricing_check check (jsonb_typeof(size_pricing) = 'object');
+
+-- The service as booked for an animal of this size: price and duration
+-- from size_pricing when set there, otherwise the service's own.
+create or replace function public.service_at_size(p_svc public.services, p_size text)
+returns public.services
+language plpgsql immutable as $fn$
+declare v_tier jsonb;
+begin
+  if p_size is null or p_svc.size_pricing is null then
+    return p_svc;
+  end if;
+  v_tier := p_svc.size_pricing -> p_size;
+  if jsonb_typeof(v_tier) = 'object' then
+    if jsonb_typeof(v_tier -> 'price') = 'number' and (v_tier ->> 'price')::numeric >= 0 then
+      p_svc.price := round((v_tier ->> 'price')::numeric)::bigint;
+    end if;
+    if jsonb_typeof(v_tier -> 'duration') = 'number' and (v_tier ->> 'duration')::numeric between 5 and 600 then
+      p_svc.duration_minutes := round((v_tier ->> 'duration')::numeric)::int;
+    end if;
+  end if;
+  return p_svc;
+end;
+$fn$;
+
+-- ------------------------------------------- 4. pet on the booking ---------
+alter table public.appointments add column if not exists pet_id uuid references public.pets (id) on delete set null;
+alter table public.appointments add column if not exists pet_name text;
+alter table public.appointments add column if not exists pet_size text;
+alter table public.appointments drop constraint if exists appointments_pet_size_check;
+alter table public.appointments add constraint appointments_pet_size_check check (pet_size is null or pet_size in ('small', 'medium', 'large', 'giant'));
+create index if not exists appointments_pet_idx on public.appointments (pet_id) where pet_id is not null;
+
+-- The pet must belong to the booking's salon; name/size are snapshotted so
+-- the booking keeps what it was priced for if the profile changes later.
+create or replace function public.appointment_pet_snapshot()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare v_pet record;
+begin
+  if new.pet_id is null then
+    return new;
+  end if;
+  if tg_op = 'UPDATE' and new.pet_id is not distinct from old.pet_id then
+    return new;
+  end if;
+  select name, size, salon_id into v_pet from public.pets where id = new.pet_id;
+  if v_pet.salon_id is distinct from new.salon_id then
+    raise exception 'pet does not belong to this salon' using errcode = '42501';
+  end if;
+  new.pet_name := coalesce(new.pet_name, v_pet.name);
+  new.pet_size := coalesce(new.pet_size, v_pet.size);
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_appointment_pet_snapshot on public.appointments;
+create trigger trg_appointment_pet_snapshot before insert or update of pet_id on public.appointments
+  for each row execute function public.appointment_pet_snapshot();
+
+create or replace function public.pet_last_visit()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if new.pet_id is not null and new.status = 'completed' and old.status is distinct from 'completed' then
+    update public.pets set last_visit_date = greatest(coalesce(last_visit_date, new.date), new.date) where id = new.pet_id;
+  end if;
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_pet_last_visit on public.appointments;
+create trigger trg_pet_last_visit after update of status on public.appointments
+  for each row execute function public.pet_last_visit();
+
+create or replace function public.try_date(p text)
+returns date
+language plpgsql immutable as $fn$
+begin
+  if p is null or p !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then
+    return null;
+  end if;
+  return p::date;
+exception when others then
+  return null;
+end;
+$fn$;
+
+-- Creates or refreshes the profile a public booking names. Fields the form
+-- left empty keep what is on file; the groomer's notes are never touched.
+create or replace function public.upsert_pet(p_salon uuid, p_phone text, p_species text, p_pet jsonb)
+returns uuid
+language plpgsql security definer set search_path = public as $fn$
+declare v_id uuid; v_weight numeric;
+begin
+  if coalesce(p_pet ->> 'weight_kg', '') ~ '^[0-9]{1,3}(\.[0-9]+)?$' then
+    v_weight := (p_pet ->> 'weight_kg')::numeric;
+    if v_weight <= 0 or v_weight > 150 then v_weight := null; end if;
+  end if;
+  insert into public.pets as p (salon_id, owner_phone, name, species, breed, size, weight_kg, temperament, vaccine_valid_until, owner_notes)
+  values (p_salon, p_phone, trim(p_pet ->> 'name'), p_species,
+          left(trim(coalesce(p_pet ->> 'breed', '')), 40),
+          p_pet ->> 'size', v_weight,
+          coalesce(nullif(p_pet ->> 'temperament', ''), 'calm'),
+          public.try_date(p_pet ->> 'vaccine_valid_until'),
+          left(trim(coalesce(p_pet ->> 'notes', '')), 300))
+  on conflict (salon_id, owner_phone, species, lower(name)) do update
+     set breed               = coalesce(nullif(excluded.breed, ''), p.breed),
+         size                = excluded.size,
+         weight_kg           = coalesce(excluded.weight_kg, p.weight_kg),
+         temperament         = case when p_pet ? 'temperament' then excluded.temperament else p.temperament end,
+         vaccine_valid_until = coalesce(excluded.vaccine_valid_until, p.vaccine_valid_until),
+         owner_notes         = coalesce(nullif(excluded.owner_notes, ''), p.owner_notes)
+  returning id into v_id;
+  return v_id;
+end;
+$fn$;
+revoke all on function public.upsert_pet(uuid, text, text, jsonb) from public, anon, authenticated;
+
+-- -------------------------------------------- 5. booking functions ---------
+drop function if exists public.create_public_booking(text, text, date, int, text, text, text, text);
+
+create or replace function public.create_public_booking(
+  p_service_id text, p_staff_id text, p_date date, p_start_min int,
+  p_customer_name text, p_customer_phone text, p_customer_gender text,
+  p_referral_code text default null,
+  p_pet jsonb default null
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_svc public.services; v_wh record; v_app_dow int; v_wh_start int; v_wh_end int;
+  v_end_min int; v_id text; v_code text; v_original bigint; v_svc_discount bigint;
+  v_after_svc bigint; v_loyalty_pct int := 0; v_final bigint; v_loyalty json; v_code_bytes bytea;
+  v_salon_id uuid;
+  v_status text; v_deposit bigint;
+  v_type text; v_pet_id uuid; v_pet_name text; v_size text; v_vacc date; v_require_vacc boolean;
+begin
+  v_salon_id := public.current_salon_id();
+  if v_salon_id is null then
+    return json_build_object('ok', false, 'error', 'سالن نامعتبر است');
+  end if;
+  if p_customer_phone !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شماره موبایل نامعتبر است');
+  end if;
+  -- v2.32: a returning customer's name is no longer sent to the browser
+  -- (customer_loyalty is PII-free for anonymous callers), so an empty name
+  -- falls back to the one already on file for this phone.
+  if coalesce(trim(p_customer_name), '') = '' then
+    select name into p_customer_name from public.customers where salon_id = v_salon_id and phone = p_customer_phone;
+  end if;
+  if coalesce(trim(p_customer_name), '') = '' then
+    return json_build_object('ok', false, 'error', 'نام لازم است');
+  end if;
+  -- v2.44: the sections depend on the salon's type (female/male or dog/cat).
+  select business_type into v_type from public.salons where id = v_salon_id;
+  if p_customer_gender is null or not (p_customer_gender = any (public.salon_sections(v_salon_id))) then
+    return json_build_object('ok', false, 'error', case when v_type = 'pet' then 'نوع حیوان نامعتبر است' else 'جنسیت نامعتبر است' end);
+  end if;
+  if v_type = 'pet' then
+    v_pet_name := nullif(trim(coalesce(p_pet ->> 'name', '')), '');
+    v_size := p_pet ->> 'size';
+    if v_pet_name is null or length(v_pet_name) > 40 then
+      return json_build_object('ok', false, 'error', 'نام حیوان را وارد کنید');
+    end if;
+    if v_size is null or v_size not in ('small', 'medium', 'large', 'giant') then
+      return json_build_object('ok', false, 'error', 'جثهٔ حیوان را انتخاب کنید');
+    end if;
+    if coalesce(p_pet ->> 'temperament', 'calm') not in ('calm', 'nervous', 'aggressive') then
+      return json_build_object('ok', false, 'error', 'رفتار حیوان نامعتبر است');
+    end if;
+    v_vacc := public.try_date(p_pet ->> 'vaccine_valid_until');
+  end if;
+  if not public.check_rate_limit('create_booking:' || v_salon_id || ':' || p_customer_phone, 10, 30) then
+    return json_build_object('ok', false, 'error', 'تعداد درخواست بیش از حد مجاز است — کمی بعد دوباره امتحان کنید');
+  end if;
+  if p_date < current_date then
+    return json_build_object('ok', false, 'error', 'تاریخ گذشته قابل انتخاب نیست');
+  end if;
+  if not exists (select 1 from public.approved_dates where date = p_date and salon_id = v_salon_id) then
+    return json_build_object('ok', false, 'error', 'این روز برای رزرو باز نشده است');
+  end if;
+  if exists (select 1 from public.salon_closures where salon_id = v_salon_id and closure_date = p_date and is_active) then
+    return json_build_object('ok', false, 'error', 'سالن در این روز تعطیل است');
+  end if;
+
+  select * into v_svc from public.services where id = p_service_id and salon_id = v_salon_id and is_active;
+  if v_svc is null then
+    return json_build_object('ok', false, 'error', 'خدمت یافت نشد یا غیرفعال است');
+  end if;
+  if v_svc.gender <> p_customer_gender then
+    return json_build_object('ok', false, 'error', case when v_type = 'pet' then 'این خدمت برای این حیوان نیست' else 'این خدمت با جنسیت انتخابی مطابقت ندارد' end);
+  end if;
+  v_svc := public.service_at_size(v_svc, v_size); -- price and duration for the animal's size
+  if v_type = 'pet' then
+    select pet_require_vaccination into v_require_vacc from public.app_settings where salon_id = v_salon_id;
+    if coalesce(v_require_vacc, false) and (v_vacc is null or v_vacc < p_date) then
+      return json_build_object('ok', false, 'error', 'این سالن کارت واکسن معتبر تا روز نوبت را لازم می‌داند — تاریخ اعتبار واکسن را وارد کنید');
+    end if;
+  end if;
+
+  if p_staff_id is not null and not exists (select 1 from public.stylists where id = p_staff_id and salon_id = v_salon_id and active) then
+    return json_build_object('ok', false, 'error', 'آرایشگر یافت نشد یا غیرفعال است');
+  end if;
+
+  v_app_dow := (extract(dow from p_date)::int + 1) % 7;
+  select * into v_wh from public.working_hours
+   where day_of_week = v_app_dow and staff_id = p_staff_id and salon_id = v_salon_id;
+  if v_wh is null then
+    select * into v_wh from public.working_hours
+     where day_of_week = v_app_dow and staff_id is null and salon_id = v_salon_id;
+  end if;
+  if v_wh is null or v_wh.is_closed then
+    return json_build_object('ok', false, 'error', 'در این روز سالن یا آرایشگر تعطیل است');
+  end if;
+  v_wh_start := split_part(v_wh.start_time, ':', 1)::int * 60 + split_part(v_wh.start_time, ':', 2)::int;
+  v_wh_end := split_part(v_wh.end_time, ':', 1)::int * 60 + split_part(v_wh.end_time, ':', 2)::int;
+  v_end_min := p_start_min + v_svc.duration_minutes;
+  if p_start_min < v_wh_start or v_end_min > v_wh_end then
+    return json_build_object('ok', false, 'error', 'خارج از ساعات کاری است');
+  end if;
+
+  v_original := coalesce(v_svc.price, 0);
+  v_svc_discount := case
+    when v_svc.discount_type = 'percent' then round(v_original * v_svc.discount_value / 100.0)
+    when v_svc.discount_type = 'fixed' then v_svc.discount_value
+    else 0
+  end;
+  v_after_svc := greatest(0, v_original - v_svc_discount);
+  if v_svc.price is not null then
+    v_loyalty := public.customer_loyalty(p_customer_phone);
+    if (v_loyalty->>'found')::boolean then
+      v_loyalty_pct := coalesce((v_loyalty->>'discount_percent')::int, 0);
+    end if;
+  end if;
+  v_final := case when v_svc.price is null then null
+                  else greatest(0, v_after_svc - round(v_after_svc * v_loyalty_pct / 100.0)) end;
+
+  v_id := 'apt-' || substr(md5(gen_random_uuid()::text), 1, 16);
+  v_code_bytes := gen_random_bytes(4);
+  v_code := 'MN-' || lpad((
+    ((get_byte(v_code_bytes, 0)::bigint << 24) | (get_byte(v_code_bytes, 1)::bigint << 16)
+     | (get_byte(v_code_bytes, 2)::bigint << 8) | get_byte(v_code_bytes, 3)::bigint) % 90000 + 10000
+  )::text, 5, '0');
+
+  if v_type = 'pet' then
+    v_pet_id := public.upsert_pet(v_salon_id, p_customer_phone, p_customer_gender, p_pet);
+  end if;
+
+  begin
+    insert into public.appointments (
+      id, salon_id, customer_name, customer_phone, customer_gender, service_id, staff_id,
+      staff_name, date, start_min, end_min, buffer_minutes, status,
+      tracking_code, original_price, discount_type, discount_value, discount_reason, final_price,
+      pet_id, pet_name, pet_size
+    ) values (
+      v_id, v_salon_id, trim(p_customer_name), p_customer_phone, p_customer_gender, p_service_id, p_staff_id,
+      coalesce((select name from public.stylists where id = p_staff_id and salon_id = v_salon_id), ''),
+      p_date, p_start_min, v_end_min, v_svc.buffer_minutes, 'pending',
+      v_code, v_original, v_svc.discount_type, v_svc.discount_value,
+      case when v_loyalty_pct > 0 then v_svc.discount_reason || case when v_svc.discount_reason <> '' then ' · ' else '' end || v_loyalty_pct || '٪ تخفیف باشگاه مشتریان' else v_svc.discount_reason end,
+      v_final,
+      v_pet_id, v_pet_name, v_size
+    )
+    returning status, deposit_amount into v_status, v_deposit; -- after the auto-confirm / deposit triggers
+  exception when exclusion_violation then
+    return json_build_object('ok', false, 'error', 'این زمان قبلاً رزرو شده — زمان دیگری انتخاب کنید');
+  end;
+
+  if p_referral_code is not null and length(trim(p_referral_code)) > 0 then
+    perform public.apply_referral(p_customer_phone, p_referral_code);
+  end if;
+
+  return json_build_object(
+    'ok', true, 'id', v_id, 'tracking_code', v_code, 'final_price', v_final,
+    'original_price', v_original, 'staff_name', coalesce((select name from public.stylists where id = p_staff_id and salon_id = v_salon_id), ''),
+    'status', v_status, 'deposit_amount', v_deposit
+  );
+end;
+$fn$;
+grant execute on function public.create_public_booking(text, text, date, int, text, text, text, text, jsonb) to anon, authenticated;
+
+create or replace function public.reschedule_my_booking_with_token(
+  p_token text, p_appointment_id text, p_new_date date, p_new_start_min int
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_phone text; v_salon_id uuid; v_appt record; v_svc public.services;
+  v_new_end int; v_app_dow int; v_wh record; v_wh_start int; v_wh_end int;
+begin
+  select r.phone, r.salon_id into v_phone, v_salon_id from public.resolve_booking_token(p_token) r;
+  if v_phone is null then
+    return json_build_object('ok', false, 'error', 'نشست شما منقضی شده — دوباره وارد شوید');
+  end if;
+
+  select * into v_appt from public.appointments where id = p_appointment_id;
+  if v_appt is null or v_appt.customer_phone <> v_phone or v_appt.salon_id <> v_salon_id then
+    return json_build_object('ok', false, 'error', 'این نوبت متعلق به شما نیست');
+  end if;
+  -- v2.38: only a live booking can move. Without this, a customer could
+  -- "reschedule" a cancelled / completed / no-show booking back to life, or
+  -- an unpaid deposit hold into a normal booking without paying.
+  if v_appt.status not in ('pending', 'confirmed', 'rescheduled', 'reschedule_proposed') then
+    return json_build_object('ok', false, 'error', 'این نوبت دیگر قابل تغییر نیست');
+  end if;
+  if p_new_date < public.salon_today() then
+    return json_build_object('ok', false, 'error', 'تاریخ گذشته قابل انتخاب نیست');
+  end if;
+  if not exists (select 1 from public.approved_dates where date = p_new_date and salon_id = v_salon_id) then
+    return json_build_object('ok', false, 'error', 'این روز برای رزرو باز نشده است');
+  end if;
+
+  select * into v_svc from public.services where id = v_appt.service_id and salon_id = v_salon_id;
+  if v_svc is null then
+    return json_build_object('ok', false, 'error', 'خدمت مرتبط با این نوبت یافت نشد');
+  end if;
+  v_svc := public.service_at_size(v_svc, v_appt.pet_size); -- v2.44: pet bookings keep their size's duration
+  v_new_end := p_new_start_min + v_svc.duration_minutes;
+
+  v_app_dow := (extract(dow from p_new_date)::int + 1) % 7;
+  select * into v_wh from public.working_hours
+   where day_of_week = v_app_dow and staff_id = v_appt.staff_id and salon_id = v_salon_id;
+  if v_wh is null then
+    select * into v_wh from public.working_hours
+     where day_of_week = v_app_dow and staff_id is null and salon_id = v_salon_id;
+  end if;
+  if v_wh is null or v_wh.is_closed then
+    return json_build_object('ok', false, 'error', 'در این روز سالن یا آرایشگر تعطیل است');
+  end if;
+  v_wh_start := split_part(v_wh.start_time, ':', 1)::int * 60 + split_part(v_wh.start_time, ':', 2)::int;
+  v_wh_end := split_part(v_wh.end_time, ':', 1)::int * 60 + split_part(v_wh.end_time, ':', 2)::int;
+  if p_new_start_min < v_wh_start or v_new_end > v_wh_end then
+    return json_build_object('ok', false, 'error', 'خارج از ساعات کاری است');
+  end if;
+
+  begin
+    update public.appointments
+       set date = p_new_date, start_min = p_new_start_min, end_min = v_new_end,
+           status = 'rescheduled', pending_date = null, pending_start_min = null, pending_end_min = null
+     where id = p_appointment_id;
+  exception when exclusion_violation then
+    return json_build_object('ok', false, 'error', 'این زمان قبلاً رزرو شده — زمان دیگری انتخاب کنید');
+  end;
+
+  return json_build_object('ok', true);
+end;
+$fn$;
+grant execute on function public.reschedule_my_booking_with_token(text, text, date, int) to anon, authenticated;
+
+create or replace function public.create_booking_from_rebooking_token(
+  p_token text, p_date date, p_start_min int, p_staff_id text default null
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_rt record; v_svc public.services; v_wh record; v_app_dow int; v_wh_start int; v_wh_end int;
+  v_end_min int; v_id text; v_code text; v_original bigint; v_svc_discount bigint;
+  v_after_svc bigint; v_loyalty_pct int := 0; v_final bigint; v_loyalty json; v_code_bytes bytea;
+  v_staff_id text;
+  v_pet_id uuid; v_pet_name text; v_pet_size text;
+begin
+  select * into v_rt from public.rebooking_tokens
+   where token_hash = encode(digest(coalesce(p_token, ''), 'sha256'), 'hex')
+     and used_at is null and expires_at > now();
+  if v_rt is null then
+    return json_build_object('ok', false, 'error', 'این لینک منقضی یا نامعتبر است');
+  end if;
+  if v_rt.service_id is null then
+    return json_build_object('ok', false, 'error', 'این لینک برای خدمت مشخصی نیست');
+  end if;
+  if p_date < current_date then
+    return json_build_object('ok', false, 'error', 'تاریخ گذشته قابل انتخاب نیست');
+  end if;
+  if not exists (select 1 from public.approved_dates where date = p_date and salon_id = v_rt.salon_id) then
+    return json_build_object('ok', false, 'error', 'این روز برای رزرو باز نشده است');
+  end if;
+  if exists (select 1 from public.salon_closures where salon_id = v_rt.salon_id and closure_date = p_date and is_active) then
+    return json_build_object('ok', false, 'error', 'سالن در این روز تعطیل است');
+  end if;
+
+  -- Staff can be the one the customer originally had, or a different one
+  -- the customer actively chooses on the booking page — either way it's
+  -- just "who performs the service", not an identity field, so it's safe
+  -- to accept as a direct parameter (validated against this same salon).
+  v_staff_id := coalesce(p_staff_id, v_rt.staff_id);
+  select * into v_svc from public.services where id = v_rt.service_id and salon_id = v_rt.salon_id and is_active;
+  if v_svc is null then
+    return json_build_object('ok', false, 'error', 'خدمت یافت نشد یا غیرفعال است');
+  end if;
+  -- v2.44: a pet salon's link books the customer's animal of that species
+  -- (most recently groomed first), priced and timed for its size.
+  if v_svc.gender in ('dog', 'cat') then
+    select p.id, p.name, p.size into v_pet_id, v_pet_name, v_pet_size
+      from public.pets p
+     where p.salon_id = v_rt.salon_id and p.owner_phone = v_rt.customer_phone and p.species = v_svc.gender
+     order by p.last_visit_date desc nulls last, p.created_at desc
+     limit 1;
+    v_svc := public.service_at_size(v_svc, v_pet_size);
+  end if;
+  if v_staff_id is not null and not exists (select 1 from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id and active) then
+    return json_build_object('ok', false, 'error', 'آرایشگر یافت نشد یا غیرفعال است');
+  end if;
+
+  v_app_dow := (extract(dow from p_date)::int + 1) % 7;
+  select * into v_wh from public.working_hours
+   where day_of_week = v_app_dow and staff_id = v_staff_id and salon_id = v_rt.salon_id;
+  if v_wh is null then
+    select * into v_wh from public.working_hours
+     where day_of_week = v_app_dow and staff_id is null and salon_id = v_rt.salon_id;
+  end if;
+  if v_wh is null or v_wh.is_closed then
+    return json_build_object('ok', false, 'error', 'در این روز سالن یا آرایشگر تعطیل است');
+  end if;
+  v_wh_start := split_part(v_wh.start_time, ':', 1)::int * 60 + split_part(v_wh.start_time, ':', 2)::int;
+  v_wh_end := split_part(v_wh.end_time, ':', 1)::int * 60 + split_part(v_wh.end_time, ':', 2)::int;
+  v_end_min := p_start_min + v_svc.duration_minutes;
+  if p_start_min < v_wh_start or v_end_min > v_wh_end then
+    return json_build_object('ok', false, 'error', 'خارج از ساعات کاری است');
+  end if;
+
+  v_original := coalesce(v_svc.price, 0);
+  v_svc_discount := case
+    when v_svc.discount_type = 'percent' then round(v_original * v_svc.discount_value / 100.0)
+    when v_svc.discount_type = 'fixed' then v_svc.discount_value
+    else 0
+  end;
+  v_after_svc := greatest(0, v_original - v_svc_discount);
+  if v_svc.price is not null then
+    v_loyalty := public.customer_loyalty(v_rt.customer_phone);
+    if (v_loyalty->>'found')::boolean then
+      v_loyalty_pct := coalesce((v_loyalty->>'discount_percent')::int, 0);
+    end if;
+  end if;
+  v_final := case when v_svc.price is null then null
+                  else greatest(0, v_after_svc - round(v_after_svc * v_loyalty_pct / 100.0)) end;
+
+  v_id := 'apt-' || substr(md5(gen_random_uuid()::text), 1, 16);
+  v_code_bytes := gen_random_bytes(4);
+  v_code := 'MN-' || lpad((
+    ((get_byte(v_code_bytes, 0)::bigint << 24) | (get_byte(v_code_bytes, 1)::bigint << 16)
+     | (get_byte(v_code_bytes, 2)::bigint << 8) | get_byte(v_code_bytes, 3)::bigint) % 90000 + 10000
+  )::text, 5, '0');
+
+  -- v2.38: links the salon itself sent (closure rebooking, waitlist offer,
+  -- predictive invitation) never wait for an online deposit — the page
+  -- behind them has no payment step. Transaction-local flag read by
+  -- hold_for_deposit().
+  perform set_config('app.skip_deposit', 'on', true);
+
+  begin
+    insert into public.appointments (
+      id, salon_id, customer_name, customer_phone, customer_gender, service_id, staff_id,
+      staff_name, date, start_min, end_min, buffer_minutes, status,
+      tracking_code, original_price, discount_type, discount_value, discount_reason, final_price,
+      pet_id, pet_name, pet_size
+    ) values (
+      v_id, v_rt.salon_id,
+      coalesce(nullif(v_rt.customer_name, ''), (select name from public.customers where salon_id = v_rt.salon_id and phone = v_rt.customer_phone), ''),
+      v_rt.customer_phone, v_svc.gender, v_rt.service_id, v_staff_id,
+      coalesce((select name from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id), ''),
+      p_date, p_start_min, v_end_min, v_svc.buffer_minutes, 'confirmed',
+      v_code, v_original, v_svc.discount_type, v_svc.discount_value,
+      case when v_loyalty_pct > 0 then v_svc.discount_reason || case when v_svc.discount_reason <> '' then ' · ' else '' end || v_loyalty_pct || '٪ تخفیف باشگاه مشتریان' else v_svc.discount_reason end,
+      v_final,
+      v_pet_id, v_pet_name, v_pet_size
+    );
+  exception when exclusion_violation then
+    return json_build_object('ok', false, 'error', 'این زمان قبلاً رزرو شده — زمان دیگری انتخاب کنید');
+  end;
+
+  update public.rebooking_tokens set used_at = now() where id = v_rt.id;
+
+  return json_build_object(
+    'ok', true, 'id', v_id, 'tracking_code', v_code, 'final_price', v_final,
+    'original_price', v_original, 'staff_name', coalesce((select name from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id), '')
+  );
+end;
+$fn$;
+grant execute on function public.create_booking_from_rebooking_token(text, date, int, text) to anon, authenticated;
+
+-- ---------------------------------------------------------- 6. SMS ---------
+create or replace function public.pet_size_label(p_size text)
+returns text
+language sql immutable as $fn$
+  select case p_size when 'small' then 'کوچک' when 'medium' then 'متوسط' when 'large' then 'بزرگ' when 'giant' then 'خیلی بزرگ' else '' end;
+$fn$;
+
+create or replace function public.booking_sms_text(p_appt public.appointments, p_kind text)
+returns text
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_tpl text; v_service text; v_salon text; v_pet boolean := coalesce(p_appt.pet_name, '') <> '';
+begin
+  select body into v_tpl from public.sms_templates
+   where salon_id = p_appt.salon_id and kind = p_kind and body <> ''
+   order by is_default desc, created_at limit 1;
+  v_tpl := coalesce(v_tpl, case
+    when p_kind = 'confirmation' and v_pet then E'{{name}} عزیز، نوبت {{pet}} در {{salon}} ثبت شد.\nخدمت: {{service}}\nتاریخ: {{date}} ساعت {{time}}\nکد پیگیری: {{code}}'
+    when p_kind = 'reminder' and v_pet     then E'{{name}} عزیز، یادآوری نوبت {{pet}} در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما و {{pet}} هستیم.'
+    when p_kind = 'confirmation'           then E'{{name}} عزیز، نوبت شما در {{salon}} ثبت شد.\nخدمت: {{service}}\nتاریخ: {{date}} ساعت {{time}}\nکد پیگیری: {{code}}'
+    when p_kind = 'reminder'               then E'{{name}} عزیز، یادآوری نوبت شما در {{salon}}:\n{{service}} — {{date}} ساعت {{time}}\nمنتظر شما هستیم.'
+  end);
+  select name into v_service from public.services where id = p_appt.service_id and salon_id = p_appt.salon_id;
+  select name into v_salon from public.salons where id = p_appt.salon_id;
+  return public.render_sms(v_tpl, jsonb_build_object(
+    'name',    coalesce(nullif(trim(p_appt.customer_name), ''), 'مشتری'),
+    'pet',     coalesce(nullif(trim(p_appt.pet_name), ''), case when p_appt.customer_gender = 'cat' then 'گربهٔ شما' when p_appt.customer_gender = 'dog' then 'سگ شما' else '' end),
+    'service', coalesce(v_service, 'خدمت'),
+    'date',    public.jalali_label(p_appt.date),
+    'time',    public.fa_clock(p_appt.start_min),
+    'stylist', coalesce(nullif(p_appt.staff_name, ''), 'بدون آرایشگر مشخص'),
+    'code',    coalesce(p_appt.tracking_code, ''),
+    'salon',   coalesce(v_salon, 'سالن')
+  ));
+end;
+$fn$;
+revoke all on function public.booking_sms_text(public.appointments, text) from public, anon, authenticated;
+
+create or replace function public.send_new_booking_messages(p_appt public.appointments)
+returns void
+language plpgsql security definer set search_path = public as $fn$
+declare v_staff_phone text; v_digest boolean; v_service text; v_pet record; v_who text;
+begin
+  if p_appt.customer_phone ~ '^09[0-9]{9}$' then
+    insert into public.sms_messages (salon_id, to_phone, body, kind, appointment_id, status, scheduled_for)
+    values (p_appt.salon_id, p_appt.customer_phone, public.booking_sms_text(p_appt, 'confirmation'),
+            'confirmation', p_appt.id, 'queued', now());
+  end if;
+
+  if p_appt.staff_id is not null then
+    select phone into v_staff_phone from public.stylists where id = p_appt.staff_id and salon_id = p_appt.salon_id;
+    select staff_daily_digest into v_digest from public.app_settings where salon_id = p_appt.salon_id;
+    if v_staff_phone ~ '^09[0-9]{9}$' and (not coalesce(v_digest, false) or p_appt.date = public.salon_today()) then
+      select name into v_service from public.services where id = p_appt.service_id and salon_id = p_appt.salon_id;
+      v_who := coalesce(nullif(trim(p_appt.customer_name), ''), 'مشتری');
+      if p_appt.pet_id is not null then
+        select species, breed, temperament into v_pet from public.pets where id = p_appt.pet_id;
+        v_who := coalesce(p_appt.pet_name, '') || ' ('
+          || case v_pet.species when 'cat' then 'گربه' else 'سگ' end
+          || case when coalesce(v_pet.breed, '') <> '' then '، ' || v_pet.breed else '' end
+          || '، ' || public.pet_size_label(p_appt.pet_size) || ') — صاحب: ' || v_who
+          || case v_pet.temperament when 'aggressive' then E'\n⚠ پرخاشگر — با احتیاط' when 'nervous' then E'\nمضطرب — آرام برخورد شود' else '' end;
+      end if;
+      insert into public.sms_messages (salon_id, to_phone, body, kind, appointment_id, status, scheduled_for)
+      values (p_appt.salon_id, v_staff_phone,
+              'نوبت جدید: ' || v_who || ' — ' || coalesce(v_service, 'خدمت')
+                || E'\n' || public.jalali_label(p_appt.date) || ' ساعت ' || public.fa_clock(p_appt.start_min),
+              'staff_new_booking', p_appt.id, 'queued', now());
+    end if;
+  end if;
+end;
+$fn$;
+revoke all on function public.send_new_booking_messages(public.appointments) from public, anon, authenticated;
+
+-- --------------------------------------------------------- 7. admin --------
+-- Starter dog & cat menu for a new pet salon, priced per size. The manager
+-- edits prices and durations in the services tab.
+create or replace function public.seed_pet_services(p_salon uuid)
+returns void
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if exists (select 1 from public.services where salon_id = p_salon) then
+    return;
+  end if;
+  insert into public.services (id, salon_id, name, gender, category, duration_minutes, price, size_pricing)
+  select 'svc-' || encode(gen_random_bytes(6), 'hex'), p_salon, s.name, s.species, s.category, s.duration, s.price, s.tiers::jsonb
+    from (values
+      ('حمام و سشوار', 'dog', 'bath', 60, 450000,
+       '{"small":{"price":350000,"duration":45},"medium":{"price":450000,"duration":60},"large":{"price":600000,"duration":90},"giant":{"price":800000,"duration":120}}'),
+      ('اصلاح کامل (حمام + کوتاهی + ناخن)', 'dog', 'grooming', 120, 900000,
+       '{"small":{"price":700000,"duration":90},"medium":{"price":900000,"duration":120},"large":{"price":1200000,"duration":150},"giant":{"price":1500000,"duration":180}}'),
+      ('کوتاهی ناخن', 'dog', 'nails_pet', 15, 150000, '{}'),
+      ('تمیز کردن گوش و دندان', 'dog', 'hygiene', 20, 200000, '{}'),
+      ('حمام گربه', 'cat', 'bath', 60, 500000,
+       '{"small":{"price":450000,"duration":45},"medium":{"price":500000,"duration":60},"large":{"price":600000,"duration":75}}'),
+      ('اصلاح کامل گربه', 'cat', 'grooming', 90, 900000,
+       '{"small":{"price":800000,"duration":75},"medium":{"price":900000,"duration":90},"large":{"price":1100000,"duration":105}}'),
+      ('کوتاهی ناخن گربه', 'cat', 'nails_pet', 15, 150000, '{}')
+    ) as s(name, species, category, duration, price, tiers);
+end;
+$fn$;
+revoke all on function public.seed_pet_services(uuid) from public, anon, authenticated;
+
+drop function if exists public.admin_create_salon(text, text, text);
+create or replace function public.admin_create_salon(p_slug text, p_name text, p_owner_phone text, p_business_type text default 'beauty')
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_slug text := lower(trim(coalesce(p_slug, ''))); v_id uuid; v_type text := coalesce(nullif(p_business_type, ''), 'beauty');
+begin
+  if not public.is_platform_admin() then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  if v_type not in ('beauty', 'pet') then
+    return json_build_object('ok', false, 'error', 'نوع سالن نامعتبر است');
+  end if;
+  if v_slug !~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' then
+    return json_build_object('ok', false, 'error', 'آدرس فقط حروف کوچک انگلیسی، عدد و خط تیره');
+  end if;
+  if v_slug in ('admin', 'feedback', 'book', 'confirm', 'payment', 'reconcile', 'api', 'assets', 'default-new') then
+    return json_build_object('ok', false, 'error', 'این آدرس رزرو شده است');
+  end if;
+  if coalesce(trim(p_name), '') = '' then
+    return json_build_object('ok', false, 'error', 'نام سالن لازم است');
+  end if;
+  if coalesce(p_owner_phone, '') !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شمارهٔ موبایل مدیر نامعتبر است');
+  end if;
+  if exists (select 1 from public.salons where slug = v_slug) then
+    return json_build_object('ok', false, 'error', 'این آدرس قبلاً استفاده شده');
+  end if;
+
+  insert into public.salons (slug, name, owner_phone, business_type) values (v_slug, trim(p_name), p_owner_phone, v_type)
+  returning id into v_id;
+  if v_type = 'pet' then
+    perform public.seed_pet_services(v_id);
+  end if;
+  return json_build_object('ok', true, 'id', v_id, 'slug', v_slug);
+end;
+$fn$;
+revoke all on function public.admin_create_salon(text, text, text, text) from public, anon;
+grant execute on function public.admin_create_salon(text, text, text, text) to authenticated;
+
+drop function if exists public.admin_update_salon(uuid, text, text, boolean);
+create or replace function public.admin_update_salon(p_id uuid, p_name text default null, p_owner_phone text default null,
+                                                     p_active boolean default null, p_business_type text default null)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_old text;
+begin
+  if not public.is_platform_admin() then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  if p_owner_phone is not null and p_owner_phone !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شمارهٔ موبایل مدیر نامعتبر است');
+  end if;
+  select business_type into v_old from public.salons where id = p_id;
+  if not found then
+    return json_build_object('ok', false, 'error', 'سالن پیدا نشد');
+  end if;
+  if p_business_type is not null and p_business_type <> v_old then
+    if p_business_type not in ('beauty', 'pet') then
+      return json_build_object('ok', false, 'error', 'نوع سالن نامعتبر است');
+    end if;
+    -- Services, staff and bookings are all keyed to the sections of the
+    -- type; switching is only safe before the salon is in use.
+    if exists (select 1 from public.appointments where salon_id = p_id) then
+      return json_build_object('ok', false, 'error', 'این سالن نوبت ثبت‌شده دارد؛ نوع آن قابل تغییر نیست');
+    end if;
+    delete from public.services where salon_id = p_id and gender <> all (case when p_business_type = 'pet' then array['dog', 'cat'] else array['female', 'male'] end);
+  end if;
+  update public.salons
+     set name = coalesce(nullif(trim(p_name), ''), name),
+         owner_phone = coalesce(p_owner_phone, owner_phone),
+         active = coalesce(p_active, active),
+         business_type = coalesce(p_business_type, business_type)
+   where id = p_id;
+  if p_business_type = 'pet' and v_old <> 'pet' then
+    perform public.seed_pet_services(p_id);
+  end if;
+  return json_build_object('ok', true);
+end;
+$fn$;
+revoke all on function public.admin_update_salon(uuid, text, text, boolean, text) from public, anon;
+grant execute on function public.admin_update_salon(uuid, text, text, boolean, text) to authenticated;
+
+drop function if exists public.admin_list_salons();
+create or replace function public.admin_list_salons()
+returns table (
+  id uuid, slug text, name text, active boolean, owner_phone text, created_at timestamptz, business_type text,
+  owner_registered boolean, stylists int, services int,
+  bookings_30d int, completed_30d int, last_booking_date date,
+  sms_configured boolean, sms_sent_30d int, sms_failed_30d int
+)
+language sql stable security definer set search_path = public as $fn$
+  select s.id, s.slug, s.name, s.active, s.owner_phone, s.created_at, s.business_type,
+         exists (select 1 from public.users u where u.salon_id = s.id and u.role in ('owner', 'manager')),
+         (select count(*)::int from public.stylists t where t.salon_id = s.id and t.active),
+         (select count(*)::int from public.services v where v.salon_id = s.id and v.is_active),
+         (select count(*)::int from public.appointments a where a.salon_id = s.id and a.date >= current_date - 30),
+         (select count(*)::int from public.appointments a where a.salon_id = s.id and a.date >= current_date - 30 and a.status = 'completed'),
+         (select max(a.date) from public.appointments a where a.salon_id = s.id),
+         exists (select 1 from public.salon_sms_settings x where x.salon_id = s.id),
+         (select count(*)::int from public.sms_messages m where m.salon_id = s.id and m.created_at >= now() - interval '30 days' and m.status in ('sent', 'delivered')),
+         (select count(*)::int from public.sms_messages m where m.salon_id = s.id and m.created_at >= now() - interval '30 days' and m.status = 'failed')
+    from public.salons s
+   where public.is_platform_admin()
+   order by s.created_at desc;
+$fn$;
+revoke all on function public.admin_list_salons() from public, anon;
+grant execute on function public.admin_list_salons() to authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.45_pet_pricing_rules.sql
+-- ============================================================================
+-- Migration v2.45 — pet salon pricing rules (run after v2.44)
+-- ============================================================================
+--  Shaped by a real groomer's price list:
+--  1. Breed prices — services.breed_pricing {"چاو چاو": {"price":…, "duration":…}}
+--     overrides the size price for that breed (spacing, ZWNJ and Arabic ی/ک
+--     don't matter when matching). A service with no base price and only
+--     breed prices reads "price announced in salon" for other breeds.
+--  2. Size thresholds per salon — app_settings.pet_size_limits (kg upper
+--     bounds of small / medium / large; default 5 / 15 / 30).
+--  3. Aggression surcharge — app_settings.pet_aggressive_surcharge_percent;
+--     a booking for an aggressive animal gets it as an extra charge.
+--  4. Extra charges — appointments.extra_charges [{label, amount}], included
+--     in final_price. Services marked is_addon (e.g. detangling per half
+--     hour) can't be booked online; staff add them when completing a visit.
+--  5. New starter menu for pet salons, modelled on that price list.
+-- ============================================================================
+
+alter table public.services add column if not exists breed_pricing jsonb not null default '{}'::jsonb;
+alter table public.services drop constraint if exists services_breed_pricing_check;
+alter table public.services add constraint services_breed_pricing_check check (jsonb_typeof(breed_pricing) = 'object');
+alter table public.services add column if not exists is_addon boolean not null default false;
+
+alter table public.app_settings add column if not exists pet_size_limits int[] not null default '{5,15,30}';
+alter table public.app_settings drop constraint if exists app_settings_pet_size_limits_check;
+alter table public.app_settings add constraint app_settings_pet_size_limits_check check (
+  array_length(pet_size_limits, 1) = 3 and pet_size_limits[1] > 0
+  and pet_size_limits[1] < pet_size_limits[2] and pet_size_limits[2] < pet_size_limits[3] and pet_size_limits[3] <= 150);
+alter table public.app_settings add column if not exists pet_aggressive_surcharge_percent int not null default 0;
+alter table public.app_settings drop constraint if exists app_settings_pet_aggressive_surcharge_percent_check;
+alter table public.app_settings add constraint app_settings_pet_aggressive_surcharge_percent_check check (pet_aggressive_surcharge_percent between 0 and 100);
+
+alter table public.appointments add column if not exists extra_charges jsonb not null default '[]'::jsonb;
+alter table public.appointments drop constraint if exists appointments_extra_charges_check;
+alter table public.appointments add constraint appointments_extra_charges_check check (jsonb_typeof(extra_charges) = 'array');
+
+-- "چاو چاو" = "چاوچاو" = "چاو‌چاو"; Arabic ي/ك typed on some keyboards = Persian ی/ک.
+create or replace function public.norm_breed(p text)
+returns text
+language sql immutable as $fn$
+  select regexp_replace(translate(lower(coalesce(p, '')), 'يكۀة', 'یکهه'), E'[[:space:]‌‍_-]+', '', 'g');
+$fn$;
+
+-- Size price/duration, then the breed's own price/duration on top.
+create or replace function public.service_for_pet(p_svc public.services, p_size text, p_breed text)
+returns public.services
+language plpgsql stable as $fn$
+declare v public.services := public.service_at_size(p_svc, p_size); v_key text; v_tier jsonb; v_norm text := public.norm_breed(p_breed);
+begin
+  if v_norm = '' or p_svc.breed_pricing is null then
+    return v;
+  end if;
+  for v_key, v_tier in select key, value from jsonb_each(p_svc.breed_pricing) loop
+    if public.norm_breed(v_key) = v_norm and jsonb_typeof(v_tier) = 'object' then
+      if jsonb_typeof(v_tier -> 'price') = 'number' and (v_tier ->> 'price')::numeric >= 0 then
+        v.price := round((v_tier ->> 'price')::numeric)::bigint;
+      end if;
+      if jsonb_typeof(v_tier -> 'duration') = 'number' and (v_tier ->> 'duration')::numeric between 5 and 600 then
+        v.duration_minutes := round((v_tier ->> 'duration')::numeric)::int;
+      end if;
+      exit;
+    end if;
+  end loop;
+  return v;
+end;
+$fn$;
+
+-- The aggression surcharge for a price (after the service's own discount), or 0.
+create or replace function public.pet_surcharge(p_salon uuid, p_temperament text, p_price bigint)
+returns bigint
+language sql stable security definer set search_path = public as $fn$
+  select case when p_temperament = 'aggressive' and p_price is not null and p_price > 0
+              then round(p_price * coalesce((select pet_aggressive_surcharge_percent from public.app_settings where salon_id = p_salon), 0) / 100.0)::bigint
+              else 0 end;
+$fn$;
+revoke all on function public.pet_surcharge(uuid, text, bigint) from public, anon, authenticated;
+
+create or replace function public.create_public_booking(
+  p_service_id text, p_staff_id text, p_date date, p_start_min int,
+  p_customer_name text, p_customer_phone text, p_customer_gender text,
+  p_referral_code text default null,
+  p_pet jsonb default null
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_svc public.services; v_wh record; v_app_dow int; v_wh_start int; v_wh_end int;
+  v_end_min int; v_id text; v_code text; v_original bigint; v_svc_discount bigint;
+  v_after_svc bigint; v_loyalty_pct int := 0; v_final bigint; v_loyalty json; v_code_bytes bytea;
+  v_salon_id uuid;
+  v_status text; v_deposit bigint;
+  v_extra bigint := 0; v_extras jsonb := '[]'::jsonb;
+  v_type text; v_pet_id uuid; v_pet_name text; v_size text; v_vacc date; v_require_vacc boolean;
+begin
+  v_salon_id := public.current_salon_id();
+  if v_salon_id is null then
+    return json_build_object('ok', false, 'error', 'سالن نامعتبر است');
+  end if;
+  if p_customer_phone !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شماره موبایل نامعتبر است');
+  end if;
+  -- v2.32: a returning customer's name is no longer sent to the browser
+  -- (customer_loyalty is PII-free for anonymous callers), so an empty name
+  -- falls back to the one already on file for this phone.
+  if coalesce(trim(p_customer_name), '') = '' then
+    select name into p_customer_name from public.customers where salon_id = v_salon_id and phone = p_customer_phone;
+  end if;
+  if coalesce(trim(p_customer_name), '') = '' then
+    return json_build_object('ok', false, 'error', 'نام لازم است');
+  end if;
+  -- v2.44: the sections depend on the salon's type (female/male or dog/cat).
+  select business_type into v_type from public.salons where id = v_salon_id;
+  if p_customer_gender is null or not (p_customer_gender = any (public.salon_sections(v_salon_id))) then
+    return json_build_object('ok', false, 'error', case when v_type = 'pet' then 'نوع حیوان نامعتبر است' else 'جنسیت نامعتبر است' end);
+  end if;
+  if v_type = 'pet' then
+    v_pet_name := nullif(trim(coalesce(p_pet ->> 'name', '')), '');
+    v_size := p_pet ->> 'size';
+    if v_pet_name is null or length(v_pet_name) > 40 then
+      return json_build_object('ok', false, 'error', 'نام حیوان را وارد کنید');
+    end if;
+    if v_size is null or v_size not in ('small', 'medium', 'large', 'giant') then
+      return json_build_object('ok', false, 'error', 'جثهٔ حیوان را انتخاب کنید');
+    end if;
+    if coalesce(p_pet ->> 'temperament', 'calm') not in ('calm', 'nervous', 'aggressive') then
+      return json_build_object('ok', false, 'error', 'رفتار حیوان نامعتبر است');
+    end if;
+    v_vacc := public.try_date(p_pet ->> 'vaccine_valid_until');
+  end if;
+  if not public.check_rate_limit('create_booking:' || v_salon_id || ':' || p_customer_phone, 10, 30) then
+    return json_build_object('ok', false, 'error', 'تعداد درخواست بیش از حد مجاز است — کمی بعد دوباره امتحان کنید');
+  end if;
+  if p_date < current_date then
+    return json_build_object('ok', false, 'error', 'تاریخ گذشته قابل انتخاب نیست');
+  end if;
+  if not exists (select 1 from public.approved_dates where date = p_date and salon_id = v_salon_id) then
+    return json_build_object('ok', false, 'error', 'این روز برای رزرو باز نشده است');
+  end if;
+  if exists (select 1 from public.salon_closures where salon_id = v_salon_id and closure_date = p_date and is_active) then
+    return json_build_object('ok', false, 'error', 'سالن در این روز تعطیل است');
+  end if;
+
+  select * into v_svc from public.services where id = p_service_id and salon_id = v_salon_id and is_active;
+  if v_svc is null then
+    return json_build_object('ok', false, 'error', 'خدمت یافت نشد یا غیرفعال است');
+  end if;
+  if v_svc.is_addon then
+    return json_build_object('ok', false, 'error', 'این خدمت فقط در سالن اضافه می‌شود');
+  end if;
+  if v_svc.gender <> p_customer_gender then
+    return json_build_object('ok', false, 'error', case when v_type = 'pet' then 'این خدمت برای این حیوان نیست' else 'این خدمت با جنسیت انتخابی مطابقت ندارد' end);
+  end if;
+  v_svc := public.service_for_pet(v_svc, v_size, p_pet ->> 'breed'); -- v2.45: size, then breed
+  if v_type = 'pet' then
+    select pet_require_vaccination into v_require_vacc from public.app_settings where salon_id = v_salon_id;
+    if coalesce(v_require_vacc, false) and (v_vacc is null or v_vacc < p_date) then
+      return json_build_object('ok', false, 'error', 'این سالن کارت واکسن معتبر تا روز نوبت را لازم می‌داند — تاریخ اعتبار واکسن را وارد کنید');
+    end if;
+  end if;
+
+  if p_staff_id is not null and not exists (select 1 from public.stylists where id = p_staff_id and salon_id = v_salon_id and active) then
+    return json_build_object('ok', false, 'error', 'آرایشگر یافت نشد یا غیرفعال است');
+  end if;
+
+  v_app_dow := (extract(dow from p_date)::int + 1) % 7;
+  select * into v_wh from public.working_hours
+   where day_of_week = v_app_dow and staff_id = p_staff_id and salon_id = v_salon_id;
+  if v_wh is null then
+    select * into v_wh from public.working_hours
+     where day_of_week = v_app_dow and staff_id is null and salon_id = v_salon_id;
+  end if;
+  if v_wh is null or v_wh.is_closed then
+    return json_build_object('ok', false, 'error', 'در این روز سالن یا آرایشگر تعطیل است');
+  end if;
+  v_wh_start := split_part(v_wh.start_time, ':', 1)::int * 60 + split_part(v_wh.start_time, ':', 2)::int;
+  v_wh_end := split_part(v_wh.end_time, ':', 1)::int * 60 + split_part(v_wh.end_time, ':', 2)::int;
+  v_end_min := p_start_min + v_svc.duration_minutes;
+  if p_start_min < v_wh_start or v_end_min > v_wh_end then
+    return json_build_object('ok', false, 'error', 'خارج از ساعات کاری است');
+  end if;
+
+  v_original := coalesce(v_svc.price, 0);
+  v_svc_discount := case
+    when v_svc.discount_type = 'percent' then round(v_original * v_svc.discount_value / 100.0)
+    when v_svc.discount_type = 'fixed' then v_svc.discount_value
+    else 0
+  end;
+  v_after_svc := greatest(0, v_original - v_svc_discount);
+  if v_svc.price is not null then
+    v_loyalty := public.customer_loyalty(p_customer_phone);
+    if (v_loyalty->>'found')::boolean then
+      v_loyalty_pct := coalesce((v_loyalty->>'discount_percent')::int, 0);
+    end if;
+  end if;
+  v_final := case when v_svc.price is null then null
+                  else greatest(0, v_after_svc - round(v_after_svc * v_loyalty_pct / 100.0)) end;
+  -- v2.45: the salon's aggression surcharge, recorded as an extra charge
+  if v_final is not null then
+    v_extra := public.pet_surcharge(v_salon_id, case when v_type = 'pet' then coalesce(p_pet ->> 'temperament', 'calm') end, v_after_svc);
+    if v_extra > 0 then
+      v_extras := jsonb_build_array(jsonb_build_object('label', 'حیوان پرخاشگر', 'amount', v_extra));
+      v_final := v_final + v_extra;
+    end if;
+  end if;
+
+  v_id := 'apt-' || substr(md5(gen_random_uuid()::text), 1, 16);
+  v_code_bytes := gen_random_bytes(4);
+  v_code := 'MN-' || lpad((
+    ((get_byte(v_code_bytes, 0)::bigint << 24) | (get_byte(v_code_bytes, 1)::bigint << 16)
+     | (get_byte(v_code_bytes, 2)::bigint << 8) | get_byte(v_code_bytes, 3)::bigint) % 90000 + 10000
+  )::text, 5, '0');
+
+  if v_type = 'pet' then
+    v_pet_id := public.upsert_pet(v_salon_id, p_customer_phone, p_customer_gender, p_pet);
+  end if;
+
+  begin
+    insert into public.appointments (
+      id, salon_id, customer_name, customer_phone, customer_gender, service_id, staff_id,
+      staff_name, date, start_min, end_min, buffer_minutes, status,
+      tracking_code, original_price, discount_type, discount_value, discount_reason, final_price,
+      pet_id, pet_name, pet_size, extra_charges
+    ) values (
+      v_id, v_salon_id, trim(p_customer_name), p_customer_phone, p_customer_gender, p_service_id, p_staff_id,
+      coalesce((select name from public.stylists where id = p_staff_id and salon_id = v_salon_id), ''),
+      p_date, p_start_min, v_end_min, v_svc.buffer_minutes, 'pending',
+      v_code, v_original, v_svc.discount_type, v_svc.discount_value,
+      case when v_loyalty_pct > 0 then v_svc.discount_reason || case when v_svc.discount_reason <> '' then ' · ' else '' end || v_loyalty_pct || '٪ تخفیف باشگاه مشتریان' else v_svc.discount_reason end,
+      v_final,
+      v_pet_id, v_pet_name, v_size, v_extras
+    )
+    returning status, deposit_amount into v_status, v_deposit; -- after the auto-confirm / deposit triggers
+  exception when exclusion_violation then
+    return json_build_object('ok', false, 'error', 'این زمان قبلاً رزرو شده — زمان دیگری انتخاب کنید');
+  end;
+
+  if p_referral_code is not null and length(trim(p_referral_code)) > 0 then
+    perform public.apply_referral(p_customer_phone, p_referral_code);
+  end if;
+
+  return json_build_object(
+    'ok', true, 'id', v_id, 'tracking_code', v_code, 'final_price', v_final,
+    'original_price', v_original, 'staff_name', coalesce((select name from public.stylists where id = p_staff_id and salon_id = v_salon_id), ''),
+    'status', v_status, 'deposit_amount', v_deposit, 'extra_charges', v_extras
+  );
+end;
+$fn$;
+grant execute on function public.create_public_booking(text, text, date, int, text, text, text, text, jsonb) to anon, authenticated;
+
+create or replace function public.reschedule_my_booking_with_token(
+  p_token text, p_appointment_id text, p_new_date date, p_new_start_min int
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_phone text; v_salon_id uuid; v_appt record; v_svc public.services;
+  v_new_end int; v_app_dow int; v_wh record; v_wh_start int; v_wh_end int;
+begin
+  select r.phone, r.salon_id into v_phone, v_salon_id from public.resolve_booking_token(p_token) r;
+  if v_phone is null then
+    return json_build_object('ok', false, 'error', 'نشست شما منقضی شده — دوباره وارد شوید');
+  end if;
+
+  select * into v_appt from public.appointments where id = p_appointment_id;
+  if v_appt is null or v_appt.customer_phone <> v_phone or v_appt.salon_id <> v_salon_id then
+    return json_build_object('ok', false, 'error', 'این نوبت متعلق به شما نیست');
+  end if;
+  -- v2.38: only a live booking can move. Without this, a customer could
+  -- "reschedule" a cancelled / completed / no-show booking back to life, or
+  -- an unpaid deposit hold into a normal booking without paying.
+  if v_appt.status not in ('pending', 'confirmed', 'rescheduled', 'reschedule_proposed') then
+    return json_build_object('ok', false, 'error', 'این نوبت دیگر قابل تغییر نیست');
+  end if;
+  if p_new_date < public.salon_today() then
+    return json_build_object('ok', false, 'error', 'تاریخ گذشته قابل انتخاب نیست');
+  end if;
+  if not exists (select 1 from public.approved_dates where date = p_new_date and salon_id = v_salon_id) then
+    return json_build_object('ok', false, 'error', 'این روز برای رزرو باز نشده است');
+  end if;
+
+  select * into v_svc from public.services where id = v_appt.service_id and salon_id = v_salon_id;
+  if v_svc is null then
+    return json_build_object('ok', false, 'error', 'خدمت مرتبط با این نوبت یافت نشد');
+  end if;
+  v_svc := public.service_for_pet(v_svc, v_appt.pet_size, (select breed from public.pets where id = v_appt.pet_id)); -- v2.44: pet bookings keep their size's duration
+  v_new_end := p_new_start_min + v_svc.duration_minutes;
+
+  v_app_dow := (extract(dow from p_new_date)::int + 1) % 7;
+  select * into v_wh from public.working_hours
+   where day_of_week = v_app_dow and staff_id = v_appt.staff_id and salon_id = v_salon_id;
+  if v_wh is null then
+    select * into v_wh from public.working_hours
+     where day_of_week = v_app_dow and staff_id is null and salon_id = v_salon_id;
+  end if;
+  if v_wh is null or v_wh.is_closed then
+    return json_build_object('ok', false, 'error', 'در این روز سالن یا آرایشگر تعطیل است');
+  end if;
+  v_wh_start := split_part(v_wh.start_time, ':', 1)::int * 60 + split_part(v_wh.start_time, ':', 2)::int;
+  v_wh_end := split_part(v_wh.end_time, ':', 1)::int * 60 + split_part(v_wh.end_time, ':', 2)::int;
+  if p_new_start_min < v_wh_start or v_new_end > v_wh_end then
+    return json_build_object('ok', false, 'error', 'خارج از ساعات کاری است');
+  end if;
+
+  begin
+    update public.appointments
+       set date = p_new_date, start_min = p_new_start_min, end_min = v_new_end,
+           status = 'rescheduled', pending_date = null, pending_start_min = null, pending_end_min = null
+     where id = p_appointment_id;
+  exception when exclusion_violation then
+    return json_build_object('ok', false, 'error', 'این زمان قبلاً رزرو شده — زمان دیگری انتخاب کنید');
+  end;
+
+  return json_build_object('ok', true);
+end;
+$fn$;
+grant execute on function public.reschedule_my_booking_with_token(text, text, date, int) to anon, authenticated;
+
+create or replace function public.create_booking_from_rebooking_token(
+  p_token text, p_date date, p_start_min int, p_staff_id text default null
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_rt record; v_svc public.services; v_wh record; v_app_dow int; v_wh_start int; v_wh_end int;
+  v_end_min int; v_id text; v_code text; v_original bigint; v_svc_discount bigint;
+  v_after_svc bigint; v_loyalty_pct int := 0; v_final bigint; v_loyalty json; v_code_bytes bytea;
+  v_staff_id text;
+  v_pet_id uuid; v_pet_name text; v_pet_size text; v_pet_breed text; v_pet_temper text;
+  v_extra bigint := 0; v_extras jsonb := '[]'::jsonb;
+begin
+  select * into v_rt from public.rebooking_tokens
+   where token_hash = encode(digest(coalesce(p_token, ''), 'sha256'), 'hex')
+     and used_at is null and expires_at > now();
+  if v_rt is null then
+    return json_build_object('ok', false, 'error', 'این لینک منقضی یا نامعتبر است');
+  end if;
+  if v_rt.service_id is null then
+    return json_build_object('ok', false, 'error', 'این لینک برای خدمت مشخصی نیست');
+  end if;
+  if p_date < current_date then
+    return json_build_object('ok', false, 'error', 'تاریخ گذشته قابل انتخاب نیست');
+  end if;
+  if not exists (select 1 from public.approved_dates where date = p_date and salon_id = v_rt.salon_id) then
+    return json_build_object('ok', false, 'error', 'این روز برای رزرو باز نشده است');
+  end if;
+  if exists (select 1 from public.salon_closures where salon_id = v_rt.salon_id and closure_date = p_date and is_active) then
+    return json_build_object('ok', false, 'error', 'سالن در این روز تعطیل است');
+  end if;
+
+  -- Staff can be the one the customer originally had, or a different one
+  -- the customer actively chooses on the booking page — either way it's
+  -- just "who performs the service", not an identity field, so it's safe
+  -- to accept as a direct parameter (validated against this same salon).
+  v_staff_id := coalesce(p_staff_id, v_rt.staff_id);
+  select * into v_svc from public.services where id = v_rt.service_id and salon_id = v_rt.salon_id and is_active;
+  if v_svc is null then
+    return json_build_object('ok', false, 'error', 'خدمت یافت نشد یا غیرفعال است');
+  end if;
+  -- v2.44: a pet salon's link books the customer's animal of that species
+  -- (most recently groomed first), priced and timed for its size.
+  if v_svc.gender in ('dog', 'cat') then
+    select p.id, p.name, p.size, p.breed, p.temperament into v_pet_id, v_pet_name, v_pet_size, v_pet_breed, v_pet_temper
+      from public.pets p
+     where p.salon_id = v_rt.salon_id and p.owner_phone = v_rt.customer_phone and p.species = v_svc.gender
+     order by p.last_visit_date desc nulls last, p.created_at desc
+     limit 1;
+    v_svc := public.service_for_pet(v_svc, v_pet_size, v_pet_breed);
+  end if;
+  if v_staff_id is not null and not exists (select 1 from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id and active) then
+    return json_build_object('ok', false, 'error', 'آرایشگر یافت نشد یا غیرفعال است');
+  end if;
+
+  v_app_dow := (extract(dow from p_date)::int + 1) % 7;
+  select * into v_wh from public.working_hours
+   where day_of_week = v_app_dow and staff_id = v_staff_id and salon_id = v_rt.salon_id;
+  if v_wh is null then
+    select * into v_wh from public.working_hours
+     where day_of_week = v_app_dow and staff_id is null and salon_id = v_rt.salon_id;
+  end if;
+  if v_wh is null or v_wh.is_closed then
+    return json_build_object('ok', false, 'error', 'در این روز سالن یا آرایشگر تعطیل است');
+  end if;
+  v_wh_start := split_part(v_wh.start_time, ':', 1)::int * 60 + split_part(v_wh.start_time, ':', 2)::int;
+  v_wh_end := split_part(v_wh.end_time, ':', 1)::int * 60 + split_part(v_wh.end_time, ':', 2)::int;
+  v_end_min := p_start_min + v_svc.duration_minutes;
+  if p_start_min < v_wh_start or v_end_min > v_wh_end then
+    return json_build_object('ok', false, 'error', 'خارج از ساعات کاری است');
+  end if;
+
+  v_original := coalesce(v_svc.price, 0);
+  v_svc_discount := case
+    when v_svc.discount_type = 'percent' then round(v_original * v_svc.discount_value / 100.0)
+    when v_svc.discount_type = 'fixed' then v_svc.discount_value
+    else 0
+  end;
+  v_after_svc := greatest(0, v_original - v_svc_discount);
+  if v_svc.price is not null then
+    v_loyalty := public.customer_loyalty(v_rt.customer_phone);
+    if (v_loyalty->>'found')::boolean then
+      v_loyalty_pct := coalesce((v_loyalty->>'discount_percent')::int, 0);
+    end if;
+  end if;
+  v_final := case when v_svc.price is null then null
+                  else greatest(0, v_after_svc - round(v_after_svc * v_loyalty_pct / 100.0)) end;
+  -- v2.45: the salon's aggression surcharge, recorded as an extra charge
+  if v_final is not null then
+    v_extra := public.pet_surcharge(v_rt.salon_id, v_pet_temper, v_after_svc);
+    if v_extra > 0 then
+      v_extras := jsonb_build_array(jsonb_build_object('label', 'حیوان پرخاشگر', 'amount', v_extra));
+      v_final := v_final + v_extra;
+    end if;
+  end if;
+
+  v_id := 'apt-' || substr(md5(gen_random_uuid()::text), 1, 16);
+  v_code_bytes := gen_random_bytes(4);
+  v_code := 'MN-' || lpad((
+    ((get_byte(v_code_bytes, 0)::bigint << 24) | (get_byte(v_code_bytes, 1)::bigint << 16)
+     | (get_byte(v_code_bytes, 2)::bigint << 8) | get_byte(v_code_bytes, 3)::bigint) % 90000 + 10000
+  )::text, 5, '0');
+
+  -- v2.38: links the salon itself sent (closure rebooking, waitlist offer,
+  -- predictive invitation) never wait for an online deposit — the page
+  -- behind them has no payment step. Transaction-local flag read by
+  -- hold_for_deposit().
+  perform set_config('app.skip_deposit', 'on', true);
+
+  begin
+    insert into public.appointments (
+      id, salon_id, customer_name, customer_phone, customer_gender, service_id, staff_id,
+      staff_name, date, start_min, end_min, buffer_minutes, status,
+      tracking_code, original_price, discount_type, discount_value, discount_reason, final_price,
+      pet_id, pet_name, pet_size, extra_charges
+    ) values (
+      v_id, v_rt.salon_id,
+      coalesce(nullif(v_rt.customer_name, ''), (select name from public.customers where salon_id = v_rt.salon_id and phone = v_rt.customer_phone), ''),
+      v_rt.customer_phone, v_svc.gender, v_rt.service_id, v_staff_id,
+      coalesce((select name from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id), ''),
+      p_date, p_start_min, v_end_min, v_svc.buffer_minutes, 'confirmed',
+      v_code, v_original, v_svc.discount_type, v_svc.discount_value,
+      case when v_loyalty_pct > 0 then v_svc.discount_reason || case when v_svc.discount_reason <> '' then ' · ' else '' end || v_loyalty_pct || '٪ تخفیف باشگاه مشتریان' else v_svc.discount_reason end,
+      v_final,
+      v_pet_id, v_pet_name, v_pet_size, v_extras
+    );
+  exception when exclusion_violation then
+    return json_build_object('ok', false, 'error', 'این زمان قبلاً رزرو شده — زمان دیگری انتخاب کنید');
+  end;
+
+  update public.rebooking_tokens set used_at = now() where id = v_rt.id;
+
+  return json_build_object(
+    'ok', true, 'id', v_id, 'tracking_code', v_code, 'final_price', v_final,
+    'original_price', v_original, 'staff_name', coalesce((select name from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id), '')
+  );
+end;
+$fn$;
+grant execute on function public.create_booking_from_rebooking_token(text, date, int, text) to anon, authenticated;
+
+-- ------------------------------------------------ starter pet menu ---------
+-- Modelled on a working groomer's price list (toman). Sizes follow the
+-- salon's thresholds (default: small under 5 kg). "اصلاح کامل" has no base
+-- price — other breeds read "price announced in salon" — and breed prices
+-- for Pomeranian and Chow Chow. Detangling is an add-on staff add per half
+-- hour when completing the visit.
+create or replace function public.seed_pet_services(p_salon uuid)
+returns void
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if exists (select 1 from public.services where salon_id = p_salon) then
+    return;
+  end if;
+  insert into public.services (id, salon_id, name, gender, category, duration_minutes, price, size_pricing, breed_pricing, is_addon)
+  select 'svc-' || encode(gen_random_bytes(6), 'hex'), p_salon, s.name, s.species, s.category, s.duration, s.price, s.tiers::jsonb, s.breeds::jsonb, s.addon
+    from (values
+      ('کوتاهی ناخن', 'dog', 'nails_pet', 15, 200000::bigint, '{}', '{}', false),
+      ('تخلیهٔ کیسهٔ مقعدی', 'dog', 'hygiene', 15, 200000, '{}', '{}', false),
+      ('شستشو (حمام)', 'dog', 'bath', 90, 1800000,
+       '{"small":{"price":500000,"duration":45},"medium":{"price":700000,"duration":60},"large":{"price":1800000,"duration":90}}', '{}', false),
+      ('اصلاح ساده با موزر', 'dog', 'grooming', 90, 1300000,
+       '{"small":{"price":900000,"duration":60},"medium":{"price":900000,"duration":75},"large":{"price":1300000,"duration":90}}', '{}', false),
+      ('اصلاح ساده با قیچی', 'dog', 'grooming', 90, 1000000,
+       '{"medium":{"price":1000000,"duration":90},"large":{"price":1500000,"duration":120}}', '{}', false),
+      ('اصلاح کامل + حمام', 'dog', 'grooming', 150, null,
+       '{}', '{"پامرانین":{"price":1900000,"duration":120},"پامر":{"price":1900000,"duration":120},"چاو چاو":{"price":3500000,"duration":180}}', false),
+      ('گره‌زدایی (هر نیم ساعت)', 'dog', 'addon', 30, 350000, '{}', '{}', true),
+      ('کوتاهی ناخن', 'cat', 'nails_pet', 15, 200000, '{}', '{}', false),
+      ('تخلیهٔ کیسهٔ مقعدی', 'cat', 'hygiene', 15, 200000, '{}', '{}', false),
+      ('شستشو (حمام) گربه', 'cat', 'bath', 60, 800000, '{}', '{}', false),
+      ('شیو سادهٔ گربه', 'cat', 'grooming', 60, 900000, '{}', '{}', false),
+      ('گره‌زدایی (هر نیم ساعت)', 'cat', 'addon', 30, 350000, '{}', '{}', true)
+    ) as s(name, species, category, duration, price, tiers, breeds, addon);
+end;
+$fn$;
+revoke all on function public.seed_pet_services(uuid) from public, anon, authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.46_pet_quotes.sql
+-- ============================================================================
+-- Migration v2.46 — price quotes for pet salons (run after v2.45)
+-- ============================================================================
+--  A groomer prices a visit after seeing what it involves. So:
+--   1. The customer sends a request: the animal, the services wanted, a
+--      note and a preferred time (request_quote). Customer and manager get
+--      an SMS.
+--   2. Staff answer from the panel with a price, a duration and optionally
+--      the groomer (send_quote) — or decline with a reason.
+--   3. The customer gets an SMS with a booking link (a rebooking token tied
+--      to the quote) and picks a time; the booking is created at the quoted
+--      price and duration. The same quote is in "my dashboard", which can
+--      issue a fresh link (my_quote_link).
+--  app_settings.pet_quote_mode: 'all' (every pet booking goes through a
+--  quote), 'unpriced' (only services with no price for the animal),
+--  'off' (direct booking as in v2.44/45).
+--  Also: get_available_slots_for_rebooking now uses the same duration as
+--  the booking (the animal's size/breed, or the quote) — before, a pet
+--  link could offer times its own booking then refused.
+-- ============================================================================
+
+alter table public.app_settings add column if not exists pet_quote_mode text not null default 'all';
+alter table public.app_settings drop constraint if exists app_settings_pet_quote_mode_check;
+alter table public.app_settings add constraint app_settings_pet_quote_mode_check check (pet_quote_mode in ('off', 'unpriced', 'all'));
+alter table public.app_settings add column if not exists pet_quote_valid_days int not null default 3;
+alter table public.app_settings drop constraint if exists app_settings_pet_quote_valid_days_check;
+alter table public.app_settings add constraint app_settings_pet_quote_valid_days_check check (pet_quote_valid_days between 1 and 14);
+
+alter table public.sms_messages drop constraint if exists sms_messages_kind_check;
+alter table public.sms_messages add constraint sms_messages_kind_check check (kind in (
+  'confirmation', 'reminder', 'cancellation', 'reschedule', 'campaign', 'loyalty', 'custom',
+  'reconciliation_prompt', 'weekly_summary', 'predictive_rebooking', 'reschedule_proposed',
+  'feedback_request', 'feedback_followup', 'staff_new_booking', 'daily_digest', 'waitlist_offer',
+  'staff_change', 'quote_request', 'quote'));
+
+create table if not exists public.quote_requests (
+  id              uuid primary key default gen_random_uuid(),
+  salon_id        uuid not null references public.salons (id) on delete cascade,
+  customer_phone  text not null check (customer_phone ~ '^09[0-9]{9}$'),
+  customer_name   text not null default '',
+  pet_id          uuid references public.pets (id) on delete set null,
+  pet_name        text not null,
+  pet_species     text not null check (pet_species in ('dog', 'cat')),
+  pet_size        text check (pet_size is null or pet_size in ('small', 'medium', 'large', 'giant')),
+  service_ids     text[] not null check (cardinality(service_ids) between 1 and 6),
+  services_label  text not null,
+  customer_note   text not null default '' check (length(customer_note) <= 500),
+  preferred_time  text not null default '' check (length(preferred_time) <= 100),
+  status          text not null default 'pending' check (status in ('pending', 'quoted', 'booked', 'declined', 'cancelled')),
+  quoted_price    bigint check (quoted_price is null or quoted_price >= 0),
+  quoted_duration int check (quoted_duration is null or quoted_duration between 5 and 600),
+  quoted_staff_id text,
+  quote_note      text not null default '' check (length(quote_note) <= 300),
+  quoted_at       timestamptz,
+  expires_at      timestamptz,
+  appointment_id  text references public.appointments (id) on delete set null,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+create index if not exists quote_requests_salon_status_idx on public.quote_requests (salon_id, status, created_at desc);
+create index if not exists quote_requests_phone_idx on public.quote_requests (salon_id, customer_phone);
+
+alter table public.quote_requests enable row level security;
+revoke all on public.quote_requests from anon, authenticated;
+grant select on public.quote_requests to authenticated;
+drop policy if exists p_quotes_staff_read on public.quote_requests;
+create policy p_quotes_staff_read on public.quote_requests for select
+  using ((select public.is_staff()) and salon_id = (select public.current_salon_id()));
+
+alter table public.rebooking_tokens drop constraint if exists rebooking_tokens_reason_check;
+alter table public.rebooking_tokens add constraint rebooking_tokens_reason_check check (reason in ('closure', 'predictive', 'manual', 'waitlist', 'quote'));
+alter table public.rebooking_tokens add column if not exists quote_id uuid references public.quote_requests (id) on delete cascade;
+alter table public.appointments add column if not exists quote_id uuid references public.quote_requests (id) on delete set null;
+alter table public.appointments add column if not exists services_label text;
+
+-- What a rebooking token books: the service (as priced and timed for this
+-- customer's animal, or as quoted) and the animal. One place, so the slot
+-- list and the booking always agree.
+create or replace function public.rebooking_plan(p_rt public.rebooking_tokens,
+  out svc public.services, out pet_id uuid, out pet_name text, out pet_size text, out pet_temper text,
+  out quote public.quote_requests)
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_breed text;
+begin
+  if p_rt.quote_id is not null then
+    select * into quote from public.quote_requests where id = p_rt.quote_id and salon_id = p_rt.salon_id;
+    select * into svc from public.services where id = p_rt.service_id and salon_id = p_rt.salon_id;
+    if quote.id is null or svc.id is null then
+      svc := null;
+      return;
+    end if;
+    pet_id := quote.pet_id; pet_name := quote.pet_name; pet_size := quote.pet_size;
+    svc.price := quote.quoted_price;
+    svc.duration_minutes := quote.quoted_duration;
+    svc.discount_type := 'none'; svc.discount_value := 0; svc.discount_reason := '';
+    return;
+  end if;
+  select * into svc from public.services where id = p_rt.service_id and salon_id = p_rt.salon_id and is_active;
+  if svc.id is null then
+    svc := null;
+    return;
+  end if;
+  if svc.gender in ('dog', 'cat') then
+    select p.id, p.name, p.size, p.breed, p.temperament into pet_id, pet_name, pet_size, v_breed, pet_temper
+      from public.pets p
+     where p.salon_id = p_rt.salon_id and p.owner_phone = p_rt.customer_phone and p.species = svc.gender
+     order by p.last_visit_date desc nulls last, p.created_at desc
+     limit 1;
+    svc := public.service_for_pet(svc, pet_size, v_breed);
+  end if;
+end;
+$fn$;
+revoke all on function public.rebooking_plan(public.rebooking_tokens) from public, anon, authenticated;
+
+create or replace function public.resolve_rebooking_token(p_token text)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_rt public.rebooking_tokens; v_plan record;
+begin
+  select * into v_rt from public.rebooking_tokens
+   where token_hash = encode(digest(coalesce(p_token, ''), 'sha256'), 'hex')
+     and used_at is null and expires_at > now();
+  if v_rt.id is null then
+    return json_build_object('ok', false, 'error', 'این لینک منقضی یا نامعتبر است');
+  end if;
+  select * into v_plan from public.rebooking_plan(v_rt);
+  if v_rt.quote_id is not null and ((v_plan.quote).status is distinct from 'quoted' or (v_plan.quote).expires_at <= now()) then
+    return json_build_object('ok', false, 'error', 'این پیشنهاد قیمت دیگر معتبر نیست');
+  end if;
+  return json_build_object(
+    'ok', true,
+    'salon_id', v_rt.salon_id,
+    'salon_name', (select name from public.salons where id = v_rt.salon_id),
+    'salon_slug', (select slug from public.salons where id = v_rt.salon_id),
+    'customer_name', v_rt.customer_name,
+    'service_id', v_rt.service_id,
+    'service_name', coalesce((v_plan.quote).services_label, (v_plan.svc).name),
+    'staff_id', v_rt.staff_id,
+    'staff_name', (select name from public.stylists where id = v_rt.staff_id and salon_id = v_rt.salon_id),
+    'reason', v_rt.reason,
+    'preferred_date', v_rt.preferred_date,
+    -- v2.46: what the booking will cost and take, and the animal
+    'price', (v_plan.svc).price,
+    'duration', (v_plan.svc).duration_minutes,
+    'pet_name', v_plan.pet_name,
+    'quote_note', nullif((v_plan.quote).quote_note, ''),
+    'quote_expires_at', (v_plan.quote).expires_at,
+    'is_quote', v_rt.quote_id is not null
+  );
+end;
+$fn$;
+grant execute on function public.resolve_rebooking_token(text) to anon, authenticated;
+
+create or replace function public.get_available_slots_for_rebooking(p_token text, p_date date, p_staff_id text default null)
+returns table (start_min int)
+language plpgsql stable security definer set search_path = public as $fn$
+declare
+  v_rt public.rebooking_tokens; v_plan record; v_svc public.services; v_wh record; v_app_dow int;
+  v_wh_start int; v_wh_end int; v_staff_id text; v_step int; v_t int;
+begin
+  select * into v_rt from public.rebooking_tokens
+   where token_hash = encode(digest(coalesce(p_token, ''), 'sha256'), 'hex')
+     and used_at is null and expires_at > now();
+  if v_rt.id is null or v_rt.service_id is null then
+    return;
+  end if;
+  if p_date < current_date
+     or not exists (select 1 from public.approved_dates where date = p_date and salon_id = v_rt.salon_id)
+     or exists (select 1 from public.salon_closures where salon_id = v_rt.salon_id and closure_date = p_date and is_active)
+  then
+    return;
+  end if;
+  select * into v_plan from public.rebooking_plan(v_rt);
+  v_svc := v_plan.svc;
+  if v_svc.id is null then
+    return;
+  end if;
+
+  v_staff_id := coalesce(p_staff_id, v_rt.staff_id);
+  v_app_dow := (extract(dow from p_date)::int + 1) % 7;
+  select * into v_wh from public.working_hours
+   where day_of_week = v_app_dow and staff_id = v_staff_id and salon_id = v_rt.salon_id;
+  if v_wh is null then
+    select * into v_wh from public.working_hours
+     where day_of_week = v_app_dow and staff_id is null and salon_id = v_rt.salon_id;
+  end if;
+  if v_wh is null or v_wh.is_closed then
+    return;
+  end if;
+  v_wh_start := split_part(v_wh.start_time, ':', 1)::int * 60 + split_part(v_wh.start_time, ':', 2)::int;
+  v_wh_end := split_part(v_wh.end_time, ':', 1)::int * 60 + split_part(v_wh.end_time, ':', 2)::int;
+  -- every half hour (it used to step by the whole service length, so a
+  -- two-hour visit could only start at 9, 11, 13 …)
+  v_step := least(greatest(15, v_svc.duration_minutes), 30);
+
+  v_t := v_wh_start;
+  while v_t + v_svc.duration_minutes <= v_wh_end loop
+    if (p_date > public.salon_today() or v_t > extract(hour from (now() at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran')))::int * 60
+                                              + extract(minute from (now() at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran')))::int)
+       and (v_staff_id is null or not exists (
+      select 1 from public.appointments ap
+      where ap.salon_id = v_rt.salon_id and ap.staff_id = v_staff_id and ap.date = p_date
+        and ap.status in ('pending', 'confirmed', 'rescheduled', 'reschedule_proposed', 'awaiting_payment')
+        and int4range(ap.start_min, ap.end_min + ap.buffer_minutes) && int4range(v_t, v_t + v_svc.duration_minutes + v_svc.buffer_minutes)
+    )) then
+      start_min := v_t;
+      return next;
+    end if;
+    v_t := v_t + v_step;
+  end loop;
+end;
+$fn$;
+grant execute on function public.get_available_slots_for_rebooking(text, date, text) to anon, authenticated;
+
+create or replace function public.create_booking_from_rebooking_token(
+  p_token text, p_date date, p_start_min int, p_staff_id text default null
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_rt public.rebooking_tokens; v_plan record; v_quote public.quote_requests; v_svc public.services; v_wh record; v_app_dow int; v_wh_start int; v_wh_end int;
+  v_end_min int; v_id text; v_code text; v_original bigint; v_svc_discount bigint;
+  v_after_svc bigint; v_loyalty_pct int := 0; v_final bigint; v_loyalty json; v_code_bytes bytea;
+  v_staff_id text;
+  v_pet_id uuid; v_pet_name text; v_pet_size text; v_pet_breed text; v_pet_temper text;
+  v_extra bigint := 0; v_extras jsonb := '[]'::jsonb;
+begin
+  select * into v_rt from public.rebooking_tokens
+   where token_hash = encode(digest(coalesce(p_token, ''), 'sha256'), 'hex')
+     and used_at is null and expires_at > now();
+  if v_rt is null then
+    return json_build_object('ok', false, 'error', 'این لینک منقضی یا نامعتبر است');
+  end if;
+  if v_rt.service_id is null then
+    return json_build_object('ok', false, 'error', 'این لینک برای خدمت مشخصی نیست');
+  end if;
+  if p_date < current_date then
+    return json_build_object('ok', false, 'error', 'تاریخ گذشته قابل انتخاب نیست');
+  end if;
+  if not exists (select 1 from public.approved_dates where date = p_date and salon_id = v_rt.salon_id) then
+    return json_build_object('ok', false, 'error', 'این روز برای رزرو باز نشده است');
+  end if;
+  if exists (select 1 from public.salon_closures where salon_id = v_rt.salon_id and closure_date = p_date and is_active) then
+    return json_build_object('ok', false, 'error', 'سالن در این روز تعطیل است');
+  end if;
+
+  -- Staff can be the one the customer originally had, or a different one
+  -- the customer actively chooses on the booking page — either way it's
+  -- just "who performs the service", not an identity field, so it's safe
+  -- to accept as a direct parameter (validated against this same salon).
+  v_staff_id := coalesce(p_staff_id, v_rt.staff_id);
+  -- v2.46: the service as priced/timed for the animal, or as quoted
+  select * into v_plan from public.rebooking_plan(v_rt);
+  v_svc := v_plan.svc;
+  v_quote := v_plan.quote;
+  if v_svc.id is null then
+    return json_build_object('ok', false, 'error', 'خدمت یافت نشد یا غیرفعال است');
+  end if;
+  if v_rt.quote_id is not null and (v_quote.status is distinct from 'quoted' or v_quote.expires_at <= now()) then
+    return json_build_object('ok', false, 'error', 'این پیشنهاد قیمت دیگر معتبر نیست');
+  end if;
+  v_pet_id := v_plan.pet_id; v_pet_name := v_plan.pet_name; v_pet_size := v_plan.pet_size; v_pet_temper := v_plan.pet_temper;
+  if v_staff_id is not null and not exists (select 1 from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id and active) then
+    return json_build_object('ok', false, 'error', 'آرایشگر یافت نشد یا غیرفعال است');
+  end if;
+
+  v_app_dow := (extract(dow from p_date)::int + 1) % 7;
+  select * into v_wh from public.working_hours
+   where day_of_week = v_app_dow and staff_id = v_staff_id and salon_id = v_rt.salon_id;
+  if v_wh is null then
+    select * into v_wh from public.working_hours
+     where day_of_week = v_app_dow and staff_id is null and salon_id = v_rt.salon_id;
+  end if;
+  if v_wh is null or v_wh.is_closed then
+    return json_build_object('ok', false, 'error', 'در این روز سالن یا آرایشگر تعطیل است');
+  end if;
+  v_wh_start := split_part(v_wh.start_time, ':', 1)::int * 60 + split_part(v_wh.start_time, ':', 2)::int;
+  v_wh_end := split_part(v_wh.end_time, ':', 1)::int * 60 + split_part(v_wh.end_time, ':', 2)::int;
+  v_end_min := p_start_min + v_svc.duration_minutes;
+  if p_start_min < v_wh_start or v_end_min > v_wh_end then
+    return json_build_object('ok', false, 'error', 'خارج از ساعات کاری است');
+  end if;
+
+  v_original := coalesce(v_svc.price, 0);
+  v_svc_discount := case
+    when v_svc.discount_type = 'percent' then round(v_original * v_svc.discount_value / 100.0)
+    when v_svc.discount_type = 'fixed' then v_svc.discount_value
+    else 0
+  end;
+  v_after_svc := greatest(0, v_original - v_svc_discount);
+  if v_svc.price is not null and v_rt.quote_id is null then -- a quoted price is final
+    v_loyalty := public.customer_loyalty(v_rt.customer_phone);
+    if (v_loyalty->>'found')::boolean then
+      v_loyalty_pct := coalesce((v_loyalty->>'discount_percent')::int, 0);
+    end if;
+  end if;
+  v_final := case when v_svc.price is null then null
+                  else greatest(0, v_after_svc - round(v_after_svc * v_loyalty_pct / 100.0)) end;
+  -- v2.45: the salon's aggression surcharge, recorded as an extra charge
+  if v_final is not null then
+    v_extra := public.pet_surcharge(v_rt.salon_id, v_pet_temper, v_after_svc);
+    if v_extra > 0 then
+      v_extras := jsonb_build_array(jsonb_build_object('label', 'حیوان پرخاشگر', 'amount', v_extra));
+      v_final := v_final + v_extra;
+    end if;
+  end if;
+
+  v_id := 'apt-' || substr(md5(gen_random_uuid()::text), 1, 16);
+  v_code_bytes := gen_random_bytes(4);
+  v_code := 'MN-' || lpad((
+    ((get_byte(v_code_bytes, 0)::bigint << 24) | (get_byte(v_code_bytes, 1)::bigint << 16)
+     | (get_byte(v_code_bytes, 2)::bigint << 8) | get_byte(v_code_bytes, 3)::bigint) % 90000 + 10000
+  )::text, 5, '0');
+
+  -- v2.38: links the salon itself sent (closure rebooking, waitlist offer,
+  -- predictive invitation) never wait for an online deposit — the page
+  -- behind them has no payment step. Transaction-local flag read by
+  -- hold_for_deposit().
+  perform set_config('app.skip_deposit', 'on', true);
+
+  begin
+    insert into public.appointments (
+      id, salon_id, customer_name, customer_phone, customer_gender, service_id, staff_id,
+      staff_name, date, start_min, end_min, buffer_minutes, status,
+      tracking_code, original_price, discount_type, discount_value, discount_reason, final_price,
+      pet_id, pet_name, pet_size, extra_charges, quote_id, services_label
+    ) values (
+      v_id, v_rt.salon_id,
+      coalesce(nullif(v_rt.customer_name, ''), (select name from public.customers where salon_id = v_rt.salon_id and phone = v_rt.customer_phone), ''),
+      v_rt.customer_phone, v_svc.gender, v_rt.service_id, v_staff_id,
+      coalesce((select name from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id), ''),
+      p_date, p_start_min, v_end_min, v_svc.buffer_minutes, 'confirmed',
+      v_code, v_original, v_svc.discount_type, v_svc.discount_value,
+      case when v_loyalty_pct > 0 then v_svc.discount_reason || case when v_svc.discount_reason <> '' then ' · ' else '' end || v_loyalty_pct || '٪ تخفیف باشگاه مشتریان' else v_svc.discount_reason end,
+      v_final,
+      v_pet_id, v_pet_name, v_pet_size, v_extras, v_rt.quote_id, v_quote.services_label
+    );
+  exception when exclusion_violation then
+    return json_build_object('ok', false, 'error', 'این زمان قبلاً رزرو شده — زمان دیگری انتخاب کنید');
+  end;
+
+  update public.rebooking_tokens set used_at = now() where id = v_rt.id;
+  if v_rt.quote_id is not null then
+    update public.quote_requests set status = 'booked', appointment_id = v_id, updated_at = now() where id = v_rt.quote_id;
+    update public.rebooking_tokens set used_at = now() where quote_id = v_rt.quote_id and used_at is null;
+  end if;
+
+  return json_build_object(
+    'ok', true, 'id', v_id, 'tracking_code', v_code, 'final_price', v_final,
+    'original_price', v_original, 'staff_name', coalesce((select name from public.stylists where id = v_staff_id and salon_id = v_rt.salon_id), '')
+  );
+end;
+$fn$;
+grant execute on function public.create_booking_from_rebooking_token(text, date, int, text) to anon, authenticated;
+
+-- ------------------------------------------------------------ helpers ------
+create or replace function public.fa_money(p bigint)
+returns text
+language sql immutable as $fn$
+  select translate(to_char(p, 'FM999,999,999,999'), '0123456789', '۰۱۲۳۴۵۶۷۸۹');
+$fn$;
+
+-- ------------------------------------------------- 1. customer request ----
+create or replace function public.request_quote(
+  p_customer_name text, p_customer_phone text, p_species text, p_pet jsonb,
+  p_service_ids text[], p_note text default '', p_preferred_time text default ''
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_salon uuid := public.current_salon_id(); v_type text; v_salon_name text;
+  v_pet_name text; v_size text; v_label text; v_count int; v_pet_id uuid; v_id uuid;
+  v_ids text[]; v_phone text;
+begin
+  if v_salon is null then
+    return json_build_object('ok', false, 'error', 'سالن نامعتبر است');
+  end if;
+  select business_type, name into v_type, v_salon_name from public.salons where id = v_salon;
+  if v_type is distinct from 'pet' then
+    return json_build_object('ok', false, 'error', 'این سالن استعلام قیمت ندارد');
+  end if;
+  if coalesce(p_customer_phone, '') !~ '^09[0-9]{9}$' then
+    return json_build_object('ok', false, 'error', 'شماره موبایل نامعتبر است');
+  end if;
+  if coalesce(trim(p_customer_name), '') = '' then
+    select name into p_customer_name from public.customers where salon_id = v_salon and phone = p_customer_phone;
+  end if;
+  if coalesce(trim(p_customer_name), '') = '' or length(p_customer_name) > 80 then
+    return json_build_object('ok', false, 'error', 'نام لازم است');
+  end if;
+  if p_species is null or p_species not in ('dog', 'cat') then
+    return json_build_object('ok', false, 'error', 'نوع حیوان نامعتبر است');
+  end if;
+  v_pet_name := nullif(trim(coalesce(p_pet ->> 'name', '')), '');
+  v_size := p_pet ->> 'size';
+  if v_pet_name is null or length(v_pet_name) > 40 then
+    return json_build_object('ok', false, 'error', 'نام حیوان را وارد کنید');
+  end if;
+  if v_size is null or v_size not in ('small', 'medium', 'large', 'giant') then
+    return json_build_object('ok', false, 'error', 'جثهٔ حیوان را انتخاب کنید');
+  end if;
+  if coalesce(p_pet ->> 'temperament', 'calm') not in ('calm', 'nervous', 'aggressive') then
+    return json_build_object('ok', false, 'error', 'رفتار حیوان نامعتبر است');
+  end if;
+  select array_agg(distinct x) into v_ids from unnest(coalesce(p_service_ids, '{}')) x where x is not null;
+  if coalesce(cardinality(v_ids), 0) not between 1 and 6 then
+    return json_build_object('ok', false, 'error', 'یک تا شش خدمت انتخاب کنید');
+  end if;
+  select count(*), string_agg(s.name, ' + ' order by s.name) into v_count, v_label
+    from public.services s
+   where s.salon_id = v_salon and s.id = any (v_ids) and s.is_active and not s.is_addon and s.gender = p_species;
+  if v_count <> cardinality(v_ids) then
+    return json_build_object('ok', false, 'error', 'خدمت انتخابی یافت نشد');
+  end if;
+  if length(coalesce(p_note, '')) > 500 or length(coalesce(p_preferred_time, '')) > 100 then
+    return json_build_object('ok', false, 'error', 'توضیحات طولانی است');
+  end if;
+  if not public.check_rate_limit('quote:' || v_salon || ':' || p_customer_phone, 5, 60) then
+    return json_build_object('ok', false, 'error', 'تعداد درخواست‌ها زیاد است؛ کمی بعد دوباره تلاش کنید');
+  end if;
+  if (select count(*) from public.quote_requests
+       where salon_id = v_salon and customer_phone = p_customer_phone and status = 'pending') >= 3 then
+    return json_build_object('ok', false, 'error', 'سه درخواست شما در انتظار پاسخ سالن است');
+  end if;
+
+  v_pet_id := public.upsert_pet(v_salon, p_customer_phone, p_species, p_pet);
+  insert into public.quote_requests (salon_id, customer_phone, customer_name, pet_id, pet_name, pet_species, pet_size,
+                                     service_ids, services_label, customer_note, preferred_time)
+  values (v_salon, p_customer_phone, trim(p_customer_name), v_pet_id, v_pet_name, p_species, v_size,
+          v_ids, v_label, trim(coalesce(p_note, '')), trim(coalesce(p_preferred_time, '')))
+  returning id into v_id;
+
+  insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+  values (v_salon, p_customer_phone,
+          trim(p_customer_name) || ' عزیز، درخواست شما برای ' || v_pet_name || ' (' || v_label || ') در ' || v_salon_name
+            || E' ثبت شد.\nقیمت و لینک رزرو به‌زودی برایتان پیامک می‌شود.',
+          'quote_request', 'queued', now());
+  -- the salon's managers hear about it right away
+  for v_phone in
+    select distinct u.phone from public.users u
+     where u.salon_id = v_salon and u.role in ('owner', 'manager') and u.active is not false and u.phone ~ '^09[0-9]{9}$'
+  loop
+    insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+    values (v_salon, v_phone,
+            'درخواست قیمت جدید: ' || v_pet_name || ' (' || case p_species when 'cat' then 'گربه' else 'سگ' end
+              || '، ' || public.pet_size_label(v_size) || case when coalesce(p_pet ->> 'breed', '') <> '' then '، ' || left(p_pet ->> 'breed', 40) else '' end
+              || ') — ' || v_label || E'\nصاحب: ' || trim(p_customer_name) || ' ' || p_customer_phone || E'\nپاسخ از پنل ← استعلام قیمت',
+            'quote_request', 'queued', now());
+  end loop;
+  return json_build_object('ok', true, 'id', v_id);
+end;
+$fn$;
+revoke all on function public.request_quote(text, text, text, jsonb, text[], text, text) from public;
+grant execute on function public.request_quote(text, text, text, jsonb, text[], text, text) to anon, authenticated;
+
+-- ------------------------------------------------------ 2. staff answer ----
+create or replace function public.send_quote(p_id uuid, p_price bigint, p_duration int, p_staff_id text default null, p_note text default '')
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_q public.quote_requests; v_days int; v_token text; v_link text; v_salon_name text; v_body text;
+begin
+  if not public.is_staff() then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  select * into v_q from public.quote_requests where id = p_id and salon_id = public.current_salon_id() for update;
+  if v_q.id is null then
+    return json_build_object('ok', false, 'error', 'درخواست پیدا نشد');
+  end if;
+  if v_q.status not in ('pending', 'quoted') then
+    return json_build_object('ok', false, 'error', 'این درخواست بسته شده است');
+  end if;
+  if p_price is null or p_price < 1000 then
+    return json_build_object('ok', false, 'error', 'قیمت را وارد کنید');
+  end if;
+  if p_duration is null or p_duration not between 5 and 600 then
+    return json_build_object('ok', false, 'error', 'مدت باید بین ۵ تا ۶۰۰ دقیقه باشد');
+  end if;
+  if p_staff_id is not null and not exists (select 1 from public.stylists where id = p_staff_id and salon_id = v_q.salon_id and active) then
+    return json_build_object('ok', false, 'error', 'آرایشگر پیدا نشد');
+  end if;
+  if length(coalesce(p_note, '')) > 300 then
+    return json_build_object('ok', false, 'error', 'توضیح طولانی است');
+  end if;
+  select coalesce(pet_quote_valid_days, 3) into v_days from public.app_settings where salon_id = v_q.salon_id;
+
+  update public.quote_requests
+     set status = 'quoted', quoted_price = p_price, quoted_duration = p_duration, quoted_staff_id = p_staff_id,
+         quote_note = trim(coalesce(p_note, '')), quoted_at = now(), expires_at = now() + make_interval(days => coalesce(v_days, 3)),
+         updated_at = now()
+   where id = p_id
+  returning * into v_q;
+
+  -- a new price replaces any link sent before
+  update public.rebooking_tokens set used_at = now() where quote_id = p_id and used_at is null;
+  v_token := public.create_rebooking_token(v_q.salon_id, v_q.customer_phone, v_q.service_ids[1], p_staff_id, 'quote');
+  update public.rebooking_tokens set quote_id = p_id, expires_at = v_q.expires_at, customer_name = v_q.customer_name
+   where token_hash = encode(digest(v_token, 'sha256'), 'hex');
+  v_link := public.public_link('/book?token=' || v_token);
+
+  select name into v_salon_name from public.salons where id = v_q.salon_id;
+  v_body := v_q.customer_name || ' عزیز، قیمت ' || v_q.services_label || ' برای ' || v_q.pet_name || ' در ' || v_salon_name || ': '
+            || public.fa_money(p_price) || ' تومان (حدود ' || translate(p_duration::text, '0123456789', '۰۱۲۳۴۵۶۷۸۹') || ' دقیقه).'
+            || case when coalesce(trim(p_note), '') <> '' then E'\n' || trim(p_note) else '' end
+            || E'\n' || case when v_link is not null then 'انتخاب زمان و رزرو: ' || v_link
+                             else 'برای رزرو به «داشبورد من» در صفحهٔ سالن بروید.' end
+            || E'\nمعتبر تا ' || public.jalali_label((v_q.expires_at at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))::date);
+  insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+  values (v_q.salon_id, v_q.customer_phone, v_body, 'quote', 'queued', now());
+  return json_build_object('ok', true, 'expires_at', v_q.expires_at, 'link', v_link);
+end;
+$fn$;
+revoke all on function public.send_quote(uuid, bigint, int, text, text) from public, anon;
+grant execute on function public.send_quote(uuid, bigint, int, text, text) to authenticated;
+
+create or replace function public.decline_quote(p_id uuid, p_reason text default '')
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_q public.quote_requests; v_salon_name text;
+begin
+  if not public.is_staff() then
+    return json_build_object('ok', false, 'error', 'دسترسی مجاز نیست');
+  end if;
+  update public.quote_requests set status = 'declined', quote_note = left(trim(coalesce(p_reason, '')), 300), updated_at = now()
+   where id = p_id and salon_id = public.current_salon_id() and status in ('pending', 'quoted')
+  returning * into v_q;
+  if v_q.id is null then
+    return json_build_object('ok', false, 'error', 'درخواست باز پیدا نشد');
+  end if;
+  update public.rebooking_tokens set used_at = now() where quote_id = p_id and used_at is null;
+  select name into v_salon_name from public.salons where id = v_q.salon_id;
+  insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+  values (v_q.salon_id, v_q.customer_phone,
+          v_q.customer_name || ' عزیز، ' || v_salon_name || ': متاسفانه برای درخواست ' || v_q.pet_name || ' امکان پذیرش نیست.'
+            || case when v_q.quote_note <> '' then E'\n' || v_q.quote_note else '' end,
+          'quote', 'queued', now());
+  return json_build_object('ok', true);
+end;
+$fn$;
+revoke all on function public.decline_quote(uuid, text) from public, anon;
+grant execute on function public.decline_quote(uuid, text) to authenticated;
+
+-- --------------------------------------------- 3. customer's dashboard ----
+create or replace function public.my_quotes_with_token(p_token text)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_phone text; v_salon uuid;
+begin
+  select r.phone, r.salon_id into v_phone, v_salon from public.resolve_booking_token(p_token) r;
+  if v_phone is null then
+    return '[]'::json;
+  end if;
+  return coalesce((
+    select json_agg(json_build_object(
+             'id', q.id, 'pet_name', q.pet_name, 'pet_species', q.pet_species, 'services_label', q.services_label,
+             'status', case when q.status = 'quoted' and q.expires_at <= now() then 'expired' else q.status end,
+             'price', q.quoted_price, 'duration', q.quoted_duration, 'note', nullif(q.quote_note, ''),
+             'expires_at', q.expires_at, 'created_at', q.created_at, 'appointment_id', q.appointment_id)
+           order by q.created_at desc)
+      from public.quote_requests q
+     where q.salon_id = v_salon and q.customer_phone = v_phone and q.created_at > now() - interval '60 days'), '[]'::json);
+end;
+$fn$;
+grant execute on function public.my_quotes_with_token(text) to anon, authenticated;
+
+-- A fresh booking link for a quoted price (the SMS link may be lost).
+create or replace function public.my_quote_link(p_token text, p_quote_id uuid)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_phone text; v_salon uuid; v_q public.quote_requests; v_token text;
+begin
+  select r.phone, r.salon_id into v_phone, v_salon from public.resolve_booking_token(p_token) r;
+  if v_phone is null then
+    return json_build_object('ok', false, 'error', 'نشست شما منقضی شده — دوباره وارد شوید');
+  end if;
+  select * into v_q from public.quote_requests where id = p_quote_id and salon_id = v_salon and customer_phone = v_phone;
+  if v_q.id is null or v_q.status <> 'quoted' or v_q.expires_at <= now() then
+    return json_build_object('ok', false, 'error', 'این پیشنهاد قیمت دیگر معتبر نیست');
+  end if;
+  update public.rebooking_tokens set used_at = now() where quote_id = v_q.id and used_at is null;
+  v_token := public.create_rebooking_token(v_q.salon_id, v_q.customer_phone, v_q.service_ids[1], v_q.quoted_staff_id, 'quote');
+  update public.rebooking_tokens set quote_id = v_q.id, expires_at = v_q.expires_at, customer_name = v_q.customer_name
+   where token_hash = encode(digest(v_token, 'sha256'), 'hex');
+  return json_build_object('ok', true, 'token', v_token);
+end;
+$fn$;
+grant execute on function public.my_quote_link(text, uuid) to anon, authenticated;
+
+create or replace function public.cancel_my_quote(p_token text, p_quote_id uuid)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_phone text; v_salon uuid; v_n int;
+begin
+  select r.phone, r.salon_id into v_phone, v_salon from public.resolve_booking_token(p_token) r;
+  if v_phone is null then
+    return json_build_object('ok', false, 'error', 'نشست شما منقضی شده — دوباره وارد شوید');
+  end if;
+  update public.quote_requests set status = 'cancelled', updated_at = now()
+   where id = p_quote_id and salon_id = v_salon and customer_phone = v_phone and status in ('pending', 'quoted');
+  get diagnostics v_n = row_count;
+  if v_n = 0 then
+    return json_build_object('ok', false, 'error', 'درخواست باز پیدا نشد');
+  end if;
+  update public.rebooking_tokens set used_at = now() where quote_id = p_quote_id and used_at is null;
+  return json_build_object('ok', true);
+end;
+$fn$;
+grant execute on function public.cancel_my_quote(text, uuid) to anon, authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.47_quote_photos.sql
+-- ============================================================================
+-- Migration v2.47 — photos with price-quote requests (run after v2.46)
+-- ============================================================================
+--  The customer can attach up to 4 photos of the animal to a quote request
+--  so the groomer sees the coat, mats and size before pricing.
+--   - Private Storage bucket "quote-photos" (3 MB per file, jpeg/png/webp;
+--     the app shrinks photos to ~1600 px JPEG before upload).
+--   - Path: <salon_id>/<quote_id>/<random>.jpg. Anyone may upload only
+--     into a quote that is still pending and less than 2 hours old, at
+--     most 4 files — the quote id (a random uuid only the requester gets
+--     back) is the capability.
+--   - Only that salon's staff can read them (signed URLs in the panel).
+--  If Storage isn't installed (plain Postgres), the bucket and policies are
+--  skipped and the rest of the app works unchanged.
+-- ============================================================================
+
+create or replace function public.quote_photo_upload_ok(p_name text)
+returns boolean
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_salon text := split_part(coalesce(p_name, ''), '/', 1); v_quote text := split_part(coalesce(p_name, ''), '/', 2);
+        v_file text := split_part(coalesce(p_name, ''), '/', 3); v_count int;
+begin
+  if split_part(p_name, '/', 4) <> ''
+     or v_file !~ '^[a-z0-9-]{8,64}\.(jpg|jpeg|png|webp)$'
+     or v_salon !~ '^[0-9a-f-]{36}$' or v_quote !~ '^[0-9a-f-]{36}$' then
+    return false;
+  end if;
+  if not exists (select 1 from public.quote_requests q
+                  where q.id = v_quote::uuid and q.salon_id = v_salon::uuid
+                    and q.status = 'pending' and q.created_at > now() - interval '2 hours') then
+    return false;
+  end if;
+  execute 'select count(*) from storage.objects where bucket_id = $1 and name like $2'
+     into v_count using 'quote-photos', v_salon || '/' || v_quote || '/%';
+  return v_count < 4;
+end;
+$fn$;
+revoke all on function public.quote_photo_upload_ok(text) from public;
+grant execute on function public.quote_photo_upload_ok(text) to anon, authenticated;
+
+do $do$
+begin
+  if to_regclass('storage.buckets') is null or to_regclass('storage.objects') is null then
+    raise notice 'Supabase Storage not found — quote photos are disabled on this database';
+    return;
+  end if;
+  insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+  values ('quote-photos', 'quote-photos', false, 3145728, array['image/jpeg', 'image/png', 'image/webp'])
+  on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
+  execute 'drop policy if exists quote_photos_upload on storage.objects';
+  execute $p$create policy quote_photos_upload on storage.objects for insert to anon, authenticated
+           with check (bucket_id = 'quote-photos' and public.quote_photo_upload_ok(name))$p$;
+  execute 'drop policy if exists quote_photos_staff_read on storage.objects';
+  execute $p$create policy quote_photos_staff_read on storage.objects for select to authenticated
+           using (bucket_id = 'quote-photos' and public.is_staff()
+                  and split_part(name, '/', 1) = public.current_salon_id()::text)$p$;
+end
+$do$;
 

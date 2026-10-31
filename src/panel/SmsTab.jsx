@@ -3,7 +3,7 @@ import { Eye, MessageSquareText, TrendingUp, History, Users, Zap, Send, Loader2,
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchSmsLog, fetchCustomers, fetchRfmSegments, logCampaignSend, updateCampaignLogResult, fetchCampaignPerformance, setReminderHours, queueCampaign } from "../lib/api";
 import { sendCampaign, campaignResultMessage, segmentMembers } from "../lib/campaigns";
-import { sendBulkSms, renderTemplate, smsParts, SMS_PLACEHOLDERS } from "../lib/sms";
+import { sendBulkSms, renderTemplate, smsParts, smsPlaceholders } from "../lib/sms";
 import { toFa, jalaliLabel, formatClock, dateKey, parseDateKey } from "../lib/format";
 import { AUDIENCES } from "./LoyaltyTab";
 import { FALLBACK_SMS_TEMPLATES, RFM_SMART_DRAFTS, SMS_KIND_LABEL, SMS_STATUS_META } from "../app/shared";
@@ -531,7 +531,7 @@ export function SmsTab({ bookings, services, stylists, smsTemplates, notify, pre
             />
 
             <div className="flex gap-1 mt-2" style={{ flexWrap: "wrap" }}>
-              {SMS_PLACEHOLDERS.map((ph) => (
+              {smsPlaceholders().map((ph) => (
                 <button
                   key={ph.token}
                   onClick={() => insertToken(ph.token)}
