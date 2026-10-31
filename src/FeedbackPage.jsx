@@ -42,7 +42,7 @@ export default function FeedbackPage({ bookingId }) {
 
   const wrap = {
     minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-    padding: 20, background: "#faf7f5", fontFamily: "Vazirmatn, system-ui, sans-serif",
+    padding: 20, background: "#faf7f5", fontFamily: "'Vazirmatn Variable', Vazirmatn, system-ui, sans-serif",
   };
   const card = {
     width: "100%", maxWidth: 380, background: "white", borderRadius: 20,

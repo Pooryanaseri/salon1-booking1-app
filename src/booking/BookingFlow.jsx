@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Sparkles, Phone, Check, Sun, Moon, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
+import { Sparkles, Phone, Check, Sun, Moon, Clock, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
 import { SUPABASE_ENABLED, getCurrentSalonId } from "../lib/supabase";
 import { getSalonName, getBusinessType } from "../lib/tenant";
 import { fetchCustomerLoyalty, applyReferral, startDepositPayment } from "../lib/api";
@@ -590,10 +590,18 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
 
       {step === 1 && !(petSalon && gender) && (
         <div>
-          <h2 style={{ fontSize: 18, marginBottom: 4 }}>{petSalon ? "نوبت برای سگ یا گربه؟" : "بخش مورد نظر را انتخاب کنید"}</h2>
-          <p className="muted" style={{ fontSize: 13, marginBottom: 16 }}>
-            {petSalon ? `${getSalonName()} — آرایش و بهداشت سگ و گربه` : `${getSalonName()} دارای دو بخش مجزای زنانه و مردانه است`}
-          </p>
+          <div className="hero fade-in" style={{ marginBottom: 18 }}>
+            <p style={{ fontSize: 12.5, opacity: 0.9, fontWeight: 600 }}>خوش آمدید به</p>
+            <p className="font-display" style={{ fontSize: 21, fontWeight: 800, lineHeight: 1.5, marginTop: 2 }}>{getSalonName()}</p>
+            <p style={{ fontSize: 13, opacity: 0.92, marginTop: 6, lineHeight: 1.8 }}>
+              {petSalon ? "آرایش و بهداشت سگ و گربه — نوبت را آنلاین و در چند قدم بگیرید." : "نوبت خود را آنلاین و در چند قدم رزرو کنید."}
+            </p>
+            <div className="flex flex-wrap gap-1.5" style={{ marginTop: 12 }}>
+              <span className="hero-chip"><Clock size={12} /> رزرو در کمتر از یک دقیقه</span>
+              <span className="hero-chip"><Bell size={12} /> یادآوری پیامکی</span>
+            </div>
+          </div>
+          <h2 style={{ fontSize: 17, marginBottom: 12 }}>{petSalon ? "نوبت برای سگ یا گربه؟" : "بخش مورد نظر را انتخاب کنید"}</h2>
           <div className="flex flex-col gap-3">
             {sectionsFor(businessType).map((g) => {
               const meta = SECTION_META[g];
@@ -613,10 +621,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                     }
                     setGender(g); goTo(2);
                   }}
-                  className="tap card"
-                  style={{ padding: 18, display: "flex", alignItems: "center", gap: 14, textAlign: "right", borderColor: "var(--color-border)" }}
+                  className="tap card choice-card"
+                  style={{ padding: 18, display: "flex", alignItems: "center", gap: 14, textAlign: "right", "--choice-color": meta.color }}
                 >
-                  <div style={{ width: 52, height: 52, borderRadius: "var(--radius-lg)", background: meta.tint, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <div style={{ width: 54, height: 54, borderRadius: "var(--radius-lg)", background: `linear-gradient(145deg, ${meta.tint}, color-mix(in oklch, ${meta.color} 22%, ${meta.tint}))`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `inset 0 0 0 1px color-mix(in oklch, ${meta.color} 18%, transparent)` }}>
                     <Icon size={26} color={meta.color} />
                   </div>
                   <div style={{ flex: 1 }}>

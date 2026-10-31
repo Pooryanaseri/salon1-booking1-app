@@ -186,11 +186,8 @@ export default function App() {
   useEffect(() => { servicesRef.current = services; }, [services]);
   useEffect(() => { templatesRef.current = smsTemplates; }, [smsTemplates]);
 
-  /* Font is loaded directly in index.html now — see the <link> there. Loading
-     it via a JS effect (the old approach) meant the page always painted once
-     in the fallback system font first, then flashed to Vazirmatn once the
-     effect ran and the stylesheet finished fetching; a plain <link> in <head>
-     starts the fetch immediately, in parallel with everything else. */
+  /* Fonts are bundled with the app (imported in main.jsx, served from this
+     origin and cached by the service worker) — no third-party font CDN. */
 
   /* ------------------------------------------------------------- BOOTSTRAP */
   // One parallel load of every table, then arm the write path. Until this
@@ -557,7 +554,7 @@ export default function App() {
                 {petSalon ? <PawPrint size={17} color="white" /> : <Sparkles size={17} color="white" />}
               </div>
               <div>
-                <h1 style={{ fontSize: 14.5, lineHeight: 1.2 }}>{getSalonName()}</h1>
+                <h1 style={{ fontSize: 15, lineHeight: 1.45 }}>{getSalonName()}</h1>
                 <p className="muted" style={{ fontSize: 10.5 }}>
                   رزرو آنلاین نوبت · {tab === "book" && activeSection ? GENDER_TYPE_LABEL[activeSection] : petSalon ? "آرایشگاه سگ و گربه" : GENDER_TYPE_LABEL[SALON_GENDER_TYPE]}
                 </p>
@@ -573,8 +570,8 @@ export default function App() {
             </button>
           </div>
 
-          {/* Tabs — each has its own color identity, active or not */}
-          <div className="flex gap-1.5 mt-3" role="tablist" aria-label="ناوبری اصلی">
+          {/* Tabs — one segmented bar; each tab keeps its own color identity */}
+          <div className="main-tabs mt-3" role="tablist" aria-label="ناوبری اصلی">
             {tabs.map((t) => {
               const active = tab === t.id;
               return (
@@ -583,16 +580,10 @@ export default function App() {
                   role="tab"
                   aria-selected={active}
                   onClick={() => switchTab(t.id)}
-                  className="tap flex items-center justify-center gap-1.5"
-                  style={{
-                    flex: 1, padding: "9px 4px", borderRadius: "var(--radius-md)", fontSize: tabs.length > 3 ? 11.5 : 12.5, whiteSpace: "nowrap", minWidth: 0, fontWeight: active ? 800 : 700,
-                    background: active ? t.grad : `color-mix(in oklch, ${t.color} 12%, var(--color-surface))`,
-                    color: active ? "white" : t.color,
-                    boxShadow: active ? `0 4px 14px -4px color-mix(in oklch, ${t.color} 60%, transparent)` : "none",
-                    border: active ? "none" : `1px solid color-mix(in oklch, ${t.color} 22%, transparent)`,
-                  }}
+                  className="tap main-tab"
+                  style={{ "--tab-color": t.color, "--tab-grad": t.grad }}
                 >
-                  <t.Icon size={14} strokeWidth={active ? 2.4 : 2.2} />
+                  <t.Icon size={17} strokeWidth={active ? 2.4 : 2.1} />
                   {t.label}
                 </button>
               );

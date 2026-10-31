@@ -37,7 +37,7 @@ export default function AttendancePage({ token }) {
   const brand = "#c2703a";
   const wrap = {
     minHeight: "100vh", padding: "24px 16px", background: "#faf7f5", display: "flex",
-    alignItems: "center", justifyContent: "center", fontFamily: "Vazirmatn, system-ui, sans-serif",
+    alignItems: "center", justifyContent: "center", fontFamily: "'Vazirmatn Variable', Vazirmatn, system-ui, sans-serif",
   };
   const card = {
     width: "100%", maxWidth: 400, background: "white", borderRadius: 18,
