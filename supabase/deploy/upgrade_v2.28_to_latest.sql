@@ -6272,8 +6272,8 @@ begin
                           and a.status in ('pending', 'confirmed', 'rescheduled', 'reschedule_proposed', 'awaiting_payment'))
        and not exists (select 1 from public.sms_messages m
                         where m.salon_id = r.salon_id and m.to_phone = r.owner_phone
-                          and m.kind in ('predictive_rebooking', 'pet_reminder') and m.created_at > now() - interval '5 days'
-                          and m.body like '%وقت آرایش%') then
+                          and m.created_at > now() - interval '5 days'
+                          and (m.kind = 'predictive_rebooking' or (m.kind = 'pet_reminder' and m.body like '%وقت آرایش%'))) then
       v_link := public.public_link('/' || r.slug);
       insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
       values (r.salon_id, r.owner_phone,
@@ -6305,6 +6305,24 @@ grant execute on function public.pet_care_reminders() to service_role;
 -- The appointment update guard (v2.24) blocks price changes by customers and stylists. A
 -- server function that computed the price itself marks its own transaction
 -- as trusted (not reachable from the API: set_config isn't exposed).
+-- v2.49: at "انجام شد" a groomer may add add-on charges (v2.45) — the price
+-- may grow by exactly the charges appended, or be set when it was decided
+-- in the salon. Lowering a price stays a manager's job.
+create or replace function public.stylist_checkout_ok(o public.appointments, n public.appointments)
+returns boolean
+language sql immutable as $fn$
+  select n.status = 'completed'
+     and coalesce(n.extra_charges, '[]'::jsonb) @> coalesce(o.extra_charges, '[]'::jsonb)
+     and n.final_price is not null
+     and (
+       (o.final_price is null and n.final_price >= 0)
+       or n.final_price - o.final_price =
+            coalesce((select sum((x ->> 'amount')::bigint) from jsonb_array_elements(coalesce(n.extra_charges, '[]'::jsonb)) x), 0)
+          - coalesce((select sum((x ->> 'amount')::bigint) from jsonb_array_elements(coalesce(o.extra_charges, '[]'::jsonb)) x), 0)
+     )
+     and jsonb_array_length(coalesce(n.extra_charges, '[]'::jsonb)) >= jsonb_array_length(coalesce(o.extra_charges, '[]'::jsonb));
+$fn$;
+
 create or replace function public.guard_anonymous_appt_update() returns trigger
 language plpgsql security definer set search_path = public as $fn$
 begin
@@ -6334,7 +6352,7 @@ begin
        or new.customer_name is distinct from old.customer_name
        or new.staff_id is distinct from old.staff_id
        or new.service_id is distinct from old.service_id
-       or new.final_price is distinct from old.final_price
+       or (new.final_price is distinct from old.final_price and not public.stylist_checkout_ok(old, new))
        or new.original_price is distinct from old.original_price
        or new.discount_type is distinct from old.discount_type
        or new.discount_value is distinct from old.discount_value then

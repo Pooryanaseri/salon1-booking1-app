@@ -711,6 +711,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
         <QuoteContactForm
           species={gender}
           pet={pet}
+          consentText={needConsent ? petCare.consent_text : null}
           section={section}
           services={sectionServices.filter((s) => quoteIds.includes(s.id))}
           onBack={goBack}

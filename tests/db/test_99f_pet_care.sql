@@ -121,6 +121,22 @@ select tst.ok((public.my_packages_with_token(:'btok') -> 0 ->> 'left')::int = 2,
 select tst.ok(json_array_length(public.my_visit_reports_with_token(:'btok')) = 1, 'dashboard shows the report');
 reset role;
 
+-- ---- groomer checkout: may add charges, may not lower the price --------------
+select tst.as_anon(:'cs');
+set role anon;
+select public.create_public_booking(:'nails', 'tst-care-g1', public.salon_today(), 720, 'نگار', '09351230001', 'dog', null, '{"name":"پشمک","size":"small"}') ->> 'id' as b2id \gset
+reset role;
+select final_price as fp2 from public.appointments where id = :'b2id' \gset
+set role authenticated;
+select tst.as_user('aaaaaaaa-0000-0000-0000-0000000000c2', '09120007772@salon.local', :'cs');
+select tst.expect_error(format($$update public.appointments set final_price = 1000 where id = %L$$, :'b2id'), 'خارج از اختیار آرایشگر');
+select tst.expect_error(format($$update public.appointments set status = 'completed', final_price = %s + 999999,
+  extra_charges = extra_charges || '[{"label":"گره‌زدایی","amount":350000}]' where id = %L$$, :fp2, :'b2id'), 'خارج از اختیار آرایشگر');
+update public.appointments set status = 'completed', final_price = :fp2 + 350000,
+  extra_charges = extra_charges || '[{"label":"گره‌زدایی","amount":350000}]' where id = :'b2id';
+reset role;
+select tst.ok((select final_price = :fp2 + 350000 and status = 'completed' from public.appointments where id = :'b2id'), 'groomer adds an add-on at checkout');
+
 -- ---- capacity ------------------------------------------------------------------
 update public.app_settings set pet_large_capacity = 1 where salon_id = :'cs';
 select tst.as_anon(:'cs');

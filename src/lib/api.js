@@ -531,7 +531,11 @@ export async function createPublicBooking({ serviceId, staffId, date, startMin, 
     // v2.44: only sent by pet salons — the server validates and saves it
     ...(pet ? { p_pet: pet } : {}),
   });
-  if (error) { fail("create_public_booking", error); return { ok: false, error: "ثبت نوبت ناموفق بود" }; }
+  if (error) {
+    // v2.49: the large-dog capacity check speaks for itself
+    if (/ظرفیت سگ‌های بزرگ/.test(error.message || "")) return { ok: false, error: "ظرفیت سگ‌های بزرگ در این ساعت پر شد — زمان دیگری انتخاب کنید" };
+    fail("create_public_booking", error); return { ok: false, error: "ثبت نوبت ناموفق بود" };
+  }
   return data;
 }
 
