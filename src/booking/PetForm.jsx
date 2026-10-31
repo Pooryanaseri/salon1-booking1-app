@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowRight, Syringe, Weight, Info } from "lucide-react";
+import { ArrowRight, Syringe, Weight, Info, Cake } from "lucide-react";
 import { PET_TEMPERAMENTS, SECTION_META, normBreed, petSizes, sizeFromWeight } from "../app/shared";
 import { MONTHS_FA, toFa, gregorianToJalali, jalaliToIso, isoToJalaliLabel } from "../lib/format";
 
@@ -32,7 +32,7 @@ export function rememberPet(salonId, pet) {
   } catch { /* private mode — fine */ }
 }
 
-export const EMPTY_PET = { name: "", size: null, weight_kg: "", breed: "", temperament: "calm", vaccine_valid_until: "", notes: "" };
+export const EMPTY_PET = { name: "", size: null, weight_kg: "", breed: "", temperament: "calm", vaccine_valid_until: "", notes: "", birth_date: "" };
 
 /** True when the form has what the server requires. */
 export function petReady(pet, requireVaccination) {
@@ -40,7 +40,7 @@ export function petReady(pet, requireVaccination) {
     && (!requireVaccination || !!pet.vaccine_valid_until);
 }
 
-export function JalaliDateInput({ value, onChange, accent }) {
+export function JalaliDateInput({ value, onChange, accent, pastYears = 0 }) {
   const now = new Date();
   const today = gregorianToJalali(now.getFullYear(), now.getMonth() + 1, now.getDate());
   const parsed = useMemo(() => {
@@ -50,7 +50,8 @@ export function JalaliDateInput({ value, onChange, accent }) {
   const [jy, setJy] = useState(parsed?.jy || "");
   const [jm, setJm] = useState(parsed?.jm || "");
   const [jd, setJd] = useState(parsed?.jd || "");
-  const years = [today.jy - 1, today.jy, today.jy + 1, today.jy + 2];
+  // pastYears: a date in the past (birthdays) — this year back to N years ago
+  const years = pastYears ? Array.from({ length: pastYears + 1 }, (_, i) => today.jy - i) : [today.jy - 1, today.jy, today.jy + 1, today.jy + 2];
 
   function update(next) {
     const y = next.jy ?? jy, m = next.jm ?? jm, d = next.jd ?? jd;
@@ -189,6 +190,13 @@ export function PetForm({ species, pet, onChange, onContinue, onBack, requireVac
               <Info size={12} style={{ flexShrink: 0, marginTop: 3 }} /> این سالن فقط حیوانات با واکسن معتبر در روز نوبت را می‌پذیرد؛ کارت واکسن را همراه بیاورید.
             </p>
           )}
+        </div>
+
+        <div>
+          <span className="muted flex items-center gap-1" style={{ fontSize: 12 }}>
+            <Cake size={12} /> تاریخ تولد (اختیاری — روز تولدش تبریک می‌گوییم 🎂)
+          </span>
+          <JalaliDateInput key={`b-${pickedKey}`} value={pet.birth_date || ""} onChange={(iso) => set({ birth_date: iso })} accent={meta.color} pastYears={25} />
         </div>
 
         <div>

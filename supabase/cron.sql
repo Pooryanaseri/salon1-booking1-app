@@ -66,6 +66,14 @@ select cron.schedule(
   $$ select public.expire_unpaid_bookings(); $$
 );
 
+-- هر ۵ دقیقه: سفارش‌های فروشگاه که آنلاین پرداخت نشدند بعد از ۲۰ دقیقه
+-- لغو و موجودی‌شان آزاد می‌شود (v2.48).
+select cron.schedule(
+  'salon-expire-unpaid-orders',
+  '*/5 * * * *',
+  $$ select public.expire_unpaid_orders(); $$
+);
+
 select cron.schedule(
   'salon-transition-elapsed-appointments',
   '*/20 * * * *',
@@ -96,6 +104,14 @@ select cron.schedule(
     body    := '{}'::jsonb
   );
   $$
+);
+
+-- هر روز ساعت ۶:۳۰ UTC (حدود ۱۰ صبح تهران): یادآوری‌های آرایشگاه حیوانات —
+-- واکسن رو به اتمام، وقت آرایش بعدی و تولد حیوان (v2.49).
+select cron.schedule(
+  'salon-pet-care-reminders',
+  '30 6 * * *',
+  $$ select public.pet_care_reminders(); $$
 );
 
 -- هر روز ساعت ۱۰ صبح: مشتری‌هایی که به موعد تقریبی رزرو مجددشون

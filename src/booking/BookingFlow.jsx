@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Sparkles, Phone, Check, Sun, Moon, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
+import { Sparkles, Phone, Check, Sun, Moon, Clock, PawPrint, Ticket, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
 import { SUPABASE_ENABLED, getCurrentSalonId } from "../lib/supabase";
 import { getSalonName, getBusinessType } from "../lib/tenant";
 import { fetchCustomerLoyalty, applyReferral, startDepositPayment } from "../lib/api";
@@ -8,6 +8,7 @@ import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, PET_SIZE_LABEL, SEC
 import { DateStrip, Row } from "../components/ui";
 import { PetForm, EMPTY_PET, loadSavedPets, rememberPet } from "./PetForm";
 import { QuoteContactForm, QuoteSent, QuoteServicePicker } from "./QuoteRequest";
+import { fetchPublicPetCare, fetchPublicPackages, consentRequired, largeDogsAt } from "../lib/petcare";
 
 /* ============================================================
    Booking flow (customer) — gender section chosen first, each
@@ -146,6 +147,23 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const requireVaccination = petSalon && !!automation?.pet_require_vaccination;
   const forPet = (s) => (petSalon ? petService(s, pet.size, pet.breed) : s);
   const surchargePct = petSalon ? automation?.pet_aggressive_surcharge_percent || 0 : 0;
+  // v2.49: consent, pick-up service, large-dog capacity, packages on offer
+  const [petCare, setPetCare] = useState(null);
+  const [packagesOffer, setPackagesOffer] = useState([]);
+  useEffect(() => {
+    if (!petSalon) return;
+    let alive = true;
+    fetchPublicPetCare().then((c) => { if (alive) setPetCare(c); });
+    fetchPublicPackages().then((k) => { if (alive) setPackagesOffer(k); });
+    return () => { alive = false; };
+  }, [petSalon]);
+  const [consentOk, setConsentOk] = useState(false);
+  // v2.49: another pet in the same visit — book it right after this one
+  const [nextPetAfter, setNextPetAfter] = useState(null); // { date, start, staffId }
+  const [wantTransport, setWantTransport] = useState(false);
+  const [transportAddress, setTransportAddress] = useState("");
+  const needConsent = petSalon && !!petCare && consentRequired(petCare.consent_mode, pet);
+  const largePet = petSalon && (pet.size === "large" || pet.size === "giant") && !!petCare?.large_capacity;
   // v2.46: 'all' — every pet visit is priced by the groomer first; 'unpriced'
   // — only services with no price for this animal. Steps 20/21 = quote form/sent.
   const quoteMode = petSalon ? automation?.pet_quote_mode || "off" : "off";
@@ -233,7 +251,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     const out = [];
     for (const t of Array.from(candidates).sort((a, b) => a - b)) {
       if (isToday && t <= nowMin + 10) continue;
-      out.push({ t, fits: fitsWithoutOverlap(t, service.duration_minutes, dayB, service.buffer_minutes || 0), dayCount: dayB.length });
+      const capFull = largePet && largeDogsAt(bookings, dKey, t, t + service.duration_minutes) >= petCare.large_capacity;
+      out.push({ t, fits: !capFull && fitsWithoutOverlap(t, service.duration_minutes, dayB, service.buffer_minutes || 0), dayCount: dayB.length });
     }
     return out;
   }
@@ -454,7 +473,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           pet: petSalon ? {
             name: pet.name.trim(), size: pet.size, breed: pet.breed.trim(), temperament: pet.temperament,
             weight_kg: pet.weight_kg || null, vaccine_valid_until: pet.vaccine_valid_until || null, notes: pet.notes.trim(),
+            birth_date: pet.birth_date || null, ...(needConsent && consentOk ? { consent: "true" } : {}),
           } : null,
+          transportAddress: petSalon && wantTransport && petCare?.transport_enabled ? transportAddress.trim() : null,
         },
         !knownCustomer && referralCode.trim()
           ? async () => {
@@ -489,6 +510,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     setStep(1); setGender(null); setServiceId(null); setStaffId(null); setSelectedSlot(null); setAssignedStaffId(null); setPhone(""); setLookedUp(false);
     setKnownCustomer(false); setKnownCustomerName(""); setLoyaltyDiscountPct(0);
     setName(""); setReferralCode(""); setResult(null); setCategory("all"); setPet(EMPTY_PET); setQuoteIds([]);
+    setConsentOk(false); setWantTransport(false); setTransportAddress(""); setNextPetAfter(null);
     onSectionChange(null);
   }
 
@@ -523,6 +545,21 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     if (hasGuard()) { skipPopRef.current = true; window.history.back(); }
     resetState();
   }
+  function bookAnotherPet() {
+    const after = { date: dateKey(selectedDate), start: selectedSlot + (service?.duration_minutes || 0), staffId: result?.staff_id || staffId || null };
+    setNextPetAfter(after);
+    setPet(EMPTY_PET); setServiceId(null); setSelectedSlot(null); setAssignedStaffId(null); setResult(null);
+    setConsentOk(false); setWantTransport(false); setTransportAddress(""); setCategory("all");
+    if (!hasGuard()) window.history.pushState({ salonBookingFlow: true }, "");
+    setStep(1);
+    window.scrollTo({ top: 0 });
+  }
+  // the suggested back-to-back time is picked for them when it is free
+  useEffect(() => {
+    if (step !== 4 || !nextPetAfter || dateKey(selectedDate) !== nextPetAfter.date || selectedSlot != null) return;
+    if (slots.includes(nextPetAfter.start)) setSelectedSlot(nextPetAfter.start);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, nextPetAfter, slots]);
   const onPopRef = useRef(null);
   onPopRef.current = () => {
     if (skipPopRef.current) { skipPopRef.current = false; return; }
@@ -590,10 +627,18 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
 
       {step === 1 && !(petSalon && gender) && (
         <div>
-          <h2 style={{ fontSize: 18, marginBottom: 4 }}>{petSalon ? "نوبت برای سگ یا گربه؟" : "بخش مورد نظر را انتخاب کنید"}</h2>
-          <p className="muted" style={{ fontSize: 13, marginBottom: 16 }}>
-            {petSalon ? `${getSalonName()} — آرایش و بهداشت سگ و گربه` : `${getSalonName()} دارای دو بخش مجزای زنانه و مردانه است`}
-          </p>
+          <div className="hero fade-in" style={{ marginBottom: 18 }}>
+            <p style={{ fontSize: 12.5, opacity: 0.9, fontWeight: 600 }}>خوش آمدید به</p>
+            <p className="font-display" style={{ fontSize: 21, fontWeight: 800, lineHeight: 1.5, marginTop: 2 }}>{getSalonName()}</p>
+            <p style={{ fontSize: 13, opacity: 0.92, marginTop: 6, lineHeight: 1.8 }}>
+              {petSalon ? "آرایش و بهداشت سگ و گربه — نوبت را آنلاین و در چند قدم بگیرید." : "نوبت خود را آنلاین و در چند قدم رزرو کنید."}
+            </p>
+            <div className="flex flex-wrap gap-1.5" style={{ marginTop: 12 }}>
+              <span className="hero-chip"><Clock size={12} /> رزرو در کمتر از یک دقیقه</span>
+              <span className="hero-chip"><Bell size={12} /> یادآوری پیامکی</span>
+            </div>
+          </div>
+          <h2 style={{ fontSize: 17, marginBottom: 12 }}>{petSalon ? "نوبت برای سگ یا گربه؟" : "بخش مورد نظر را انتخاب کنید"}</h2>
           <div className="flex flex-col gap-3">
             {sectionsFor(businessType).map((g) => {
               const meta = SECTION_META[g];
@@ -613,10 +658,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                     }
                     setGender(g); goTo(2);
                   }}
-                  className="tap card"
-                  style={{ padding: 18, display: "flex", alignItems: "center", gap: 14, textAlign: "right", borderColor: "var(--color-border)" }}
+                  className="tap card choice-card"
+                  style={{ padding: 18, display: "flex", alignItems: "center", gap: 14, textAlign: "right", "--choice-color": meta.color }}
                 >
-                  <div style={{ width: 52, height: 52, borderRadius: "var(--radius-lg)", background: meta.tint, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <div style={{ width: 54, height: 54, borderRadius: "var(--radius-lg)", background: `linear-gradient(145deg, ${meta.tint}, color-mix(in oklch, ${meta.color} 22%, ${meta.tint}))`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `inset 0 0 0 1px color-mix(in oklch, ${meta.color} 18%, transparent)` }}>
                     <Icon size={26} color={meta.color} />
                   </div>
                   <div style={{ flex: 1 }}>
@@ -628,6 +673,26 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               );
             })}
           </div>
+          {petSalon && packagesOffer.length > 0 && (
+            <div className="card mt-4" style={{ padding: 14 }}>
+              <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
+                <Ticket size={15} color="var(--color-tab-panel)" /> بسته‌های پیش‌پرداخت
+              </p>
+              <p className="muted" style={{ fontSize: 11.5, marginTop: 2, marginBottom: 6 }}>در سالن خریداری کنید؛ هر نوبت یک جلسه از بسته کم می‌شود.</p>
+              {packagesOffer.map((k) => {
+                const full = (k.single_price || 0) * k.sessions;
+                return (
+                  <div key={k.id} className="flex items-center justify-between gap-2" style={{ fontSize: 13, padding: "7px 0", borderTop: "1px dashed var(--color-border)" }}>
+                    <span>{k.name} <span className="muted" style={{ fontSize: 11.5 }}>({toFa(k.sessions)} × {k.service_name})</span></span>
+                    <span className="tabular" style={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                      {formatToman(k.price)}
+                      {full > k.price && <span style={{ color: "var(--color-success)", fontSize: 11, fontWeight: 700 }}> · {toFa(Math.round(100 - (k.price * 100) / full))}٪ کمتر</span>}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -646,6 +711,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
         <QuoteContactForm
           species={gender}
           pet={pet}
+          consentText={needConsent ? petCare.consent_text : null}
           section={section}
           services={sectionServices.filter((s) => quoteIds.includes(s.id))}
           onBack={goBack}
@@ -804,6 +870,16 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>
             {service.name} · {toFa(service.duration_minutes)} دقیقه{selectedStaff ? ` · ${selectedStaff.name}` : ""}
           </p>
+          {nextPetAfter && (
+            <p style={{ fontSize: 12.5, marginBottom: 10, color: "var(--color-pet-500)", fontWeight: 700, lineHeight: 1.8 }}>
+              {dateKey(selectedDate) === nextPetAfter.date && slots.includes(nextPetAfter.start)
+                ? `ساعت ${formatClock(nextPetAfter.start)} — درست بعد از نوبت قبلی — برایتان انتخاب شد`
+                : "زمانِ درست بعد از نوبت قبلی خالی نیست؛ زمان دیگری انتخاب کنید"}
+            </p>
+          )}
+          {largePet && (
+            <p className="muted" style={{ fontSize: 11.5, marginBottom: 10 }}>برای سگ‌های بزرگ ظرفیت همزمان سالن محدود است؛ فقط زمان‌های دارای ظرفیت نمایش داده می‌شوند.</p>
+          )}
 
           <DateStrip
             days={days}
@@ -1084,6 +1160,33 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             )}
           </div>
 
+          {petSalon && petCare?.transport_enabled && (
+            <div className="card mt-3" style={{ padding: 12 }}>
+              <label className="flex items-start gap-2" style={{ fontSize: 13.5, fontWeight: 700 }}>
+                <input type="checkbox" checked={wantTransport} onChange={(e) => setWantTransport(e.target.checked)} style={{ marginTop: 4 }} />
+                <span>
+                  سرویس رفت‌وبرگشت {petCare.transport_fee > 0 ? <span className="tabular">({formatToman(petCare.transport_fee)})</span> : "(رایگان)"}
+                  <span className="muted" style={{ display: "block", fontSize: 11.5, fontWeight: 400, lineHeight: 1.8 }}>
+                    {pet.name.trim() || "حیوان"} را از خانه می‌بریم و برمی‌گردانیم{petCare.transport_area ? ` — ${petCare.transport_area}` : ""}
+                  </span>
+                </span>
+              </label>
+              {wantTransport && (
+                <textarea rows={2} maxLength={300} value={transportAddress} onChange={(e) => setTransportAddress(e.target.value)} aria-label="آدرس رفت‌وبرگشت"
+                  placeholder="آدرس کامل: خیابان، کوچه، پلاک، واحد" style={{ width: "100%", padding: "10px 12px", fontSize: 14, marginTop: 8, resize: "vertical", fontFamily: "inherit" }} />
+              )}
+            </div>
+          )}
+          {needConsent && (
+            <div className="card mt-3" style={{ padding: 12, borderColor: consentOk ? "var(--color-success)" : "var(--color-warning)" }}>
+              <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>رضایت‌نامه</p>
+              <p className="muted" style={{ fontSize: 12, lineHeight: 1.9 }}>{petCare.consent_text}</p>
+              <label className="flex items-center gap-2 mt-2" style={{ fontSize: 13, fontWeight: 700 }}>
+                <input type="checkbox" checked={consentOk} onChange={(e) => setConsentOk(e.target.checked)} /> متن بالا را خواندم و می‌پذیرم
+              </label>
+            </div>
+          )}
+
           <p className="muted flex items-center gap-1.5 mt-3" style={{ fontSize: 11.5, lineHeight: 1.7 }}>
             <Info size={13} style={{ flexShrink: 0 }} />
             تا قبل از نوبت می‌توانید از تب «داشبورد من» آن را لغو یا جابه‌جا کنید.
@@ -1095,7 +1198,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           )}
 
           <div className="sticky-cta mt-5">
-            <button onClick={confirmBooking} disabled={confirming || vaccineExpiresBeforeVisit} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: "13px" }}>
+            <button onClick={confirmBooking} disabled={confirming || vaccineExpiresBeforeVisit || (needConsent && !consentOk) || (wantTransport && transportAddress.trim().length < 10)} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: "13px" }}>
               {confirming && <Loader2 size={15} className="salon-spin" />}
               {confirming ? "در حال ثبت..." : expectedDeposit ? `ثبت و پرداخت بیعانه (${formatToman(expectedDeposit)})` : "ثبت نهایی نوبت"}
             </button>
@@ -1185,6 +1288,11 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             )}
           </div>
 
+          {petSalon && (
+            <button onClick={bookAnotherPet} className="tap ghost-btn w-full mt-3 flex items-center justify-center gap-1.5" style={{ padding: "12px", fontWeight: 700, color: "var(--color-pet-500)", borderColor: "var(--color-pet-500)" }}>
+              <PawPrint size={15} /> رزرو برای حیوان دیگر (پشت سر همین نوبت)
+            </button>
+          )}
           <button onClick={reset} className="tap accent-btn w-full mt-3" style={{ padding: "12px", fontWeight: 700 }}>
             رزرو نوبت جدید
           </button>

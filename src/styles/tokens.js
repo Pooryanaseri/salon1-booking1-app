@@ -57,9 +57,11 @@ export const TOKENS_CSS = `
   --grad-tab-book: var(--grad-brand);
   --grad-tab-dash: linear-gradient(135deg, oklch(66% 0.13 195), oklch(52% 0.15 215));
   --grad-tab-panel: linear-gradient(135deg, oklch(60% 0.17 295), oklch(46% 0.20 310));
+  --color-tab-shop: oklch(56% 0.15 150);
+  --grad-tab-shop: linear-gradient(135deg, oklch(64% 0.14 145), oklch(50% 0.15 160));
   --color-tab-services: oklch(58% 0.18 20);
 
-  --shadow-sm: 0 1px 2px oklch(20% 0.02 60 / 0.06), 0 1px 1px oklch(20% 0.02 60 / 0.04);
+  --shadow-sm: 0 1px 2px oklch(20% 0.02 60 / 0.05), 0 6px 18px -12px oklch(30% 0.05 50 / 0.22);
   --shadow-md: 0 6px 16px -4px oklch(20% 0.02 60 / 0.14), 0 2px 6px -2px oklch(20% 0.02 60 / 0.08);
   --shadow-lg: 0 16px 32px -8px oklch(20% 0.02 60 / 0.20), 0 4px 12px -4px oklch(20% 0.02 60 / 0.10);
   --shadow-glow-accent: 0 8px 24px -6px oklch(69% 0.20 62 / 0.45);
@@ -73,16 +75,27 @@ export const TOKENS_CSS = `
 
   --radius-sm: 8px; --radius-md: 12px; --radius-lg: 18px; --radius-xl: 24px; --radius-full: 9999px;
 
-  --font-sans: 'Vazirmatn', system-ui, sans-serif;
+  --font-sans: 'Vazirmatn Variable', 'Vazirmatn', system-ui, sans-serif;
+  --font-display: 'Noto Kufi Arabic Variable', 'Vazirmatn Variable', 'Vazirmatn', system-ui, sans-serif;
   --text-xs: 0.75rem; --text-sm: 0.875rem; --text-base: 1rem;
   --text-lg: 1.125rem; --text-xl: 1.25rem; --text-2xl: 1.5rem; --text-3xl: 1.875rem;
   --leading-tight: 1.35; --leading-normal: 1.6; --leading-relaxed: 1.75;
 
   --duration-fast: 120ms; --duration-base: 200ms; --ease-standard: cubic-bezier(.4,0,.2,1);
 
-  background: var(--color-bg);
+  /* soft warm glows behind everything, so pages never look flat */
+  --bg-glow-1: color-mix(in oklch, var(--color-accent-300) 26%, transparent);
+  --bg-glow-2: color-mix(in oklch, var(--color-tab-panel) 9%, transparent);
+  background:
+    radial-gradient(1100px 520px at 110% -8%, var(--bg-glow-1), transparent 62%),
+    radial-gradient(800px 480px at -20% 18%, var(--bg-glow-2), transparent 60%),
+    var(--color-bg);
+  background-attachment: fixed;
   color: var(--color-body);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   direction: rtl;
@@ -106,7 +119,9 @@ export const TOKENS_CSS = `
   --color-dog-100: oklch(28% 0.05 65);
   --color-cat-100: oklch(27% 0.05 300);
   --color-pet-100: oklch(27% 0.045 160);
-  --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.3);
+  --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.3), 0 8px 20px -14px oklch(0% 0 0 / 0.6);
+  --bg-glow-1: color-mix(in oklch, var(--color-accent-500) 13%, transparent);
+  --bg-glow-2: color-mix(in oklch, var(--color-tab-panel) 12%, transparent);
   --shadow-md: 0 6px 16px -4px oklch(0% 0 0 / 0.45);
   --shadow-lg: 0 16px 32px -8px oklch(0% 0 0 / 0.55);
 }
@@ -128,9 +143,10 @@ export const TOKENS_CSS = `
 .salon-app .sticky-cta {
   position: sticky; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 20;
 }
+.salon-app ::selection { background: color-mix(in oklch, var(--color-accent-500) 30%, transparent); }
 .salon-app .card {
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  border: 1px solid color-mix(in oklch, var(--color-border) 75%, transparent);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-standard);
@@ -158,20 +174,23 @@ export const TOKENS_CSS = `
   background: var(--grad-brand);
   color: white;
   border-radius: var(--radius-md);
-  font-weight: 700;
-  box-shadow: var(--shadow-glow-accent);
+  font-weight: 800;
+  box-shadow: var(--shadow-glow-accent), inset 0 1px 0 oklch(100% 0 0 / 0.28);
+  text-shadow: 0 1px 1px oklch(30% 0.1 40 / 0.25);
 }
 .salon-app .accent-btn:hover { filter: brightness(1.06); }
 .salon-app .accent-btn:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
 .salon-app .ghost-btn {
-  background: transparent;
+  background: color-mix(in oklch, var(--color-surface) 70%, transparent);
   border: 1px solid var(--color-border);
   color: var(--color-body);
   border-radius: var(--radius-md);
 }
 .salon-app .ghost-btn:hover { border-color: var(--color-accent-500); }
-.salon-app h1 { color: var(--color-heading); font-weight: 800; letter-spacing: -0.01em; }
-.salon-app h2 { color: var(--color-heading); font-weight: 800; letter-spacing: -0.005em; }
+.salon-app h1 { color: var(--color-heading); font-weight: 800; letter-spacing: 0; }
+.salon-app h2 { color: var(--color-heading); font-weight: 700; letter-spacing: 0; line-height: 1.5; }
+/* headings and brand text get the display face; body text stays Vazirmatn */
+.salon-app h1, .salon-app h2, .salon-app .font-display { font-family: var(--font-display); }
 .salon-app h3 { color: var(--color-heading); font-weight: 700; }
 .salon-app h4 { color: var(--color-heading); font-weight: 600; }
 .salon-app .muted { color: var(--color-muted); }
@@ -181,15 +200,17 @@ export const TOKENS_CSS = `
 }
 .salon-app input, .salon-app select, .salon-app textarea {
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  border: 1.5px solid var(--color-border);
   border-radius: var(--radius-md);
   color: var(--color-heading);
   font-family: var(--font-sans);
+  transition: border-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard);
 }
+.salon-app input::placeholder, .salon-app textarea::placeholder { color: color-mix(in oklch, var(--color-muted) 75%, transparent); }
 .salon-app input:focus, .salon-app select:focus, .salon-app textarea:focus {
-  outline: 2px solid var(--color-accent-500);
-  outline-offset: 1px;
+  outline: none;
   border-color: var(--color-accent-500);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-accent-500) 20%, transparent);
 }
 .salon-app .fade-in { animation: salonFadeIn 260ms var(--ease-standard); }
 @keyframes salonFadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
@@ -235,9 +256,54 @@ export const TOKENS_CSS = `
 }
 .salon-app .bottom-nav-item:active .bottom-nav-icon-wrap { transform: scale(0.88); }
 .salon-app .header-blur {
-  background: color-mix(in oklch, var(--color-surface) 88%, transparent);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  background: color-mix(in oklch, var(--color-surface) 80%, transparent);
+  backdrop-filter: saturate(1.4) blur(16px); -webkit-backdrop-filter: saturate(1.4) blur(16px);
+  box-shadow: 0 10px 30px -24px oklch(30% 0.05 50 / 0.5);
 }
+/* top-level navigation: one segmented bar, icon over label, fits 3–4 tabs on any phone */
+.salon-app .main-tabs {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 4px;
+  border-radius: calc(var(--radius-md) + 4px);
+  background: color-mix(in oklch, var(--color-surface-raised) 85%, transparent);
+  border: 1px solid color-mix(in oklch, var(--color-border) 70%, transparent);
+}
+.salon-app .main-tab {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-height: 50px; padding: 6px 2px; border-radius: var(--radius-md);
+  font-size: 11.5px; font-weight: 700; white-space: nowrap; min-width: 0; color: var(--tab-color);
+  transition: background var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard);
+}
+.salon-app .main-tab[aria-selected="true"] {
+  background: var(--tab-grad); color: white; font-weight: 800;
+  box-shadow: 0 6px 16px -6px color-mix(in oklch, var(--tab-color) 70%, transparent), inset 0 1px 0 oklch(100% 0 0 / 0.25);
+}
+.salon-app .main-tab:not([aria-selected="true"]):hover { background: color-mix(in oklch, var(--tab-color) 10%, transparent); }
+/* booking welcome card */
+.salon-app .hero {
+  position: relative; overflow: hidden; color: white; border-radius: var(--radius-xl);
+  padding: 20px 18px; background: var(--grad-brand); box-shadow: var(--shadow-glow-accent);
+}
+.salon-app .hero::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(90% 80% at 0% 0%, oklch(100% 0 0 / 0.22), transparent 60%),
+              radial-gradient(60% 70% at 100% 100%, oklch(0% 0 0 / 0.16), transparent 70%);
+}
+.salon-app .hero > * { position: relative; }
+.salon-app .hero-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: var(--radius-full);
+  font-size: 11.5px; font-weight: 700; background: oklch(100% 0 0 / 0.18); border: 1px solid oklch(100% 0 0 / 0.22);
+}
+/* choice cards (booking sections) */
+.salon-app .choice-card { position: relative; overflow: hidden; }
+.salon-app .choice-card::after {
+  content: ""; position: absolute; inset-block: 14px; inset-inline-start: 0; width: 4px;
+  border-start-end-radius: 4px; border-end-end-radius: 4px; background: var(--choice-color);
+}
+@media (hover: hover) {
+  .salon-app .choice-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); border-color: color-mix(in oklch, var(--choice-color) 45%, var(--color-border)); }
+}
+/* thin, quiet scrollbars */
+.salon-app * { scrollbar-width: thin; scrollbar-color: color-mix(in oklch, var(--color-muted) 40%, transparent) transparent; }
 .salon-app .sheet-handle {
   width: 36px; height: 4px; border-radius: var(--radius-full);
   background: var(--color-border); margin: 0 auto 10px;

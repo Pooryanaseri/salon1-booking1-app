@@ -117,6 +117,10 @@ const map = {
       extra_charges: Array.isArray(r.extra_charges) ? r.extra_charges : [], // v2.45: [{label, amount}], in final_price
       quote_id: r.quote_id ?? null,            // v2.46: booked from a price quote
       services_label: r.services_label ?? null, // v2.46: the quoted services
+      groom_stage: r.groom_stage ?? null,           // v2.49: arrived | bathing | grooming | ready
+      transport_address: r.transport_address ?? null, // v2.49: pick-up & drop-off
+      transport_fee: r.transport_fee == null ? null : Number(r.transport_fee),
+      package_purchase_id: r.package_purchase_id ?? null, // v2.49: paid from a prepaid package
       created_at: ms(r.created_at),
     }),
     toRow: (b) => {
@@ -527,7 +531,11 @@ export async function createPublicBooking({ serviceId, staffId, date, startMin, 
     // v2.44: only sent by pet salons — the server validates and saves it
     ...(pet ? { p_pet: pet } : {}),
   });
-  if (error) { fail("create_public_booking", error); return { ok: false, error: "ثبت نوبت ناموفق بود" }; }
+  if (error) {
+    // v2.49: the large-dog capacity check speaks for itself
+    if (/ظرفیت سگ‌های بزرگ/.test(error.message || "")) return { ok: false, error: "ظرفیت سگ‌های بزرگ در این ساعت پر شد — زمان دیگری انتخاب کنید" };
+    fail("create_public_booking", error); return { ok: false, error: "ثبت نوبت ناموفق بود" };
+  }
   return data;
 }
 
@@ -608,13 +616,13 @@ export async function fetchPets() {
   if (!SUPABASE_ENABLED) return [];
   const { data, error } = await fetchAllPages(() => supabase
     .from("pets")
-    .select("id, owner_phone, name, species, breed, size, weight_kg, temperament, vaccine_valid_until, owner_notes, grooming_notes, last_visit_date, created_at")
+    .select("*")
     .order("owner_phone").order("id"));
   if (error) { fail("pets", error); return []; }
   return (data || []).map((p) => ({ ...p, weight_kg: p.weight_kg == null ? null : Number(p.weight_kg) }));
 }
 
-const PET_EDITABLE = ["name", "breed", "size", "weight_kg", "temperament", "vaccine_valid_until", "owner_notes", "grooming_notes"];
+const PET_EDITABLE = ["name", "breed", "size", "weight_kg", "temperament", "vaccine_valid_until", "owner_notes", "grooming_notes", "birth_date", "groom_every_days", "vaccine_card_path"];
 export async function updatePet(id, patch) {
   if (!SUPABASE_ENABLED) return { ok: true };
   const row = Object.fromEntries(Object.entries(patch).filter(([k]) => PET_EDITABLE.includes(k)));
@@ -1093,6 +1101,12 @@ export function startDepositPayment(appointmentId) {
 export function verifyDepositPayment(authority, status) {
   if (!SUPABASE_ENABLED) return Promise.resolve({ ok: false, error: "دمو — پرداخت آنلاین فعال نیست" });
   return invokePayment({ action: "verify", authority, status });
+}
+
+/** v2.48 → { ok, url } — pay a shop order online. */
+export function startOrderPayment(orderId) {
+  if (!SUPABASE_ENABLED) return Promise.resolve({ ok: false, error: "دمو — پرداخت آنلاین فعال نیست" });
+  return invokePayment({ action: "request", order_id: orderId });
 }
 
 /* ------------------------------------------------- v2.36: client error log */

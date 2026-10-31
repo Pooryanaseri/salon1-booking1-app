@@ -143,7 +143,9 @@ end $$;
 -- date filter it fetched every booking the salon ever had, oldest first —
 -- and past 1000 of them the API cut off exactly the upcoming ones, so taken
 -- times showed as free.
-create or replace view public.appointments_public_slots as
+-- (dropped first: v2.49 adds a column, and re-running this file must not fail)
+drop view if exists public.appointments_public_slots;
+create view public.appointments_public_slots as
   select staff_id, date, start_min, end_min, buffer_minutes, status
     from public.appointments
    where salon_id = public.current_salon_id()

@@ -74,7 +74,7 @@ export default function BookingRecoveryPage({ token }) {
 
   const wrap = {
     minHeight: "100vh", padding: "20px 16px", background: "#faf7f5",
-    fontFamily: "Vazirmatn, system-ui, sans-serif",
+    fontFamily: "'Vazirmatn Variable', Vazirmatn, system-ui, sans-serif",
   };
   const card = {
     maxWidth: 440, margin: "0 auto", background: "white", borderRadius: 16,

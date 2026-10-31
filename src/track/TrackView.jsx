@@ -8,6 +8,9 @@ import { Badge, Row } from "../components/ui";
 import { CancelModal, RescheduleModal } from "../components/bookingModals";
 import { LOYALTY_REASON_FA, PET_SIZE_LABEL, extraChargesTotal, sizedService } from "../app/shared";
 import { MyQuotes } from "./MyQuotes";
+import { MyOrders } from "./MyOrders";
+import { fetchMyOrders } from "../lib/shop";
+import { fetchMyVisitReports, fetchMyPackages, petPhotoUrl, HEALTH_CHECKS } from "../lib/petcare";
 
 /* ============================================================
    Track view (public, restricted fields only)
@@ -179,7 +182,28 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
     return () => { cancelled = true; };
   }, [searched, accessToken, quotesTick]);
 
-  const hasAnything = matches.length > 0 || loyalty?.found || quotes.length > 0;
+  // v2.48: shop orders
+  const [orders, setOrders] = useState([]);
+  const [ordersTick, setOrdersTick] = useState(0);
+  useEffect(() => {
+    if (!searched || !accessToken || !SUPABASE_ENABLED) { setOrders([]); return; }
+    let cancelled = false;
+    fetchMyOrders(accessToken).then((list) => { if (!cancelled) setOrders(list); });
+    return () => { cancelled = true; };
+  }, [searched, accessToken, ordersTick]);
+
+  // v2.49: grooming reports and prepaid packages
+  const [reports, setReports] = useState([]);
+  const [packages, setPackages] = useState([]);
+  useEffect(() => {
+    if (!searched || !accessToken || !SUPABASE_ENABLED) { setReports([]); setPackages([]); return; }
+    let cancelled = false;
+    fetchMyVisitReports(accessToken).then((l) => { if (!cancelled) setReports(l); });
+    fetchMyPackages(accessToken).then((l) => { if (!cancelled) setPackages(l); });
+    return () => { cancelled = true; };
+  }, [searched, accessToken]);
+
+  const hasAnything = matches.length > 0 || loyalty?.found || quotes.length > 0 || orders.length > 0 || reports.length > 0 || packages.length > 0;
 
   return (
     <div className="fade-in">
@@ -279,6 +303,45 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
         <div className="card fade-in mt-4" style={{ padding: 20, textAlign: "center" }}>
           <p className="muted" style={{ fontSize: 13 }}>نوبتی با این شماره پیدا نشد</p>
         </div>
+      )}
+
+      {searched && packages.length > 0 && (
+        <div className="card fade-in mt-4" style={{ padding: 14 }}>
+          <p style={{ fontSize: 13.5, fontWeight: 800, color: "var(--color-heading)", marginBottom: 6 }}>بسته‌های پیش‌پرداخت من</p>
+          {packages.map((k) => (
+            <div key={k.id} className="flex justify-between gap-2" style={{ fontSize: 13, padding: "6px 0", borderTop: "1px dashed var(--color-border)" }}>
+              <span>{k.name}</span>
+              <span className="tabular" style={{ fontWeight: 700, color: k.left > 0 ? "var(--color-success)" : "var(--color-muted)" }}>
+                {toFa(k.left)} از {toFa(k.total)} جلسه · تا {jalaliLabel(parseDateKey(String(k.expires_at).slice(0, 10)), { short: true })}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {searched && reports.length > 0 && (
+        <div className="card fade-in mt-4" style={{ padding: 14 }}>
+          <p style={{ fontSize: 13.5, fontWeight: 800, color: "var(--color-heading)", marginBottom: 6 }}>گزارش‌های آرایش</p>
+          {reports.map((r) => {
+            const found = HEALTH_CHECKS.filter((h) => r.checks?.[h.id]).map((h) => h.label);
+            return (
+              <div key={r.appointment_id} style={{ padding: "8px 0", borderTop: "1px dashed var(--color-border)" }}>
+                <p style={{ fontSize: 13, fontWeight: 700 }}>{r.pet_name} · {jalaliLabel(parseDateKey(String(r.date).slice(0, 10)), { short: true })}</p>
+                <p style={{ fontSize: 12, color: found.length ? "var(--color-warning)" : "var(--color-success)" }}>{found.length ? found.join("، ") : "مشکلی دیده نشد"}</p>
+                {r.note && <p className="muted" style={{ fontSize: 12 }}>{r.note}</p>}
+                {(r.photos || []).length > 0 && (
+                  <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 6 }}>
+                    {r.photos.map((p) => <img key={p} src={petPhotoUrl(p)} alt="" style={{ width: 54, height: 54, borderRadius: 8, objectFit: "cover" }} />)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {searched && orders.length > 0 && (
+        <MyOrders orders={orders} token={accessToken} notify={notify} onChanged={() => setOrdersTick((t) => t + 1)} />
       )}
 
       {searched && quotes.length > 0 && (

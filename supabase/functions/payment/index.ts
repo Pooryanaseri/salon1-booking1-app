@@ -3,9 +3,11 @@
 //
 //  POST { action: "request", appointment_id }
 //    → { ok, url }   redirect the customer to Zarinpal
+//  POST { action: "request", order_id }            (v2.48 — shop orders)
+//    → { ok, url }
 //  POST { action: "verify", authority, status }
-//    → { ok, paid, appointment: {...} }   after Zarinpal sends them back to
-//      /payment/callback?Authority=…&Status=OK|NOK
+//    → { ok, paid, appointment: {...} } or { ok, paid, order: {...} } after
+//      Zarinpal sends them back to /payment/callback?Authority=…&Status=OK|NOK
 //
 //  Called by anonymous customers, so nothing from the caller is trusted
 //  except identifiers: the amount comes from appointments.deposit_amount,
@@ -61,6 +63,44 @@ Deno.serve(async (req) => {
   let payload: any;
   try { payload = await req.json(); } catch { return json({ ok: false, error: "درخواست نامعتبر" }, 400); }
 
+  /* ------------------------------------------------------ request (order) --- */
+  if (payload.action === "request" && payload.order_id) {
+    const { data: order } = await admin
+      .from("orders")
+      .select("id, salon_id, code, status, total, customer_phone, created_at, paid_at")
+      .eq("id", String(payload.order_id))
+      .maybeSingle();
+    if (!order || order.status !== "awaiting_payment" || order.paid_at) {
+      return json({ ok: false, error: "این سفارش منتظر پرداخت نیست" }, 400);
+    }
+    if (Date.now() - new Date(order.created_at).getTime() > HOLD_MINUTES * 60_000) {
+      return json({ ok: false, error: "مهلت پرداخت تمام شده — لطفاً دوباره سفارش دهید" }, 400);
+    }
+    const { count } = await admin.from("payments").select("id", { count: "exact", head: true }).eq("order_id", order.id);
+    if ((count ?? 0) >= 5) return json({ ok: false, error: "تعداد تلاش برای پرداخت زیاد بود" }, 429);
+
+    const merchant = await merchantFor(order.salon_id);
+    if (!merchant) return json({ ok: false, error: "درگاه پرداخت سالن تنظیم نشده" }, 500);
+
+    const amountRial = Number(order.total) * 10;
+    const zp = await zarinpal("request", {
+      merchant_id: merchant,
+      amount: amountRial,
+      callback_url: `${SITE}/payment/callback`,
+      description: `سفارش ${order.code}`,
+      metadata: { mobile: order.customer_phone },
+    });
+    const authority = zp.data?.authority;
+    if (zp.data?.code !== 100 || !authority) {
+      console.error("[payment/request-order] zarinpal refused:", JSON.stringify(zp.errors ?? zp));
+      return json({ ok: false, error: "اتصال به درگاه پرداخت ناموفق بود — دوباره امتحان کنید" }, 502);
+    }
+    await admin.from("payments").insert({
+      salon_id: order.salon_id, order_id: order.id, amount_rial: amountRial, authority, status: "requested",
+    });
+    return json({ ok: true, url: `${ZP}/StartPay/${authority}` });
+  }
+
   /* ------------------------------------------------------------ request --- */
   if (payload.action === "request") {
     const { data: appt } = await admin
@@ -104,6 +144,50 @@ Deno.serve(async (req) => {
     const authority = String(payload.authority ?? "");
     const { data: pay } = await admin.from("payments").select("*").eq("authority", authority).maybeSingle();
     if (!pay) return json({ ok: false, error: "پرداخت پیدا نشد" }, 404);
+
+    /* -------- shop order -------- */
+    if (pay.order_id) {
+      const orderOut = async () => {
+        const { data } = await admin
+          .from("orders")
+          .select("id, code, status, total, delivery, paid_at, refund_needed, created_at")
+          .eq("id", pay.order_id).maybeSingle();
+        return data;
+      };
+      if (pay.status === "paid" || pay.status === "refund_needed") {
+        return json({ ok: true, paid: true, refund: pay.status === "refund_needed", order: await orderOut() });
+      }
+      if (payload.status !== "OK") {
+        if (pay.status === "requested") await admin.from("payments").update({ status: "failed" }).eq("id", pay.id);
+        return json({ ok: true, paid: false, order: await orderOut() });
+      }
+      const merchant = await merchantFor(pay.salon_id);
+      const zp = await zarinpal("verify", { merchant_id: merchant, amount: pay.amount_rial, authority });
+      const code = zp.data?.code;
+      if (code !== 100 && code !== 101) {
+        await admin.from("payments").update({ status: "failed" }).eq("id", pay.id);
+        return json({ ok: true, paid: false, order: await orderOut() });
+      }
+      const refId = String(zp.data?.ref_id ?? "");
+      await admin.from("payments").update({
+        status: "paid", ref_id: refId, card_pan: zp.data?.card_pan ?? null, paid_at: new Date().toISOString(),
+      }).eq("id", pay.id);
+      const { data: outcome, error: confirmErr } = await admin.rpc("confirm_order_payment", { p_order: pay.order_id, p_ref: refId });
+      if (confirmErr || outcome === "refund") {
+        if (confirmErr) console.error("[payment/verify-order] confirm failed:", confirmErr.message);
+        await admin.from("payments").update({ status: "refund_needed" }).eq("id", pay.id);
+        const { data: mgrs } = await admin.from("users").select("phone").eq("salon_id", pay.salon_id).in("role", ["owner", "manager"]).eq("active", true);
+        const order = await orderOut();
+        for (const m of mgrs ?? []) {
+          await admin.from("sms_messages").insert({
+            salon_id: pay.salon_id, to_phone: m.phone, kind: "order_staff", status: "queued", scheduled_for: new Date().toISOString(),
+            body: `سفارش ${order?.code ?? ""} پرداخت شد ولی مهلتش گذشته و کالا دیگر موجود نبود — لطفاً از پنل زرین‌پال بازگردانید (کد پیگیری ${refId}).`,
+          });
+        }
+        return json({ ok: true, paid: true, refund: true, order });
+      }
+      return json({ ok: true, paid: true, order: await orderOut() });
+    }
 
     const apptOut = async () => {
       const { data } = await admin

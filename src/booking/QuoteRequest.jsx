@@ -58,7 +58,8 @@ export function QuoteServicePicker({ services, section, pet, selected, onToggle,
 }
 
 /** Contact + note, then the request is sent. */
-export function QuoteContactForm({ species, pet, services, onBack, onSent, section }) {
+export function QuoteContactForm({ species, pet, services, onBack, onSent, section, consentText = null }) {
+  const [consentOk, setConsentOk] = useState(false); // v2.49
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [note, setNote] = useState("");
@@ -81,13 +82,14 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
 
   async function submit(e) {
     e.preventDefault();
-    if (!phoneValid || sending) return;
+    if (!phoneValid || sending || (consentText && !consentOk)) return;
     setSending(true); setError("");
     const res = await requestQuote({
       name: name.trim(), phone, species,
       pet: {
         name: pet.name.trim(), size: pet.size, breed: pet.breed.trim(), temperament: pet.temperament,
         weight_kg: pet.weight_kg || null, vaccine_valid_until: pet.vaccine_valid_until || null, notes: pet.notes.trim(),
+        birth_date: pet.birth_date || null, ...(consentText && consentOk ? { consent: "true" } : {}),
       },
       serviceIds: services.map((s) => s.id), servicesLabel: label,
       note: note.trim(), preferredTime: times.join("، "),
@@ -160,9 +162,18 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
             ))}
           </div>
         </div>
+        {consentText && (
+          <div className="card" style={{ padding: 12 }}>
+            <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>رضایت‌نامه</p>
+            <p className="muted" style={{ fontSize: 12, lineHeight: 1.9 }}>{consentText}</p>
+            <label className="flex items-center gap-2 mt-2" style={{ fontSize: 13, fontWeight: 700 }}>
+              <input type="checkbox" checked={consentOk} onChange={(e) => setConsentOk(e.target.checked)} /> متن بالا را خواندم و می‌پذیرم
+            </label>
+          </div>
+        )}
         {error && <p role="alert" style={{ color: "var(--color-danger)", fontSize: 12.5 }}>{error}</p>}
         <div className="sticky-cta">
-          <button type="submit" disabled={!phoneValid || sending} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: 13 }}>
+          <button type="submit" disabled={!phoneValid || sending || (consentText && !consentOk)} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: 13 }}>
             {sending && <Loader2 size={15} className="salon-spin" />}
             {sending ? (photos.length ? "در حال ارسال درخواست و عکس‌ها..." : "در حال ارسال...") : "ارسال درخواست قیمت"}
           </button>

@@ -15,7 +15,7 @@ const C = {
   ok: "#2f8a57", warn: "#b7791f", danger: "#b4483a",
 };
 const S = {
-  page: { minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "Vazirmatn, system-ui, sans-serif", padding: "20px 16px 40px" },
+  page: { minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'Vazirmatn Variable', Vazirmatn, system-ui, sans-serif", padding: "20px 16px 40px" },
   wrap: { maxWidth: 980, margin: "0 auto" },
   card: { background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 },
   input: { width: "100%", padding: "10px 12px", fontSize: 14, borderRadius: 10, border: `1px solid ${C.border}`, fontFamily: "inherit", background: "#fff", color: C.text, boxSizing: "border-box" },

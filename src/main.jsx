@@ -1,3 +1,7 @@
+// Fonts ship with the app (no third-party CDN, which is often unreachable
+// from Iran): Vazirmatn for text, Noto Kufi Arabic for headings.
+import "@fontsource-variable/vazirmatn";
+import "@fontsource-variable/noto-kufi-arabic";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
@@ -6,6 +10,7 @@ import ReconciliationPage from "./ReconciliationPage.jsx";
 import BookingRecoveryPage from "./BookingRecoveryPage.jsx";
 import AttendancePage from "./AttendancePage.jsx";
 import PaymentCallbackPage from "./PaymentCallbackPage.jsx";
+import VisitReportPage from "./VisitReportPage";
 import AdminPage from "./AdminPage.jsx";
 import { SUPABASE_ENABLED } from "./lib/supabase.js";
 import { getSession, signOut } from "./lib/auth.js";
@@ -197,6 +202,7 @@ const attendanceToken = attendanceMatch ? new URLSearchParams(window.location.se
 const paymentMatch = window.location.pathname.match(/^\/payment\/callback\/?$/);
 const paymentParams = paymentMatch ? new URLSearchParams(window.location.search) : null;
 const adminMatch = /^\/admin\/?$/.test(window.location.pathname);
+const visitMatch = /^\/visit\/?$/.test(window.location.pathname);
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
@@ -211,6 +217,8 @@ ReactDOM.createRoot(document.getElementById("root")).render(
         <AttendancePage token={attendanceToken} />
       ) : paymentMatch ? (
         <PaymentCallbackPage authority={paymentParams.get("Authority")} status={paymentParams.get("Status")} />
+      ) : visitMatch ? (
+        <VisitReportPage token={new URLSearchParams(window.location.search).get("token")} />
       ) : adminMatch ? (
         <>
           <IdleSessionGuard />

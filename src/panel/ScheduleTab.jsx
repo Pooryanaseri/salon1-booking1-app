@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useData } from "../hooks/useData";
 import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity, CreditCard, Syringe } from "lucide-react";
 import { isPetSalon } from "../lib/tenant";
+import { PetCareSettingsCard } from "./PetCare";
 import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors, fetchPaymentSettings, savePaymentSettings } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey, digitsOnly } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
@@ -184,6 +185,7 @@ function AutomationCard({ automation, onAutomationChange, notify }) {
         </div>
       ))}
       {isPetSalon() && <PetPricingSettings automation={automation} save={save} saving={saving} />}
+      {isPetSalon() && <PetCareSettingsCard notify={notify} />}
     </div>
   );
 }

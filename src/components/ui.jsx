@@ -27,9 +27,11 @@ export function GenderBadge({ gender }) {
   );
 }
 
-export function Switch({ checked, onChange }) {
+export function Switch({ checked, onChange, label }) {
   return (
     <button
+      type="button"
+      aria-label={label}
       onClick={() => onChange(!checked)}
       className="switch tap"
       style={{ background: checked ? "var(--color-accent-500)" : "var(--color-border)", border: "none", padding: 0 }}
