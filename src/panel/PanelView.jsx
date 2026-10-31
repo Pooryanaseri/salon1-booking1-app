@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck } from "lucide-react";
+import { CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -15,12 +15,14 @@ import { ScheduleTab } from "./ScheduleTab";
 import { ServicesTab } from "./ServicesTab";
 import { SmsTab } from "./SmsTab";
 import { QuotesTab } from "./QuotesTab";
+import { ShopTab } from "./ShopTab";
+import { fetchOrders } from "../lib/shop";
 import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
 
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
    ============================================================ */
-export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange, onReminderHoursSaved }) {
+export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange, onReminderHoursSaved, onShopEnabledChange }) {
   const [subTab, setSubTab] = useState("dashboard");
   const [pendingSmsSegment, setPendingSmsSegment] = useState(null);
   const currentStylist = stylists.find((s) => s.id === currentStylistId) || null;
@@ -46,6 +48,14 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     fetchQuotes().then((list) => setQuotesPending(list.filter((q) => q.status === "pending").length));
   }, [petSalon, subTab]);
 
+  // v2.48: new shop orders (badge on the tab)
+  const [ordersPending, setOrdersPending] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    fetchOrders().then((list) => { if (alive) setOrdersPending(list.filter((o) => o.status === "pending").length); });
+    return () => { alive = false; };
+  }, [subTab]);
+
   // Everyone gets the same tabs — each one shows only what belongs to the logged-in
   // person (their own bookings/revenue/hours). Only staff management is owner-only,
   // since letting a stylist add/remove colleagues doesn't make sense.
@@ -53,6 +63,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     { id: "dashboard", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList, color: "var(--color-tab-book)" },
     ...(petSalon ? [{ id: "quotes", label: quotesPending ? `استعلام قیمت (${toFa(quotesPending)})` : "استعلام قیمت", Icon: QuoteIcon, color: "var(--color-pet-500)" }] : []),
     ...(petSalon ? [{ id: "pets", label: "حیوانات", Icon: PawPrint, color: "var(--color-pet-500)" }] : []),
+    { id: "shop", label: ordersPending ? `فروشگاه (${toFa(ordersPending)})` : "فروشگاه", Icon: ShoppingBag, color: "var(--color-tab-shop)" },
     ...(currentStylist ? [] : [{ id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" }]),
     ...(currentStylist ? [] : [{ id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" }]),
     ...(currentStylist ? [] : [{ id: "staff", label: "آرایشگرها", Icon: Users, color: "var(--color-info)" }]),
@@ -124,6 +135,9 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       )}
       {subTab === "quotes" && petSalon && (
         <QuotesTab services={services} stylists={stylists} pets={pets} automation={automation} notify={notify} onPendingChange={setQuotesPending} />
+      )}
+      {subTab === "shop" && (
+        <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} />
       )}
       {subTab === "pets" && petSalon && (
         <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} />

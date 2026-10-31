@@ -66,6 +66,14 @@ select cron.schedule(
   $$ select public.expire_unpaid_bookings(); $$
 );
 
+-- هر ۵ دقیقه: سفارش‌های فروشگاه که آنلاین پرداخت نشدند بعد از ۲۰ دقیقه
+-- لغو و موجودی‌شان آزاد می‌شود (v2.48).
+select cron.schedule(
+  'salon-expire-unpaid-orders',
+  '*/5 * * * *',
+  $$ select public.expire_unpaid_orders(); $$
+);
+
 select cron.schedule(
   'salon-transition-elapsed-appointments',
   '*/20 * * * *',

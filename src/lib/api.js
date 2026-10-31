@@ -1095,6 +1095,12 @@ export function verifyDepositPayment(authority, status) {
   return invokePayment({ action: "verify", authority, status });
 }
 
+/** v2.48 → { ok, url } — pay a shop order online. */
+export function startOrderPayment(orderId) {
+  if (!SUPABASE_ENABLED) return Promise.resolve({ ok: false, error: "دمو — پرداخت آنلاین فعال نیست" });
+  return invokePayment({ action: "request", order_id: orderId });
+}
+
 /* ------------------------------------------------- v2.36: client error log */
 export async function fetchClientErrors(limit = 20) {
   if (!SUPABASE_ENABLED) return [];

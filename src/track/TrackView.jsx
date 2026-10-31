@@ -8,6 +8,8 @@ import { Badge, Row } from "../components/ui";
 import { CancelModal, RescheduleModal } from "../components/bookingModals";
 import { LOYALTY_REASON_FA, PET_SIZE_LABEL, extraChargesTotal, sizedService } from "../app/shared";
 import { MyQuotes } from "./MyQuotes";
+import { MyOrders } from "./MyOrders";
+import { fetchMyOrders } from "../lib/shop";
 
 /* ============================================================
    Track view (public, restricted fields only)
@@ -179,7 +181,17 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
     return () => { cancelled = true; };
   }, [searched, accessToken, quotesTick]);
 
-  const hasAnything = matches.length > 0 || loyalty?.found || quotes.length > 0;
+  // v2.48: shop orders
+  const [orders, setOrders] = useState([]);
+  const [ordersTick, setOrdersTick] = useState(0);
+  useEffect(() => {
+    if (!searched || !accessToken || !SUPABASE_ENABLED) { setOrders([]); return; }
+    let cancelled = false;
+    fetchMyOrders(accessToken).then((list) => { if (!cancelled) setOrders(list); });
+    return () => { cancelled = true; };
+  }, [searched, accessToken, ordersTick]);
+
+  const hasAnything = matches.length > 0 || loyalty?.found || quotes.length > 0 || orders.length > 0;
 
   return (
     <div className="fade-in">
@@ -279,6 +291,10 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
         <div className="card fade-in mt-4" style={{ padding: 20, textAlign: "center" }}>
           <p className="muted" style={{ fontSize: 13 }}>نوبتی با این شماره پیدا نشد</p>
         </div>
+      )}
+
+      {searched && orders.length > 0 && (
+        <MyOrders orders={orders} token={accessToken} notify={notify} onChanged={() => setOrdersTick((t) => t + 1)} />
       )}
 
       {searched && quotes.length > 0 && (

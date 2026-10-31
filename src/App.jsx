@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Sparkles, PawPrint, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck } from "lucide-react";
+import { Sparkles, PawPrint, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck, ShoppingBag } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName, isPetSalon } from "./lib/tenant";
 import { bootstrap, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, fetchDepositTerms, joinWaitlist, DEFAULT_AUTOMATION } from "./lib/api";
@@ -13,6 +13,8 @@ import { LoginScreen } from "./components/LoginScreen";
 import { PanelView } from "./panel/PanelView";
 import { Toast } from "./components/ui";
 import { TrackView } from "./track/TrackView";
+import { ShopView } from "./shop/ShopView";
+import { fetchShop } from "./lib/shop";
 
 /* ============================================================
    Main App
@@ -163,6 +165,13 @@ export default function App() {
   const [automation, setAutomation] = useState(() => (!SUPABASE_ENABLED && isPetSalon() ? { ...DEFAULT_AUTOMATION, pet_quote_mode: "all" } : DEFAULT_AUTOMATION));
   // v2.37 online deposit terms ({enabled, percent, min_price}); off in demo.
   const [depositTerms, setDepositTerms] = useState({ enabled: false, percent: 0, min_price: 0 });
+  // v2.48: the shop tab shows only when the salon switched its shop on.
+  const [shopEnabled, setShopEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetchShop().then((s) => { if (!cancelled) setShopEnabled(!!s?.enabled); });
+    return () => { cancelled = true; };
+  }, []);
   const automationRef = useRef(automation);
   useEffect(() => { automationRef.current = automation; }, [automation]);
 
@@ -524,6 +533,7 @@ export default function App() {
 
   const tabs = [
     { id: "book", label: "نوبت‌دهی", Icon: CalendarPlus, color: "var(--color-tab-book)", grad: "var(--grad-tab-book)" },
+    ...(shopEnabled ? [{ id: "shop", label: "فروشگاه", Icon: ShoppingBag, color: "var(--color-tab-shop)", grad: "var(--grad-tab-shop)" }] : []),
     { id: "track", label: "داشبورد من", Icon: LayoutDashboard, color: "var(--color-tab-dash)", grad: "var(--grad-tab-dash)" },
     { id: "panel", label: "پنل مدیریت", Icon: ShieldCheck, color: "var(--color-tab-panel)", grad: "var(--grad-tab-panel)" },
   ];
@@ -575,7 +585,7 @@ export default function App() {
                   onClick={() => switchTab(t.id)}
                   className="tap flex items-center justify-center gap-1.5"
                   style={{
-                    flex: 1, padding: "9px 4px", borderRadius: "var(--radius-md)", fontSize: 12.5, fontWeight: active ? 800 : 700,
+                    flex: 1, padding: "9px 4px", borderRadius: "var(--radius-md)", fontSize: tabs.length > 3 ? 11.5 : 12.5, whiteSpace: "nowrap", minWidth: 0, fontWeight: active ? 800 : 700,
                     background: active ? t.grad : `color-mix(in oklch, ${t.color} 12%, var(--color-surface))`,
                     color: active ? "white" : t.color,
                     boxShadow: active ? `0 4px 14px -4px color-mix(in oklch, ${t.color} 60%, transparent)` : "none",
@@ -612,6 +622,9 @@ export default function App() {
 
         {dataReady && tab === "book" && (
           <BookingFlow services={services} stylists={stylists} bookings={bookings} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} addBooking={addBooking} waitlist={waitlist} addWaitlistEntry={addWaitlistEntry} notify={notify} onSectionChange={setActiveSection} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} automation={automation} depositTerms={depositTerms} />
+        )}
+        {dataReady && tab === "shop" && (
+          <ShopView notify={notify} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} />
         )}
         {dataReady && tab === "track" && (
           <TrackView bookings={bookings} services={services} stylists={stylists} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} updateBooking={updateBooking} notify={notify} initialPhone={trackPhone} />
@@ -668,6 +681,7 @@ export default function App() {
               if (approvedDates) approvedCtl.hydrate(approvedDates);
             }}
             notify={notify}
+            onShopEnabledChange={setShopEnabled}
             onLogout={handleLogout}
           />
         )}

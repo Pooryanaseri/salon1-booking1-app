@@ -57,6 +57,8 @@ export const TOKENS_CSS = `
   --grad-tab-book: var(--grad-brand);
   --grad-tab-dash: linear-gradient(135deg, oklch(66% 0.13 195), oklch(52% 0.15 215));
   --grad-tab-panel: linear-gradient(135deg, oklch(60% 0.17 295), oklch(46% 0.20 310));
+  --color-tab-shop: oklch(56% 0.15 150);
+  --grad-tab-shop: linear-gradient(135deg, oklch(64% 0.14 145), oklch(50% 0.15 160));
   --color-tab-services: oklch(58% 0.18 20);
 
   --shadow-sm: 0 1px 2px oklch(20% 0.02 60 / 0.06), 0 1px 1px oklch(20% 0.02 60 / 0.04);
