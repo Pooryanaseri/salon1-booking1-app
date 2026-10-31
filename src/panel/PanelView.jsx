@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag } from "lucide-react";
+import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -18,6 +18,8 @@ import { QuotesTab } from "./QuotesTab";
 import { ShopTab } from "./ShopTab";
 import { fetchOrders } from "../lib/shop";
 import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
+import { GroomStageBar, VisitReportModal, PetCareBadges } from "./PetCare";
+import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
 
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
@@ -140,7 +142,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
         <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} />
       )}
       {subTab === "pets" && petSalon && (
-        <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} />
+        <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} isManager={!currentStylist} />
       )}
       {subTab === "accounting" && !currentStylist && (
         <AccountingTab
@@ -450,10 +452,28 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
   // hour, the aggression surcharge, anything else) — they go into final_price.
   const petSalonDash = getBusinessType() === "pet";
   const [completeFor, setCompleteFor] = useState(null);
-  function handleComplete(b) {
+  const [completePkgs, setCompletePkgs] = useState([]);
+  const [reportFor, setReportFor] = useState(null); // v2.49 visit report modal
+  async function handleComplete(b) {
     setMenuFor(null);
-    if (petSalonDash) { setCompleteFor(b); return; }
+    if (petSalonDash) {
+      // v2.49: a prepaid package of this customer for this service
+      const today = new Date().toISOString().slice(0, 10);
+      const list = await fetchPurchases(b.customer_phone);
+      setCompletePkgs(list.filter((p) => p.service_id === b.service_id && p.sessions_left > 0 && p.expires_at >= today));
+      setCompleteFor(b);
+      return;
+    }
     finishComplete(b, {});
+  }
+  async function completeWithPackage(b, pkg, newCharges) {
+    // add-ons first (they stay payable), then the package covers the service
+    const withCharges = newCharges.length ? { ...b, extra_charges: [...(b.extra_charges || []), ...newCharges] } : b;
+    if (newCharges.length) updateBooking(b.id, { extra_charges: withCharges.extra_charges });
+    const res = await redeemPackageSession(pkg, withCharges);
+    if (!res?.ok) { notify(res?.error || "استفاده از بسته ناموفق بود"); return; }
+    notify(`یک جلسه از «${pkg.package_name}» کم شد — ${toFa(res.left)} جلسه مانده`);
+    finishComplete(withCharges, { final_price: res.final_price, package_purchase_id: pkg.id });
   }
   async function finishComplete(b, extra) {
     const referredBy = await fetchCustomerReferredBy(b.customer_phone);
@@ -462,6 +482,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
     } else {
       updateBooking(b.id, { status: "completed", ...extra }, "وضعیت به «انجام شده» تغییر کرد");
     }
+    if (petSalonDash && b.pet_name) setReportFor({ ...b, ...extra, status: "completed", afterComplete: true });
   }
 
   const dayBookings = bookings
@@ -705,12 +726,22 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                           <CreditCard size={12} /> بیعانه {formatToman(b.deposit_amount || 0)} پرداخت شد
                         </span>
                       )}
+                      {petSalonDash && <PetCareBadges booking={b} pet={petOf(b)} />}
                       {b.customer_response === "confirmed" && ["confirmed", "rescheduled", "pending"].includes(b.status) && (
                         <span className="badge" style={{ background: "color-mix(in oklch, var(--color-success) 15%, transparent)", color: "var(--color-success)" }}>
                           <CheckCircle2 size={12} /> مشتری حضور را تایید کرد
                         </span>
                       )}
                     </div>
+                    {petSalonDash && b.pet_name && isToday && ["pending", "confirmed", "rescheduled"].includes(b.status) && (
+                      <GroomStageBar booking={b} notify={notify} onChanged={(stage) => updateBooking(b.id, { groom_stage: stage })} />
+                    )}
+                    {petSalonDash && b.pet_name && (b.status === "completed" || (isToday && ["confirmed", "rescheduled", "pending"].includes(b.status))) && (
+                      <button type="button" className="tap flex items-center gap-1" onClick={() => setReportFor(b)}
+                        style={{ fontSize: 12, fontWeight: 700, color: "var(--color-pet-500)", marginTop: 6, minHeight: 32 }}>
+                        <Camera size={13} /> عکس قبل و بعد و کارت سلامت
+                      </button>
+                    )}
                     {b.status === "reschedule_proposed" && (
                       <div className="flex items-center gap-1 tabular" style={{ fontSize: 10.5, marginTop: 3, color: "var(--color-warning)" }}>
                         <Clock size={11} /> پیشنهاد: {jalaliLabel(parseDateKey(b.pending_date), { short: true })} - {formatClock(b.pending_start_min)} — در انتظار پاسخ مشتری
@@ -793,8 +824,16 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
           services={services}
           surchargePct={automation?.pet_aggressive_surcharge_percent || 0}
           onClose={() => setCompleteFor(null)}
-          onConfirm={(extra) => { const b = completeFor; setCompleteFor(null); finishComplete(b, extra); }}
+          packages={completePkgs}
+          onConfirm={(extra) => {
+            const b = completeFor; setCompleteFor(null);
+            if (extra.usePackage) completeWithPackage(b, extra.usePackage, extra.newCharges || []);
+            else finishComplete(b, extra);
+          }}
         />
+      )}
+      {reportFor && (
+        <VisitReportModal booking={reportFor} notify={notify} afterComplete={!!reportFor.afterComplete} onClose={() => setReportFor(null)} />
       )}
       {petOpen && (
         <PetProfileModal

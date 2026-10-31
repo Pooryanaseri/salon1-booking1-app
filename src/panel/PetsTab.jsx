@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
-import { PawPrint, Search, Syringe, AlertTriangle, Pencil, Minus, Plus } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { PawPrint, Search, Syringe, AlertTriangle, Pencil, Minus, Plus, Camera, Cake, ShieldCheck, Loader2 } from "lucide-react";
 import { toFa, jalaliLabel, parseDateKey, isoToJalaliLabel, formatToman } from "../lib/format";
 import { updatePet } from "../lib/api";
 import { GenderBadge, Modal, PanelSectionHeader, Row } from "../components/ui";
 import { PET_SIZES, PET_SIZE_LABEL, PET_TEMPERAMENTS, PET_TEMPERAMENT_LABEL, STATUS_META, extraChargesTotal } from "../app/shared";
 import { JalaliDateInput } from "../booking/PetForm";
+import { PackagesSection } from "./PetCare";
+import { fetchPetReports, petPhotoUrl, uploadPetPhoto, HEALTH_CHECKS, BEHAVIOR_LABEL } from "../lib/petcare";
 
 /* ============================================================
    v2.44 pet salons — the animals the salon grooms. Profiles are
@@ -71,7 +73,25 @@ export function PetProfileModal({ pet, bookings, services, ownerName, onClose, o
   const [draft, setDraft] = useState({
     breed: pet.breed || "", size: pet.size, weight_kg: pet.weight_kg ?? "", temperament: pet.temperament,
     vaccine_valid_until: pet.vaccine_valid_until || "", owner_notes: pet.owner_notes || "", grooming_notes: pet.grooming_notes || "",
+    birth_date: pet.birth_date || "", groom_every_days: pet.groom_every_days ?? "", vaccine_card_path: pet.vaccine_card_path || "",
   });
+  // v2.49: visit reports (photos + health checklist) of this pet
+  const [reports, setReports] = useState([]);
+  const [cardBusy, setCardBusy] = useState(false);
+  const cardRef = useRef(null);
+  useEffect(() => {
+    let alive = true;
+    fetchPetReports(pet.id, bookingsOfPet(pet, bookings).map((b) => b.id)).then((r) => { if (alive) setReports(r); });
+    return () => { alive = false; };
+  }, [pet, bookings]);
+  async function pickCard(file) {
+    if (!file) return;
+    setCardBusy(true);
+    const res = await uploadPetPhoto(pet.id, "vaccine", file);
+    setCardBusy(false);
+    if (!res.ok) { notify(res.error); return; }
+    setDraft((d) => ({ ...d, vaccine_card_path: res.path }));
+  }
   const [saving, setSaving] = useState(false);
   const history = bookingsOfPet(pet, bookings).sort((a, b) => (a.date === b.date ? b.start_min - a.start_min : parseDateKey(b.date) - parseDateKey(a.date)));
   const sizes = pet.species === "cat" ? PET_SIZES.filter((s) => s.v !== "giant") : PET_SIZES;
@@ -87,6 +107,9 @@ export function PetProfileModal({ pet, bookings, services, ownerName, onClose, o
       weight_kg: Number.isFinite(weight) && weight > 0 && weight <= 150 ? weight : null,
       temperament: draft.temperament, vaccine_valid_until: draft.vaccine_valid_until || null,
       owner_notes: draft.owner_notes.slice(0, 300), grooming_notes: draft.grooming_notes.slice(0, 1000),
+      birth_date: draft.birth_date || null,
+      groom_every_days: draft.groom_every_days === "" ? null : Math.min(365, Math.max(7, Number(draft.groom_every_days) || 42)),
+      vaccine_card_path: draft.vaccine_card_path || null,
     };
     const res = await updatePet(pet.id, patch);
     setSaving(false);
@@ -142,7 +165,33 @@ export function PetProfileModal({ pet, bookings, services, ownerName, onClose, o
             <span style={{ color: VACCINE_META[vs].color, fontWeight: 700, marginRight: 6 }}>{VACCINE_META[vs].label}</span>
           </span>
           <JalaliDateInput value={draft.vaccine_valid_until} onChange={(iso) => set({ vaccine_valid_until: iso })} accent="var(--color-accent-500)" />
+          <div className="flex items-center gap-2" style={{ marginTop: 6 }}>
+            {draft.vaccine_card_path && petPhotoUrl(draft.vaccine_card_path) && (
+              <a href={petPhotoUrl(draft.vaccine_card_path)} target="_blank" rel="noreferrer">
+                <img src={petPhotoUrl(draft.vaccine_card_path)} alt="کارت واکسن" style={{ width: 54, height: 54, objectFit: "cover", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border)" }} />
+              </a>
+            )}
+            <button type="button" className="tap ghost-btn flex items-center gap-1" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => cardRef.current?.click()} disabled={cardBusy}>
+              {cardBusy ? <Loader2 size={13} className="salon-spin" /> : <Camera size={13} />} {draft.vaccine_card_path ? "عکس جدید کارت واکسن" : "عکس کارت واکسن"}
+            </button>
+            <input ref={cardRef} type="file" accept="image/*" hidden aria-label="انتخاب عکس کارت واکسن" onChange={(e) => { pickCard(e.target.files?.[0]); e.target.value = ""; }} />
+          </div>
         </div>
+        <div className="flex gap-3">
+          <div style={{ flex: 1 }}>
+            <span className="muted flex items-center gap-1" style={{ fontSize: 12 }}><Cake size={12} /> تاریخ تولد</span>
+            <JalaliDateInput value={draft.birth_date} onChange={(iso) => set({ birth_date: iso })} accent="var(--color-accent-500)" pastYears={25} />
+          </div>
+        </div>
+        <div>
+          <label htmlFor="pp-cycle" className="muted" style={{ fontSize: 12 }}>هر چند روز یک‌بار آرایش؟ (خالی = پیش‌فرض سالن؛ برای یادآوری)</label>
+          <input id="pp-cycle" type="number" min={7} max={365} value={draft.groom_every_days} onChange={(e) => set({ groom_every_days: e.target.value })} className="tabular" style={input} />
+        </div>
+        {pet.consent_at && (
+          <p className="flex items-center gap-1.5" style={{ fontSize: 12.5, color: "var(--color-success)" }}>
+            <ShieldCheck size={14} /> رضایت‌نامه در {isoToJalaliLabel(String(pet.consent_at).slice(0, 10))} پذیرفته شد
+          </p>
+        )}
         <div>
           <label htmlFor="pp-owner" className="muted" style={{ fontSize: 12 }}>توضیحات صاحب حیوان</label>
           <textarea id="pp-owner" rows={2} maxLength={300} value={draft.owner_notes} onChange={(e) => set({ owner_notes: e.target.value })} style={{ ...input, resize: "vertical", fontFamily: "inherit" }} />
@@ -152,6 +201,40 @@ export function PetProfileModal({ pet, bookings, services, ownerName, onClose, o
           <textarea id="pp-groom" rows={3} maxLength={1000} value={draft.grooming_notes} onChange={(e) => set({ grooming_notes: e.target.value })}
             placeholder="مثلاً تیغ ۷ میلی‌متری، روی گوش‌ها حساس است، با شامپوی ضدحساسیت" style={{ ...input, resize: "vertical", fontFamily: "inherit" }} />
         </div>
+
+        {reports.length > 0 && (
+          <div>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 6 }}>گزارش‌ها و عکس‌ها</p>
+            <div className="flex flex-col gap-2">
+              {reports.slice(0, 10).map((r) => {
+                const found = HEALTH_CHECKS.filter((h) => r.checks?.[h.id]).map((h) => h.label);
+                const photos = r.demoBefore ? [...r.demoBefore, ...(r.demoAfter || [])] : (r.photos || []);
+                const b = bookings.find((x) => x.id === r.appointment_id);
+                return (
+                  <div key={r.appointment_id} className="card" style={{ padding: 10 }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 700 }}>
+                      {b ? jalaliLabel(parseDateKey(b.date), { short: true }) : isoToJalaliLabel(String(r.created_at).slice(0, 10))}
+                      {r.checks?.behavior ? ` · ${BEHAVIOR_LABEL[r.checks.behavior]}` : ""}
+                    </p>
+                    <p style={{ fontSize: 12, marginTop: 2, color: found.length ? "var(--color-warning)" : "var(--color-success)" }}>
+                      {found.length ? found.join("، ") : "مشکلی دیده نشد"}
+                    </p>
+                    {r.note && <p className="muted" style={{ fontSize: 12, marginTop: 2 }}>{r.note}</p>}
+                    {photos.length > 0 && (
+                      <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 6 }}>
+                        {photos.map((p) => petPhotoUrl(p) && (
+                          <a key={p} href={petPhotoUrl(p)} target="_blank" rel="noreferrer">
+                            <img src={petPhotoUrl(p)} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: "var(--radius-sm)" }} />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {history.length > 0 && (
           <div>
@@ -175,7 +258,8 @@ export function PetProfileModal({ pet, bookings, services, ownerName, onClose, o
   );
 }
 
-export function PetsTab({ pets, setPets, bookings, services, notify }) {
+export function PetsTab({ pets, setPets, bookings, services, notify, isManager = true }) {
+  const [seg, setSeg] = useState("pets"); // v2.49: pets | packages
   const [query, setQuery] = useState("");
   const [species, setSpecies] = useState("all");
   const [open, setOpen] = useState(null);
@@ -198,6 +282,15 @@ export function PetsTab({ pets, setPets, bookings, services, notify }) {
   return (
     <div>
       <PanelSectionHeader Icon={PawPrint} title="حیوانات" subtitle="پروفایل، سابقه و یادداشت آرایش هر سگ و گربه" color="var(--color-pet-500)" />
+      <div className="flex gap-2 mb-3" role="tablist" aria-label="بخش حیوانات">
+        {[["pets", "پروفایل‌ها"], ["packages", "بسته‌های پیش‌پرداخت"]].map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={seg === id} className="tap flex-1" onClick={() => setSeg(id)}
+            style={{ padding: "8px 6px", borderRadius: "var(--radius-md)", fontSize: 12.5, fontWeight: 700,
+              background: seg === id ? "var(--color-pet-500)" : "var(--color-surface)", color: seg === id ? "white" : "var(--color-body)",
+              border: seg === id ? "none" : "1px solid var(--color-border)" }}>{label}</button>
+        ))}
+      </div>
+      {seg === "packages" ? <PackagesSection services={services} notify={notify} isManager={isManager} /> : <>
 
       <div className="grid gap-2 mb-3" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
         {[{ l: "سگ", v: counts.dog }, { l: "گربه", v: counts.cat }, { l: "واکسن منقضی/نزدیک", v: expiring }].map((x) => (
@@ -268,6 +361,7 @@ export function PetsTab({ pets, setPets, bookings, services, notify }) {
           onSaved={(saved) => setPets((list) => list.map((p) => (p.id === saved.id ? saved : p)))}
         />
       )}
+      </>}
     </div>
   );
 }
@@ -276,7 +370,8 @@ export function PetsTab({ pets, setPets, bookings, services, notify }) {
    the salon's aggression surcharge, or any other charge. Everything goes
    into extra_charges and final_price, so reports and the customer's
    receipt show it. */
-export function CompleteVisitModal({ booking, services, surchargePct, onClose, onConfirm }) {
+export function CompleteVisitModal({ booking, services, surchargePct, onClose, onConfirm, packages = [] }) {
+  const [usePkg, setUsePkg] = useState(packages[0]?.id || null); // v2.49 prepaid package
   const addons = services.filter((s) => s.is_addon && s.is_active && s.gender === booking.customer_gender && s.price > 0);
   const [qty, setQty] = useState({});
   const already = extraChargesTotal(booking);
@@ -299,6 +394,8 @@ export function CompleteVisitModal({ booking, services, surchargePct, onClose, o
   const total = base == null && added === 0 ? null : (base || 0) + already + added;
 
   function confirm() {
+    const pkg = packages.find((p) => p.id === usePkg);
+    if (pkg) { onConfirm({ usePackage: pkg, newCharges: lines }); return; }
     if (lines.length === 0 && (booking.final_price != null || base == null)) { onConfirm({}); return; }
     onConfirm({ final_price: total, extra_charges: [...(booking.extra_charges || []), ...lines] });
   }
@@ -326,6 +423,20 @@ export function CompleteVisitModal({ booking, services, surchargePct, onClose, o
                 </span>
               </div>
             ))}
+          </div>
+        )}
+        {packages.length > 0 && (
+          <div className="card" style={{ padding: 10, borderColor: "var(--color-tab-panel)" }}>
+            <span className="muted" style={{ fontSize: 12 }}>بستهٔ پیش‌پرداخت این مشتری</span>
+            {packages.map((p) => (
+              <label key={p.id} className="flex items-center gap-2" style={{ fontSize: 13, marginTop: 4 }}>
+                <input type="radio" name="cv-pkg" checked={usePkg === p.id} onChange={() => setUsePkg(p.id)} />
+                {p.package_name} — {toFa(p.sessions_left)} جلسه مانده
+              </label>
+            ))}
+            <label className="flex items-center gap-2" style={{ fontSize: 13, marginTop: 4 }}>
+              <input type="radio" name="cv-pkg" checked={!usePkg} onChange={() => setUsePkg(null)} /> پرداخت عادی
+            </label>
           </div>
         )}
         {surchargePct > 0 && !hasSurcharge && (

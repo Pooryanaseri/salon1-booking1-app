@@ -15,6 +15,7 @@ import { Toast } from "./components/ui";
 import { TrackView } from "./track/TrackView";
 import { ShopView } from "./shop/ShopView";
 import { fetchShop } from "./lib/shop";
+import { requestPetTransport } from "./lib/petcare";
 
 /* ============================================================
    Main App
@@ -36,7 +37,8 @@ export default function App() {
     document.documentElement.style.colorScheme = theme;
     document.body.style.background = theme === "dark" ? "#0f0b08" : "#f5f2ee";
   }, [theme]);
-  const [tab, setTab] = useState("book"); // book | track | panel
+  // ?tab=shop (e.g. from a visit report's product picks) opens that tab
+  const [tab, setTab] = useState(() => (new URLSearchParams(window.location.search).get("tab") === "shop" ? "shop" : "book")); // book | shop | track | panel
   // Phone carried over from a just-finished booking, so "پیگیری نوبت" opens
   // the dashboard with the number already filled in.
   const [trackPhone, setTrackPhone] = useState("");
@@ -406,6 +408,19 @@ export default function App() {
         pet_name: params.pet?.name?.trim() || null, pet_size: params.pet?.size || null,
         extra_charges: params.extraCharges || [],
       });
+    }
+
+    // v2.49: pick-up & drop-off, attached right after the booking exists
+    if (params.transportAddress) {
+      const t = await requestPetTransport(booking.id, params.customerPhone, params.transportAddress);
+      if (t?.ok) {
+        const fee = Number(t.fee) || 0;
+        booking = { ...booking, transport_address: params.transportAddress, transport_fee: fee,
+          extra_charges: fee ? [...(booking.extra_charges || []), { label: "سرویس رفت‌وبرگشت", amount: fee }] : booking.extra_charges,
+          final_price: booking.final_price != null && fee ? booking.final_price + fee : booking.final_price };
+      } else {
+        notify(t?.error || "ثبت سرویس رفت‌وبرگشت ناموفق بود — با سالن هماهنگ کنید");
+      }
     }
 
     setBookings((prev) => [...prev, booking]);
