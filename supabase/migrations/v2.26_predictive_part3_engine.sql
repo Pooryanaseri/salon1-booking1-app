@@ -15,7 +15,7 @@ alter table public.services add constraint services_average_cycle_days_check
 
 alter table public.sms_messages drop constraint if exists sms_messages_kind_check;
 alter table public.sms_messages add constraint sms_messages_kind_check
-  check (kind in ('confirmation','reminder','cancellation','reschedule','campaign','loyalty','custom','reconciliation_prompt','weekly_summary','predictive_rebooking'));
+  check (kind in ('confirmation','reminder','cancellation','reschedule','campaign','loyalty','custom','reconciliation_prompt','weekly_summary','predictive_rebooking')) not valid;
 
 -- ----------------------------------------------------------------------------
 -- run_predictive_rebooking — daily job. For every active salon, every

@@ -14,6 +14,7 @@ export default function PaymentCallbackPage({ authority, status }) {
   const [state, setState] = useState("loading"); // loading | paid | refund | failed | invalid
   const [appt, setAppt] = useState(null);
   const [order, setOrder] = useState(null); // v2.48: shop orders are paid the same way
+  const [purchase, setPurchase] = useState(null); // v2.50: {kind: "gift"|"package", data}
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
 
@@ -23,6 +24,7 @@ export default function PaymentCallbackPage({ authority, status }) {
       if (!r?.ok) { setError(r?.error || ""); setState("invalid"); return; }
       setAppt(r.appointment || null);
       setOrder(r.order || null);
+      setPurchase(r.gift ? { kind: "gift", data: r.gift } : r.package ? { kind: "package", data: r.package } : null);
       setState(r.paid ? (r.refund ? "refund" : "paid") : "failed");
     });
   }, [authority, status]);
@@ -69,6 +71,30 @@ export default function PaymentCallbackPage({ authority, status }) {
       <>
         <Loader2 size={28} color={brand} style={{ animation: "spin 0.9s linear infinite", margin: "12px auto" }} />
         <p style={{ fontSize: 14 }}>در حال بررسی پرداخت…</p>
+      </>
+    );
+  } else if (purchase && state === "paid") {
+    content = (
+      <>
+        <CheckCircle2 size={42} color="#3a8f5c" style={{ margin: "0 auto 10px" }} />
+        <p style={{ fontWeight: 800, fontSize: 17 }}>
+          {purchase.kind === "gift" ? "پرداخت انجام شد — کارت هدیه ارسال شد 🎁" : "پرداخت انجام شد — بسته فعال شد"}
+        </p>
+        <p style={{ color: "#6b5f57", fontSize: 13.5, marginTop: 8, lineHeight: 1.9 }}>
+          {purchase.kind === "gift"
+            ? `کد کارت هدیه برای ${purchase.data?.recipient_name || "گیرنده"} پیامک شد.`
+            : `«${purchase.data?.package_name || ""}» به شمارهٔ شما ثبت شد؛ در هر نوبت یک جلسه از آن کم می‌شود.`}
+        </p>
+        {backHome}
+      </>
+    );
+  } else if (purchase && state === "failed") {
+    content = (
+      <>
+        <CreditCard size={38} color="#b4483a" style={{ margin: "0 auto 10px" }} />
+        <p style={{ fontWeight: 800, fontSize: 16 }}>پرداخت انجام نشد</p>
+        <p style={{ color: "#6b5f57", fontSize: 13.5, marginTop: 8, lineHeight: 1.9 }}>اگر مبلغی از حسابتان کم شده، طبق قوانین بانکی ظرف ۷۲ ساعت برمی‌گردد. می‌توانید دوباره خرید کنید.</p>
+        {backHome}
       </>
     );
   } else if (order && state === "paid") {

@@ -59,7 +59,29 @@ export async function signIn(phone, password, roleHint = null) {
     await supabase.auth.signOut();
     return { ok: false, error: profile.role === "stylist" ? PENDING_APPROVAL_MSG : "حساب شما غیرفعال شده — با مدیر سالن تماس بگیرید" };
   }
+  // v2.51 two-step login: a verified TOTP factor means the password alone is not enough
+  const mfa = await pendingMfa();
+  if (mfa) return { ok: false, mfa: true, factorId: mfa, role: profile.role, stylistId: profile.stylist_id, user: profile };
   return { ok: true, role: profile.role, stylistId: profile.stylist_id, user: profile };
+}
+
+/** factor id when this session still needs the second step, else null */
+async function pendingMfa() {
+  if (!supabase.auth.mfa) return null;
+  try {
+    const { data: lvl } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    if (!lvl || lvl.nextLevel !== "aal2" || lvl.currentLevel === "aal2") return null;
+    const { data: f } = await supabase.auth.mfa.listFactors();
+    return (f?.totp || []).find((x) => x.status === "verified")?.id || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Second step of the login → {ok} */
+export async function verifyLoginCode(factorId, code) {
+  const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code: String(code).trim() });
+  return error ? { ok: false, error: "کد اشتباه است یا منقضی شده" } : { ok: true };
 }
 
 async function repairMissingProfile(userId, phone, roleHint) {
@@ -108,6 +130,7 @@ export async function restoreSession() {
   if (!data?.session?.user) return null;
   const profile = await loadProfile(data.session.user.id);
   if (!profile?.active || !belongsHere(profile)) return null; // another salon's session: show this salon's login
+  if (await pendingMfa()) return null; // v2.51: the second step was never completed — log in again
   return { role: profile.role, stylistId: profile.stylist_id, user: profile };
 }
 

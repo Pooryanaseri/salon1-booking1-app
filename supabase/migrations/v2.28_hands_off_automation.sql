@@ -140,7 +140,7 @@ alter table public.sms_messages add constraint sms_messages_kind_check
     'reconciliation_prompt','weekly_summary','predictive_rebooking',
     'reschedule_proposed','feedback_request','feedback_followup','staff_new_booking',
     'daily_digest'
-  ));
+  )) not valid;
 
 create or replace function public.fa_digits(p text) returns text
 language sql immutable as $$ select translate(p, '0123456789', '۰۱۲۳۴۵۶۷۸۹') $$;

@@ -16,6 +16,7 @@ import { TrackView } from "./track/TrackView";
 import { ShopView } from "./shop/ShopView";
 import { fetchShop } from "./lib/shop";
 import { requestPetTransport } from "./lib/petcare";
+import { applyBookingCoupon } from "./lib/business";
 
 /* ============================================================
    Main App
@@ -423,6 +424,20 @@ export default function App() {
       }
     }
 
+    // v2.50: a discount code, applied by the server to the fresh booking
+    if (params.couponCode && booking.final_price != null) {
+      // the pick-up & drop-off fee is not discounted
+      const base = Math.max(0, booking.final_price - (booking.transport_fee || 0));
+      const c = await applyBookingCoupon(booking.id, params.customerPhone, params.couponCode, base);
+      if (c?.ok) {
+        const disc = Number(c.discount) || 0;
+        booking = { ...booking, coupon_code: params.couponCode.toUpperCase(), coupon_discount: disc,
+          final_price: c.final_price != null ? Number(c.final_price) : Math.max(0, booking.final_price - disc) };
+      } else {
+        notify(c?.error || "کد تخفیف اعمال نشد");
+      }
+    }
+
     setBookings((prev) => [...prev, booking]);
 
     // Everything below is a side effect of an already-successful booking —
@@ -446,12 +461,14 @@ export default function App() {
     return booking;
   }
 
-  function updateBooking(id, patch, logMsg) {
+  function updateBooking(id, patch, logMsg, opts = {}) {
     const before = (bookingsRef.current || []).find((b) => b.id === id);
     const after = before ? { ...before, ...patch } : null;
 
     setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
     if (logMsg) notify(logMsg);
+    // the server already saved this change (e.g. an RPC did it) — only mirror it here
+    if (opts.localOnly) return;
 
     (async () => {
       const err = await updateOne("appointments", id, patch);

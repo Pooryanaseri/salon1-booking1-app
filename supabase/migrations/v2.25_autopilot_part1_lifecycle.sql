@@ -30,7 +30,7 @@ alter table public.sms_messages add constraint sms_messages_status_check
   check (status in ('queued','sent','failed','delivered','cancelled'));
 alter table public.sms_messages drop constraint if exists sms_messages_kind_check;
 alter table public.sms_messages add constraint sms_messages_kind_check
-  check (kind in ('confirmation','reminder','cancellation','reschedule','campaign','loyalty','custom','reconciliation_prompt','weekly_summary'));
+  check (kind in ('confirmation','reminder','cancellation','reschedule','campaign','loyalty','custom','reconciliation_prompt','weekly_summary')) not valid;
 
 -- ----------------------------------------------------------------------------
 -- 1) Status check constraint — add the two new terminal/intermediate

@@ -74,6 +74,20 @@ select cron.schedule(
   $$ select public.expire_unpaid_orders(); $$
 );
 
+-- هر ساعت: کارت هدیه و بستهٔ آنلاینی که یک روز پرداخت نشده لغو می‌شود (v2.50).
+select cron.schedule(
+  'salon-expire-unpaid-purchases',
+  '7 * * * *',
+  $$ select public.expire_unpaid_purchases(); $$
+);
+
+-- هر شب ساعت ۳:۲۳ به وقت تهران (۲۳:۵۳ UTC): پشتیبان همهٔ سالن‌ها؛ ۷ نسخهٔ آخر نگه داشته می‌شود (v2.51).
+select cron.schedule(
+  'salon-nightly-backup',
+  '53 23 * * *',
+  $$ select public.backup_all_salons(); $$
+);
+
 select cron.schedule(
   'salon-transition-elapsed-appointments',
   '*/20 * * * *',

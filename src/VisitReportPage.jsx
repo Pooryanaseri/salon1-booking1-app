@@ -92,6 +92,11 @@ export default function VisitReportPage({ token }) {
           </div>
         )}
         {checks.behavior && <p style={{ fontSize: 13, color: "#7a6a5e", marginTop: 10 }}>رفتار: {BEHAVIOR_LABEL[checks.behavior]}</p>}
+        {r.vet_partner && (
+          <p style={{ fontSize: 13.5, marginTop: 10, lineHeight: 1.9, background: "#eef7f2", borderRadius: 12, padding: "10px 12px" }}>
+            پیشنهاد ما برای بررسی بیشتر: <b>{r.vet_partner}</b>
+          </p>
+        )}
         {r.note && <p style={{ fontSize: 14, marginTop: 10, lineHeight: 1.9, background: "#faf6f1", borderRadius: 12, padding: "10px 12px" }}>«{r.note}»</p>}
       </div>
 

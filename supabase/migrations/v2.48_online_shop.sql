@@ -119,7 +119,7 @@ alter table public.payments add column if not exists order_id uuid references pu
 alter table public.payments alter column appointment_id drop not null;
 alter table public.payments drop constraint if exists payments_target_check;
 alter table public.payments add constraint payments_target_check
-  check ((appointment_id is null) <> (order_id is null));
+  check ((appointment_id is null) <> (order_id is null)) not valid;
 create index if not exists payments_order_idx on public.payments (order_id) where order_id is not null;
 
 -- SMS kinds
@@ -128,7 +128,7 @@ alter table public.sms_messages add constraint sms_messages_kind_check check (ki
   'confirmation', 'reminder', 'cancellation', 'reschedule', 'campaign', 'loyalty', 'custom',
   'reconciliation_prompt', 'weekly_summary', 'predictive_rebooking', 'reschedule_proposed',
   'feedback_request', 'feedback_followup', 'staff_new_booking', 'daily_digest', 'waitlist_offer',
-  'staff_change', 'quote_request', 'quote', 'order', 'order_staff'));
+  'staff_change', 'quote_request', 'quote', 'order', 'order_staff')) not valid;
 
 -- ------------------------------------------------------------- the store ----
 -- Everything the storefront needs, in one call. The merchant ID stays private.

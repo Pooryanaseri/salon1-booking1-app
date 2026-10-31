@@ -9,6 +9,7 @@ import { CancelModal, RescheduleModal } from "../components/bookingModals";
 import { LOYALTY_REASON_FA, PET_SIZE_LABEL, extraChargesTotal, sizedService } from "../app/shared";
 import { MyQuotes } from "./MyQuotes";
 import { MyOrders } from "./MyOrders";
+import { CheckinQR } from "./CheckinQR";
 import { fetchMyOrders } from "../lib/shop";
 import { fetchMyVisitReports, fetchMyPackages, petPhotoUrl, HEALTH_CHECKS } from "../lib/petcare";
 
@@ -19,6 +20,8 @@ import { fetchMyVisitReports, fetchMyPackages, petPhotoUrl, HEALTH_CHECKS } from
 // This is the only place a customer can see their own referral code, which
 // is the whole point of having one: without this, applyReferral() has no
 // codes for anyone to actually enter.
+const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+
 export const DASH_SEGMENTS = [
   { id: "bookings", label: "نوبت‌ها", Icon: CalendarCheck, color: "var(--color-tab-book)" },
   { id: "points", label: "امتیازات", Icon: Award, color: "var(--color-success)" },
@@ -468,6 +471,7 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
                         <Row label="مبلغ نهایی" value={formatToman(b.final_price)} bold />
                       </>
                     )}
+                    {changeable && parseDateKey(b.date) >= startOfToday() && <CheckinQR code={b.tracking_code} />}
 
                     {isProposed ? (
                       <div className="fade-in" style={{ marginTop: 14, padding: 12, borderRadius: "var(--radius-md)", background: "color-mix(in oklch, var(--color-warning) 12%, transparent)" }}>

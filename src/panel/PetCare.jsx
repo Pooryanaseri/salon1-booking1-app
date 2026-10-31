@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Camera, Loader2, X, Send, Package as PackageIcon, Plus, Pencil, Truck, ShieldCheck, Ticket } from "lucide-react";
 import { Modal, Switch } from "../components/ui";
 import { formatToman, toFa, digitsOnly, normalizeMobile, isoToJalaliLabel } from "../lib/format";
+import { watermark, recordPetWeight } from "../lib/business";
+import { getSalonName } from "../lib/tenant";
 import { fetchProducts, productPhotoUrl } from "../lib/shop";
 import {
   GROOM_STAGES, HEALTH_CHECKS, BEHAVIOR_LABEL, setGroomStage, uploadPetPhoto, petPhotoUrl, saveVisitReport, fetchVisitReport,
@@ -82,6 +84,7 @@ export function VisitReportModal({ booking, notify, onClose, afterComplete }) {
   const [loaded, setLoaded] = useState(false);
   const [checks, setChecks] = useState({});
   const [behavior, setBehavior] = useState("");
+  const [weight, setWeight] = useState(""); // v2.51 weight history
   const [note, setNote] = useState("");
   const [before, setBefore] = useState([]);
   const [after, setAfter] = useState([]);
@@ -115,7 +118,8 @@ export function VisitReportModal({ booking, notify, onClose, afterComplete }) {
     setUploading(kind);
     const out = [];
     for (const f of files.slice(0, 4)) {
-      const res = await uploadPetPhoto(booking.id, kind, f);
+      // v2.50: the salon's name on every photo, so shared photos advertise the salon
+      const res = await uploadPetPhoto(booking.id, kind, await watermark(f, getSalonName()));
       if (res.ok) out.push(res.path); else notify(res.error);
     }
     setUploading(null);
@@ -123,6 +127,8 @@ export function VisitReportModal({ booking, notify, onClose, afterComplete }) {
   }
   async function save(send) {
     setSaving(true);
+    const kg = Number(weight);
+    if (weight && booking.pet_id && kg > 0 && kg <= 150) await recordPetWeight(booking.pet_id, kg);
     const res = await saveVisitReport(booking, {
       checks: { ...Object.fromEntries(Object.entries(checks).filter(([, v]) => v)), ...(behavior ? { behavior } : {}) },
       note: note.trim(), photos: [...before, ...after], before, after, productIds: picked, send,
@@ -161,6 +167,12 @@ export function VisitReportModal({ booking, notify, onClose, afterComplete }) {
             </div>
             {!Object.values(checks).some(Boolean) && <p className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>اگر چیزی نزنید، «مشکلی دیده نشد» نمایش داده می‌شود.</p>}
           </div>
+          {booking.pet_id && (
+            <label className="muted" style={{ fontSize: 12 }}>وزن امروز (کیلو، اختیاری — در نمودار وزن ثبت می‌شود)
+              <input dir="ltr" inputMode="decimal" value={weight} onChange={(e) => setWeight(e.target.value.replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)))}
+                className="tabular" style={{ ...input, textAlign: "left" }} />
+            </label>
+          )}
           <label className="muted" style={{ fontSize: 12 }}>رفتار در این نوبت
             <select value={behavior} onChange={(e) => setBehavior(e.target.value)} style={input}>
               <option value="">—</option>
@@ -290,6 +302,9 @@ export function PetCareSettingsCard({ notify }) {
         </div>
       )}
       <hr style={{ border: 0, borderTop: "1px dashed var(--color-border)", margin: "10px 0" }} />
+      <label className="muted" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>دامپزشک همکار (وقتی در کارت سلامت موردی دیده شود به صاحب حیوان پیشنهاد می‌شود)
+        <input value={s.pet_vet_partner || ""} maxLength={200} placeholder="مثلاً کلینیک دامپزشکی مهر — ۰۲۱۱۲۳۴۵۶۷۸" onChange={(e) => set("pet_vet_partner")(e.target.value)} style={input} />
+      </label>
       <label className="muted" style={{ fontSize: 12 }}>حداکثر سگ بزرگ و غول‌پیکر همزمان (خالی = بدون محدودیت)
         <input dir="ltr" inputMode="numeric" className="tabular" value={s.pet_large_capacity ?? ""} onChange={(e) => set("pet_large_capacity")(digitsOnly(e.target.value, 2) === "" ? null : Number(digitsOnly(e.target.value, 2)))} style={{ ...input, textAlign: "left" }} />
       </label>

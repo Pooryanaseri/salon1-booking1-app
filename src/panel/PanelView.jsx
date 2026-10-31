@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag } from "lucide-react";
+import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -16,10 +16,12 @@ import { ServicesTab } from "./ServicesTab";
 import { SmsTab } from "./SmsTab";
 import { QuotesTab } from "./QuotesTab";
 import { ShopTab } from "./ShopTab";
+import { RevenueExtrasCard, CommissionCard, MarketingTab, BranchBar, CheckInModal } from "./BusinessTools";
 import { fetchOrders } from "../lib/shop";
 import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
 import { GroomStageBar, VisitReportModal, PetCareBadges } from "./PetCare";
 import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
+import { redeemGiftCard } from "../lib/business";
 
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
@@ -65,6 +67,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     { id: "dashboard", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList, color: "var(--color-tab-book)" },
     ...(petSalon ? [{ id: "quotes", label: quotesPending ? `استعلام قیمت (${toFa(quotesPending)})` : "استعلام قیمت", Icon: QuoteIcon, color: "var(--color-pet-500)" }] : []),
     ...(petSalon ? [{ id: "pets", label: "حیوانات", Icon: PawPrint, color: "var(--color-pet-500)" }] : []),
+    { id: "marketing", label: "تخفیف و هدیه", Icon: Gift, color: "var(--color-female-500)" },
     { id: "shop", label: ordersPending ? `فروشگاه (${toFa(ordersPending)})` : "فروشگاه", Icon: ShoppingBag, color: "var(--color-tab-shop)" },
     ...(currentStylist ? [] : [{ id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" }]),
     ...(currentStylist ? [] : [{ id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" }]),
@@ -103,6 +106,8 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
         </button>
       </div>
 
+      {!currentStylist && <BranchBar notify={notify} />}
+
       {/* Sub-nav — a grid, not a scrolling strip, so every tab is visible at
           once with nothing hidden off-screen. Each tab keeps its own color
           identity (solid fill when active, soft tint when inactive). */}
@@ -138,12 +143,15 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       {subTab === "quotes" && petSalon && (
         <QuotesTab services={services} stylists={stylists} pets={pets} automation={automation} notify={notify} onPendingChange={setQuotesPending} />
       )}
+      {subTab === "marketing" && <MarketingTab isManager={!currentStylist} notify={notify} />}
       {subTab === "shop" && (
         <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} />
       )}
       {subTab === "pets" && petSalon && (
         <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} isManager={!currentStylist} />
       )}
+      {subTab === "accounting" && !currentStylist && <RevenueExtrasCard />}
+      {subTab === "accounting" && !currentStylist && <CommissionCard bookings={bookings} stylists={stylists} />}
       {subTab === "accounting" && !currentStylist && (
         <AccountingTab
           bookings={bookings}
@@ -333,6 +341,9 @@ export function StylistEditModal({ stylist, onClose, onSave }) {
   const [phone, setPhone] = useState(stylist?.phone || "");
   const [password, setPassword] = useState(stylist?.password || "");
   const [reminderHours, setReminderHours] = useState(stylist?.reminder_hours_before ?? 3);
+  const [commission, setCommission] = useState(String(stylist?.commission_pct ?? 0)); // v2.50
+  const [pkgCommission, setPkgCommission] = useState(String(stylist?.package_commission_pct ?? 0));
+  const pct = (v) => Math.min(100, Math.max(0, Number(String(v).replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d))) || 0));
 
   const phoneValid = /^09\d{9}$/.test(phone);
   // A password is only meaningful in demo mode (compared locally for the demo
@@ -411,11 +422,19 @@ export function StylistEditModal({ stylist, onClose, onSave }) {
           </select>
           <p className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>خودِ آرایشگر هم می‌تواند این را از پنل شخصی‌اش تغییر دهد</p>
         </div>
+        <div className="flex gap-2">
+          <label className="muted" style={{ fontSize: 12, flex: 1 }}>پورسانت از خدمات (٪)
+            <input dir="ltr" inputMode="numeric" value={commission} onChange={(e) => setCommission(e.target.value)} className="tabular" style={{ width: "100%", padding: "10px 12px", fontSize: 14, marginTop: 4, textAlign: "left" }} />
+          </label>
+          <label className="muted" style={{ fontSize: 12, flex: 1 }}>پورسانت فروش بسته (٪)
+            <input dir="ltr" inputMode="numeric" value={pkgCommission} onChange={(e) => setPkgCommission(e.target.value)} className="tabular" style={{ width: "100%", padding: "10px 12px", fontSize: 14, marginTop: 4, textAlign: "left" }} />
+          </label>
+        </div>
         <button
           disabled={!canSave}
           className="tap accent-btn w-full"
           style={{ padding: 12, fontSize: 14, marginTop: 4 }}
-          onClick={() => canSave && onSave({ id: stylist?.id, name: name.trim(), gender, phone, password: needsPassword ? password : undefined, active: stylist?.active ?? true, reminder_hours_before: reminderHours })}
+          onClick={() => canSave && onSave({ id: stylist?.id, name: name.trim(), gender, phone, password: needsPassword ? password : undefined, active: stylist?.active ?? true, reminder_hours_before: reminderHours, commission_pct: pct(commission), package_commission_pct: pct(pkgCommission) })}
         >
           {stylist ? "ذخیره تغییرات" : "افزودن آرایشگر"}
         </button>
@@ -452,6 +471,9 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
   // hour, the aggression surcharge, anything else) — they go into final_price.
   const petSalonDash = getBusinessType() === "pet";
   const [completeFor, setCompleteFor] = useState(null);
+  const [checkinOpen, setCheckinOpen] = useState(false); // v2.51
+  const [giftFor, setGiftFor] = useState(null); // v2.50
+  const [giftCode, setGiftCode] = useState("");
   const [completePkgs, setCompletePkgs] = useState([]);
   const [reportFor, setReportFor] = useState(null); // v2.49 visit report modal
   async function handleComplete(b) {
@@ -520,6 +542,13 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
         subtitle="مدیریت وضعیت نوبت‌ها بر اساس روز — تایید، تکمیل، یا لغو"
         color="var(--color-tab-book)"
       />
+      <button className="tap ghost-btn w-full flex items-center justify-center gap-1.5 mb-3" style={{ padding: 10, fontSize: 13, fontWeight: 700 }} onClick={() => setCheckinOpen(true)}>
+        <QrCode size={15} /> ثبت ورود مشتری (اسکن QR)
+      </button>
+      {checkinOpen && (
+        <CheckInModal bookings={bookings} notify={notify} onClose={() => setCheckinOpen(false)}
+          onCheckedIn={(r) => { if (r.id) updateBooking(r.id, { checked_in_at: new Date().toISOString(), ...(r.pet_name ? { groom_stage: bookings.find((b) => b.id === r.id)?.groom_stage || "arrived" } : {}) }, null, { localOnly: true }); }} />
+      )}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-1">
           <button className="tap ghost-btn" style={{ width: 32, height: 32, padding: 0 }} onClick={() => shiftDay(-1)} aria-label="روز قبل">
@@ -742,6 +771,14 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                         <Camera size={13} /> عکس قبل و بعد و کارت سلامت
                       </button>
                     )}
+                    {b.status === "completed" && (b.final_price || 0) > 0 && b.gift_card_amount == null && (
+                      <button type="button" className="tap flex items-center gap-1" onClick={() => setGiftFor(b)}
+                        style={{ fontSize: 12, fontWeight: 700, color: "var(--color-female-500)", marginTop: 4, minHeight: 32 }}>
+                        <Gift size={13} /> پرداخت با کارت هدیه
+                      </button>
+                    )}
+                    {b.gift_card_amount > 0 && <div className="muted tabular" style={{ fontSize: 11, marginTop: 2 }}>کارت هدیه: {formatToman(b.gift_card_amount)}</div>}
+                    {b.coupon_discount > 0 && <div className="muted tabular" style={{ fontSize: 11, marginTop: 2 }}>کد تخفیف {b.coupon_code}: - {formatToman(b.coupon_discount)}</div>}
                     {b.status === "reschedule_proposed" && (
                       <div className="flex items-center gap-1 tabular" style={{ fontSize: 10.5, marginTop: 3, color: "var(--color-warning)" }}>
                         <Clock size={11} /> پیشنهاد: {jalaliLabel(parseDateKey(b.pending_date), { short: true })} - {formatClock(b.pending_start_min)} — در انتظار پاسخ مشتری
@@ -831,6 +868,21 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
             else finishComplete(b, extra);
           }}
         />
+      )}
+      {giftFor && (
+        <Modal title="پرداخت با کارت هدیه" onClose={() => setGiftFor(null)}>
+          <p className="muted tabular" style={{ fontSize: 12.5 }}>مبلغ نوبت: {formatToman(giftFor.final_price || 0)}</p>
+          <input dir="ltr" value={giftCode} onChange={(e) => setGiftCode(e.target.value.toUpperCase())} placeholder="GXXXXXXXX" aria-label="کد کارت هدیه"
+            style={{ width: "100%", padding: "10px 12px", fontSize: 15, marginTop: 8, textAlign: "left" }} />
+          <button className="tap accent-btn w-full" style={{ padding: 12, marginTop: 12 }} disabled={!giftCode.trim()}
+            onClick={async () => {
+              const r = await redeemGiftCard(giftCode, giftFor);
+              if (!r?.ok) { notify(r?.error || "ثبت ناموفق بود"); return; }
+              notify(`${formatToman(r.used)} از کارت هدیه کم شد — مانده کارت: ${formatToman(r.balance)}`);
+              updateBooking(giftFor.id, { final_price: r.final_price, gift_card_amount: r.used }, null, { localOnly: true });
+              setGiftFor(null); setGiftCode("");
+            }}>ثبت</button>
+        </Modal>
       )}
       {reportFor && (
         <VisitReportModal booking={reportFor} notify={notify} afterComplete={!!reportFor.afterComplete} onClose={() => setReportFor(null)} />

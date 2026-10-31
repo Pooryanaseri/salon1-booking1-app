@@ -44,6 +44,12 @@ export function MyOrders({ orders, token, onChanged, notify }) {
                 <b>{formatToman(o.total)}</b> · {o.delivery === "shipping" ? "ارسال" : "تحویل در سالن"} · {o.paid ? "پرداخت‌شده" : o.payment_method === "online" ? "پرداخت آنلاین" : "پرداخت هنگام تحویل"}
               </p>
               {o.staff_note && o.status !== "cancelled" && <p className="muted" style={{ fontSize: 12, marginTop: 2 }}>{o.staff_note}</p>}
+              {o.tracking_code && (
+                <p style={{ fontSize: 12.5, marginTop: 2 }}>
+                  کد رهگیری{o.carrier ? ` ${o.carrier}` : ""}: <b className="tabular" dir="ltr">{o.tracking_code}</b>
+                  {o.carrier === "پست" && <> — <a href="https://tracking.post.ir/" target="_blank" rel="noreferrer" style={{ color: "var(--color-accent-500)" }}>پیگیری در سایت پست</a></>}
+                </p>
+              )}
               {o.status === "cancelled" && o.cancel_reason && o.cancel_reason !== "expired" && (
                 <p className="muted" style={{ fontSize: 12, marginTop: 2 }}>دلیل لغو: {o.cancel_reason}</p>
               )}

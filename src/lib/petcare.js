@@ -35,6 +35,7 @@ export const DEFAULT_PET_CARE = {
   pet_consent_mode: "risky",
   pet_consent_text: "صحت اطلاعات حیوان را تایید می‌کنم. در صورت گره‌خوردگی شدید، تراشیدن موها و در صورت لزوم استفاده از پوزه‌بند را می‌پذیرم. مسئولیت بیماری‌های پنهان یا حساسیت‌هایی که اعلام نشده‌اند با سالن نیست.",
   pet_transport_enabled: false, pet_transport_fee: 0, pet_transport_area: "", pet_large_capacity: null,
+  pet_vet_partner: "", // v2.51
 };
 const SETTING_KEYS = Object.keys(DEFAULT_PET_CARE);
 
@@ -82,7 +83,10 @@ export async function fetchPublicPetCare() {
 }
 export async function fetchPetCareSettings() {
   if (!SUPABASE_ENABLED) return { ...demo.settings };
-  const { data, error } = await supabase.from("app_settings").select(SETTING_KEYS.join(", ")).eq("salon_id", getCurrentSalonId()).maybeSingle();
+  let { data, error } = await supabase.from("app_settings").select(SETTING_KEYS.join(", ")).eq("salon_id", getCurrentSalonId()).maybeSingle();
+  if (error && /pet_vet_partner/.test(error.message || "")) { // database before v2.51
+    ({ data, error } = await supabase.from("app_settings").select(SETTING_KEYS.filter((k) => k !== "pet_vet_partner").join(", ")).eq("salon_id", getCurrentSalonId()).maybeSingle());
+  }
   if (error) { log("app_settings pet care", error); return null; }
   return { ...DEFAULT_PET_CARE, ...(data || {}) };
 }

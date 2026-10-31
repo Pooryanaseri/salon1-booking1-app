@@ -62,7 +62,7 @@ alter table public.sms_messages add constraint sms_messages_kind_check check (ki
   'reconciliation_prompt', 'weekly_summary', 'predictive_rebooking', 'reschedule_proposed',
   'feedback_request', 'feedback_followup', 'staff_new_booking', 'daily_digest', 'waitlist_offer',
   'staff_change', 'quote_request', 'quote', 'order', 'order_staff',
-  'pet_update', 'pet_report', 'pet_reminder', 'pet_package'));
+  'pet_update', 'pet_report', 'pet_reminder', 'pet_package')) not valid;
 
 -- the booking page needs sizes to respect the large-dog capacity
 create or replace view public.appointments_public_slots as

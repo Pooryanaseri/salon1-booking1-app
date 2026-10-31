@@ -4,6 +4,7 @@
 //  POST { action: "request", appointment_id }
 //    → { ok, url }   redirect the customer to Zarinpal
 //  POST { action: "request", order_id }            (v2.48 — shop orders)
+//  POST { action: "request", gift_card_id | package_purchase_id }  (v2.50)
 //    → { ok, url }
 //  POST { action: "verify", authority, status }
 //    → { ok, paid, appointment: {...} } or { ok, paid, order: {...} } after
@@ -62,6 +63,38 @@ Deno.serve(async (req) => {
 
   let payload: any;
   try { payload = await req.json(); } catch { return json({ ok: false, error: "درخواست نامعتبر" }, 400); }
+
+  /* ---------------------------------------- request (gift card / package) --- */
+  // v2.50: gift cards and prepaid packages bought online
+  if (payload.action === "request" && (payload.gift_card_id || payload.package_purchase_id)) {
+    const isGift = !!payload.gift_card_id;
+    const table = isGift ? "gift_cards" : "package_purchases";
+    const id = String(isGift ? payload.gift_card_id : payload.package_purchase_id);
+    const { data: row } = await admin.from(table).select("*").eq("id", id).maybeSingle();
+    if (!row || row.status !== "awaiting_payment" || Date.now() - new Date(row.created_at).getTime() > 86_400_000) {
+      return json({ ok: false, error: "این خرید منتظر پرداخت نیست" }, 400);
+    }
+    const col = isGift ? "gift_card_id" : "package_purchase_id";
+    const { count } = await admin.from("payments").select("id", { count: "exact", head: true }).eq(col, id);
+    if ((count ?? 0) >= 5) return json({ ok: false, error: "تعداد تلاش برای پرداخت زیاد بود" }, 429);
+    const merchant = await merchantFor(row.salon_id);
+    if (!merchant) return json({ ok: false, error: "درگاه پرداخت سالن تنظیم نشده" }, 500);
+    const amountRial = Number(isGift ? row.amount : row.price_paid) * 10;
+    const zp = await zarinpal("request", {
+      merchant_id: merchant,
+      amount: amountRial,
+      callback_url: `${SITE}/payment/callback`,
+      description: isGift ? "کارت هدیه" : `بستهٔ ${row.package_name}`,
+      metadata: { mobile: isGift ? row.buyer_phone : row.customer_phone },
+    });
+    const authority = zp.data?.authority;
+    if (zp.data?.code !== 100 || !authority) {
+      console.error("[payment/request-purchase] zarinpal refused:", JSON.stringify(zp.errors ?? zp));
+      return json({ ok: false, error: "اتصال به درگاه پرداخت ناموفق بود — دوباره امتحان کنید" }, 502);
+    }
+    await admin.from("payments").insert({ salon_id: row.salon_id, [col]: id, amount_rial: amountRial, authority, status: "requested" });
+    return json({ ok: true, url: `${ZP}/StartPay/${authority}` });
+  }
 
   /* ------------------------------------------------------ request (order) --- */
   if (payload.action === "request" && payload.order_id) {
@@ -144,6 +177,38 @@ Deno.serve(async (req) => {
     const authority = String(payload.authority ?? "");
     const { data: pay } = await admin.from("payments").select("*").eq("authority", authority).maybeSingle();
     if (!pay) return json({ ok: false, error: "پرداخت پیدا نشد" }, 404);
+
+    /* -------- gift card / package -------- */
+    if (pay.gift_card_id || pay.package_purchase_id) {
+      const isGift = !!pay.gift_card_id;
+      const out = async () => {
+        if (isGift) {
+          const { data } = await admin.from("gift_cards").select("id, amount, recipient_name, status").eq("id", pay.gift_card_id).maybeSingle();
+          return { gift: data };
+        }
+        const { data } = await admin.from("package_purchases").select("id, package_name, sessions_total, price_paid, status").eq("id", pay.package_purchase_id).maybeSingle();
+        return { package: data };
+      };
+      if (pay.status === "paid") return json({ ok: true, paid: true, ...(await out()) });
+      if (payload.status !== "OK") {
+        if (pay.status === "requested") await admin.from("payments").update({ status: "failed" }).eq("id", pay.id);
+        return json({ ok: true, paid: false, ...(await out()) });
+      }
+      const merchant = await merchantFor(pay.salon_id);
+      const zp = await zarinpal("verify", { merchant_id: merchant, amount: pay.amount_rial, authority });
+      const code = zp.data?.code;
+      if (code !== 100 && code !== 101) {
+        await admin.from("payments").update({ status: "failed" }).eq("id", pay.id);
+        return json({ ok: true, paid: false, ...(await out()) });
+      }
+      const refId = String(zp.data?.ref_id ?? "");
+      await admin.from("payments").update({ status: "paid", ref_id: refId, card_pan: zp.data?.card_pan ?? null, paid_at: new Date().toISOString() }).eq("id", pay.id);
+      const { error: cErr } = isGift
+        ? await admin.rpc("confirm_gift_card_payment", { p_id: pay.gift_card_id, p_ref: refId })
+        : await admin.rpc("confirm_package_payment", { p_id: pay.package_purchase_id, p_ref: refId });
+      if (cErr) console.error("[payment/verify-purchase] confirm failed:", cErr.message);
+      return json({ ok: true, paid: true, ...(await out()) });
+    }
 
     /* -------- shop order -------- */
     if (pay.order_id) {

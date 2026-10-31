@@ -7,6 +7,7 @@
 import { supabase, SUPABASE_ENABLED, getCurrentSalonId } from "./supabase";
 import { isPetSalon } from "./tenant";
 import { shrinkImage } from "./api";
+import { checkCoupon } from "./business";
 
 const PHOTO_BUCKET = "shop-photos";
 
@@ -134,7 +135,7 @@ export async function fetchShop() {
 }
 
 /** → {ok, id, code, total, status} | {ok:false, error, refresh?} */
-export async function placeOrder({ name, phone, items, delivery, payment, address, postalCode, note }) {
+export async function placeOrder({ name, phone, items, delivery, payment, address, postalCode, note, coupon }) {
   if (!SUPABASE_ENABLED) {
     const shop = demoShopView();
     const products = demoProducts();
@@ -147,20 +148,27 @@ export async function placeOrder({ name, phone, items, delivery, payment, addres
     }
     const subtotal = priced.reduce((s, x) => s + x.p.price * x.qty, 0);
     const fee = shippingFor(shop, subtotal, delivery);
+    let disc = 0;
+    if (coupon) {
+      const c = await checkCoupon(coupon, "shop", subtotal);
+      if (!c.ok) return c;
+      disc = Math.min(c.discount, subtotal);
+    }
     priced.forEach(({ p, qty }) => { if (p.stock != null) p.stock -= qty; });
     const order = {
       id: demoId("demo-o"), code: String(100000 + Math.floor(Math.random() * 900000)), customer_name: name, customer_phone: phone,
       delivery, address: delivery === "shipping" ? address : "", postal_code: postalCode || "", customer_note: note || "",
-      subtotal, shipping_fee: fee, total: subtotal + fee, payment_method: payment, status: "pending",
+      subtotal, shipping_fee: fee, total: subtotal - disc + fee, coupon_discount: disc, coupon_code: disc ? String(coupon).trim().toUpperCase() : null, payment_method: payment, status: "pending",
       paid_at: null, refund_needed: false, staff_note: "", cancel_reason: "", created_at: new Date().toISOString(),
       order_items: priced.map(({ p, qty }) => ({ id: demoId("demo-i"), name: p.name, unit_price: p.price, qty, product_id: p.id })),
     };
     demo.orders.unshift(order);
-    return { ok: true, demo: true, id: order.id, code: order.code, subtotal, shipping_fee: fee, total: order.total, status: "pending" };
+    return { ok: true, demo: true, id: order.id, code: order.code, subtotal, discount: disc, shipping_fee: fee, total: order.total, status: "pending" };
   }
   const { data, error } = await supabase.rpc("place_order", {
     p_customer_name: name, p_customer_phone: phone, p_items: items, p_delivery: delivery, p_payment: payment,
     p_address: address || "", p_postal_code: postalCode || "", p_note: note || "",
+    ...(coupon ? { p_coupon: coupon } : {}),
   });
   if (error) { logFail("place_order", error); return { ok: false, error: "ثبت سفارش ناموفق بود — دوباره امتحان کنید" }; }
   return data;
@@ -172,6 +180,7 @@ function myOrderShape(o) {
     id: o.id, code: o.code, status: o.status, delivery: o.delivery, address: o.address, subtotal: o.subtotal,
     shipping_fee: o.shipping_fee, total: o.total, payment_method: o.payment_method, paid: !!o.paid_at,
     refund_needed: o.refund_needed, cancel_reason: o.cancel_reason || null, staff_note: o.staff_note || null, created_at: o.created_at,
+    tracking_code: o.tracking_code || null, carrier: o.carrier || null, discount: o.coupon_discount || 0,
     items: (o.order_items || []).map((i) => ({ name: i.name, qty: i.qty, unit_price: i.unit_price })),
   };
 }
@@ -243,6 +252,8 @@ export async function saveProduct(p) {
     name: (p.name || "").trim(), description: (p.description || "").trim(), category: p.category || "",
     price: Math.round(Number(p.price) || 0), stock: p.stock === "" || p.stock == null ? null : Math.max(0, Math.round(Number(p.stock))),
     active: p.active !== false, photo_path: p.photo_path || null, sort_order: Number(p.sort_order) || 0,
+    // v2.51 sizes — sent only when used, so an older database still saves products
+    ...(p.variant_group || p.variant_label ? { variant_group: (p.variant_group || "").trim().slice(0, 80), variant_label: (p.variant_label || "").trim().slice(0, 40) } : {}),
   };
   if (!row.name) return { ok: false, error: "نام کالا لازم است" };
   if (row.price < 1000) return { ok: false, error: "قیمت را درست وارد کنید" };
@@ -291,16 +302,19 @@ export async function fetchOrders() {
   if (error) { if (!/orders|relation/i.test(error.message || "")) logFail("orders", error); return []; }
   return data || [];
 }
-export async function setOrderStatus(id, status, note) {
+export async function setOrderStatus(id, status, note, tracking = {}) {
   if (!SUPABASE_ENABLED) {
     const o = demo.orders.find((x) => x.id === id);
     if (!o) return { ok: false, error: "سفارش پیدا نشد" };
     if (status === "cancelled" && !(note || "").trim()) return { ok: false, error: "دلیل لغو را بنویسید" };
     o.status = status;
     if (status === "cancelled") { o.cancel_reason = note; releaseDemoStock(o); } else if (note) o.staff_note = note;
+    if (status === "shipped" && tracking.code) { o.tracking_code = tracking.code; o.carrier = tracking.carrier || ""; }
     return { ok: true, status };
   }
-  const { data, error } = await supabase.rpc("set_order_status", { p_order: id, p_status: status, p_note: note || "" });
+  const args = { p_order: id, p_status: status, p_note: note || "" };
+  if (tracking.code) Object.assign(args, { p_tracking_code: tracking.code, p_carrier: tracking.carrier || "" });
+  const { data, error } = await supabase.rpc("set_order_status", args);
   if (error) { logFail("set_order_status", error); return { ok: false, error: "ثبت ناموفق بود" }; }
   return data;
 }
@@ -321,4 +335,15 @@ export function loadCart() {
 }
 export function saveCart(cart) {
   try { localStorage.setItem(cartKey(), JSON.stringify(cart)); } catch { /* storage blocked */ }
+}
+
+/** Groups variants (same variant_group) into one card: [{key, items:[...]}] */
+export function groupVariants(products) {
+  const out = []; const byKey = new Map();
+  for (const p of products) {
+    const key = p.variant_group ? `g:${p.variant_group}` : `p:${p.id}`;
+    if (!byKey.has(key)) { const g = { key, name: p.variant_group || p.name, items: [] }; byKey.set(key, g); out.push(g); }
+    byKey.get(key).items.push(p);
+  }
+  return out;
 }

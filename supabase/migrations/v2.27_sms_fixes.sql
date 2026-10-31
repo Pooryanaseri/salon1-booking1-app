@@ -21,4 +21,4 @@ alter table public.sms_messages add constraint sms_messages_kind_check
     'confirmation','reminder','cancellation','reschedule','campaign','loyalty','custom',
     'reconciliation_prompt','weekly_summary','predictive_rebooking',
     'reschedule_proposed','feedback_request','feedback_followup','staff_new_booking'
-  ));
+  )) not valid;

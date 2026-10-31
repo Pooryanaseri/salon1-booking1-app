@@ -3,6 +3,7 @@ import { useData } from "../hooks/useData";
 import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity, CreditCard, Syringe } from "lucide-react";
 import { isPetSalon } from "../lib/tenant";
 import { PetCareSettingsCard } from "./PetCare";
+import { ProfileSettingsCard, SecurityCard } from "./BusinessTools";
 import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors, fetchPaymentSettings, savePaymentSettings } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey, digitsOnly } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
@@ -246,6 +247,7 @@ function DepositCard({ automation, onAutomationChange, notify }) {
   const [loaded, setLoaded] = useState(false);
   const [percent, setPercent] = useState(automation.deposit_percent || 0);
   const [minPrice, setMinPrice] = useState(String(automation.deposit_min_price || 0));
+  const [mode, setMode] = useState(automation.deposit_mode || "all"); // v2.50 smart deposit
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -257,7 +259,7 @@ function DepositCard({ automation, onAutomationChange, notify }) {
     if (percent > 0 && !merchantOk) { notify("برای فعال کردن، مرچنت‌کد ۳۶ کاراکتری زرین‌پال را وارد کنید"); return; }
     setSaving(true);
     const errA = await savePaymentSettings(merchant);
-    const patch = { deposit_percent: Number(percent) || 0, deposit_min_price: Math.max(0, Number(digitsOnly(minPrice)) || 0) };
+    const patch = { deposit_percent: Number(percent) || 0, deposit_min_price: Math.max(0, Number(digitsOnly(minPrice)) || 0), deposit_mode: mode };
     const { error: errB } = await updateAutomationSettings(patch);
     setSaving(false);
     if (errA || errB) { notify("ذخیرهٔ تنظیمات پرداخت ناموفق بود"); return; }
@@ -290,6 +292,12 @@ function DepositCard({ automation, onAutomationChange, notify }) {
             style={{ width: "100%", padding: "9px 12px", fontSize: 13, marginTop: 4, textAlign: "left" }} />
         </div>
       </div>
+      <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 10 }}>از چه کسانی بیعانه گرفته شود؟
+        <select value={mode} onChange={(e) => setMode(e.target.value)} style={{ width: "100%", padding: "9px 10px", fontSize: 13, marginTop: 4 }}>
+          <option value="all">از همه</option>
+          <option value="risky">فقط مشتری‌هایی که در یک سال اخیر بدقولی (عدم حضور) داشته‌اند</option>
+        </select>
+      </label>
       <button disabled={saving} onClick={save} className="tap accent-btn w-full mt-3" style={{ padding: 11, fontSize: 13 }}>
         {saving ? "در حال ذخیره…" : "ذخیره"}
       </button>
@@ -539,6 +547,8 @@ export function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, 
 
       {!currentStylistId && <AutomationCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
       {!currentStylistId && SUPABASE_ENABLED && <DepositCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
+      {!currentStylistId && <ProfileSettingsCard notify={notify} />}
+      <SecurityCard notify={notify} isManager={!currentStylistId} />
       {!currentStylistId && SUPABASE_ENABLED && <AppHealthCard />}
 
       {!currentStylistId && !automation.auto_open_days && (
