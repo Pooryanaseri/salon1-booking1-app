@@ -13790,24 +13790,51 @@ returns boolean
 language plpgsql security definer set search_path = public as $fn$
 declare n int;
 begin
-  update public.coupons set used_count = used_count + 1
-   where id = p_coupon and (max_uses is null or used_count < max_uses);
-  get diagnostics n = row_count;
-  if n = 0 then return false; end if;
+  -- the use first, so a repeat attempt never bumps the counter
   insert into public.coupon_uses (coupon_id, salon_id, phone, ref, discount)
   select p_coupon, salon_id, p_phone, p_ref, p_discount from public.coupons where id = p_coupon
   on conflict do nothing;
   get diagnostics n = row_count;
-  return n = 1;
+  if n = 0 then return false; end if;
+  update public.coupons set used_count = used_count + 1
+   where id = p_coupon and (max_uses is null or used_count < max_uses);
+  get diagnostics n = row_count;
+  if n = 0 then
+    delete from public.coupon_uses where coupon_id = p_coupon and phone = p_phone;
+    return false;
+  end if;
+  return true;
 end;
 $fn$;
 revoke all on function public.consume_coupon(uuid, text, text, bigint) from public, anon, authenticated;
+
+-- A cancelled (or expired unpaid) order or booking gives the code back.
+create or replace function public.release_coupon_use()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare r record;
+begin
+  if new.status = 'cancelled' and old.status is distinct from 'cancelled' and new.coupon_code is not null then
+    for r in delete from public.coupon_uses where salon_id = new.salon_id and ref = new.id::text returning coupon_id loop
+      update public.coupons set used_count = greatest(0, used_count - 1) where id = r.coupon_id;
+    end loop;
+  end if;
+  return new;
+end;
+$fn$;
+revoke all on function public.release_coupon_use() from public, anon, authenticated;
+drop trigger if exists trg_orders_release_coupon on public.orders;
+create trigger trg_orders_release_coupon after update of status on public.orders
+  for each row execute function public.release_coupon_use();
+drop trigger if exists trg_appts_release_coupon on public.appointments;
+create trigger trg_appts_release_coupon after update of status on public.appointments
+  for each row execute function public.release_coupon_use();
 
 -- A code on a fresh booking (same browser, within 30 minutes; as transport in v2.49).
 create or replace function public.apply_booking_coupon(p_appt text, p_phone text, p_code text)
 returns json
 language plpgsql security definer set search_path = public as $fn$
-declare a public.appointments; v json; v_disc bigint;
+declare a public.appointments; v json; v_disc bigint; v_base bigint;
 begin
   select * into a from public.appointments
    where id = p_appt and salon_id = public.current_salon_id() and customer_phone = p_phone for update;
@@ -13815,9 +13842,11 @@ begin
      or a.status in ('cancelled', 'no_show', 'completed') or a.final_price is null then
     return json_build_object('ok', false, 'error', 'کد تخفیف روی این نوبت قابل استفاده نیست');
   end if;
-  v := public.coupon_value(a.salon_id, p_code, 'booking', a.final_price, p_phone);
+  -- the pick-up & drop-off fee (v2.49) is not discounted
+  v_base := greatest(0, a.final_price - coalesce(a.transport_fee, 0));
+  v := public.coupon_value(a.salon_id, p_code, 'booking', v_base, p_phone);
   if not (v ->> 'ok')::boolean then return v; end if;
-  v_disc := least((v ->> 'discount')::bigint, a.final_price);
+  v_disc := least((v ->> 'discount')::bigint, v_base);
   if not public.consume_coupon((v ->> 'id')::uuid, p_phone, a.id, v_disc) then
     return json_build_object('ok', false, 'error', 'این کد را قبلاً استفاده کرده‌اید');
   end if;

@@ -547,7 +547,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
       </button>
       {checkinOpen && (
         <CheckInModal bookings={bookings} notify={notify} onClose={() => setCheckinOpen(false)}
-          onCheckedIn={(r) => { if (r.id) updateBooking(r.id, { checked_in_at: new Date().toISOString(), ...(r.pet_name ? { groom_stage: bookings.find((b) => b.id === r.id)?.groom_stage || "arrived" } : {}) }); }} />
+          onCheckedIn={(r) => { if (r.id) updateBooking(r.id, { checked_in_at: new Date().toISOString(), ...(r.pet_name ? { groom_stage: bookings.find((b) => b.id === r.id)?.groom_stage || "arrived" } : {}) }, null, { localOnly: true }); }} />
       )}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-1">
@@ -879,7 +879,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
               const r = await redeemGiftCard(giftCode, giftFor);
               if (!r?.ok) { notify(r?.error || "ثبت ناموفق بود"); return; }
               notify(`${formatToman(r.used)} از کارت هدیه کم شد — مانده کارت: ${formatToman(r.balance)}`);
-              updateBooking(giftFor.id, { final_price: r.final_price, gift_card_amount: r.used });
+              updateBooking(giftFor.id, { final_price: r.final_price, gift_card_amount: r.used }, null, { localOnly: true });
               setGiftFor(null); setGiftCode("");
             }}>ثبت</button>
         </Modal>

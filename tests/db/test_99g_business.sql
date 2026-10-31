@@ -46,6 +46,22 @@ select public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today(),
 select tst.ok(public.apply_booking_coupon(:'b1b', '09351240001', 'YALDA20') ->> 'error' = 'این کد را قبلاً استفاده کرده‌اید', 'once per customer');
 reset role;
 select tst.ok((select coupon_discount = round(:nprice * 0.2) and final_price = :nprice - round(:nprice * 0.2) from public.appointments where id = :'b1'), 'price reduced');
+select tst.ok((select used_count from public.coupons where code = 'YALDA20' and salon_id = :'bz') = 1, 'refused repeats do not bump the counter');
+-- the pick-up & drop-off fee is not discounted
+set role anon;
+select public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today(), 720, 'نیما', '09351240003', 'dog', null, '{"name":"رکس","size":"small"}') ->> 'id' as b1c \gset
+reset role;
+select set_config('app.trusted_rpc', 'on', false);
+update public.appointments set transport_fee = 100000, final_price = final_price + 100000 where id = :'b1c';
+select set_config('app.trusted_rpc', '', false);
+set role anon;
+select tst.ok((public.apply_booking_coupon(:'b1c', '09351240003', 'YALDA20') ->> 'discount')::bigint = round(:nprice * 0.2), 'transport fee not discounted');
+reset role;
+select tst.ok((select used_count from public.coupons where code = 'YALDA20' and salon_id = :'bz') = 2, 'second customer counted');
+-- cancelling gives the code back
+update public.appointments set status = 'cancelled' where id = :'b1c';
+select tst.ok((select used_count from public.coupons where code = 'YALDA20' and salon_id = :'bz') = 1
+  and not exists (select 1 from public.coupon_uses where phone = '09351240003'), 'cancelled booking releases the code');
 
 -- ---- coupons in the shop ----------------------------------------------------------
 insert into public.shop_settings (salon_id, enabled) values (:'bz', true);

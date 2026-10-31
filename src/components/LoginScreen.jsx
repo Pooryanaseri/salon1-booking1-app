@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Lock, Loader2 } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { signIn, verifyLoginCode, registerOwner as authRegisterOwner, registerStylist as authRegisterStylist } from "../lib/auth";
+import { signIn, signOut, verifyLoginCode, registerOwner as authRegisterOwner, registerStylist as authRegisterStylist } from "../lib/auth";
 import { toFa, normalizeMobile } from "../lib/format";
 import { SECTION_META, STAFF_PHONE, staffSectionsFor, makeSeedStylist } from "../app/shared";
 import { getBusinessType } from "../lib/tenant";
@@ -100,7 +100,7 @@ export function OwnerAuthPanel({ ownerAccount, registerOwner, notify, onSuccess 
     onSuccess("owner");
   }
 
-  if (mfa) return <MfaStep mfa={mfa} onCancel={() => setMfa(null)} />;
+  if (mfa) return <MfaStep mfa={mfa} onCancel={() => { signOut(); setMfa(null); }} />;
   return (
     <div>
       <p className="muted" style={{ fontSize: 13, marginTop: 8, marginBottom: 16 }}>
@@ -208,7 +208,7 @@ export function StylistAuthPanel({ stylists, addStylist, notify, onSuccess }) {
     onSuccess(s.id);
   }
 
-  if (mfa) return <MfaStep mfa={mfa} onCancel={() => setMfa(null)} />;
+  if (mfa) return <MfaStep mfa={mfa} onCancel={() => { signOut(); setMfa(null); }} />;
   return (
     <div>
       <p className="muted" style={{ fontSize: 13, marginTop: 8, marginBottom: 16 }}>
