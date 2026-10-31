@@ -39,7 +39,7 @@ alter table public.sms_messages add constraint sms_messages_kind_check
     'reconciliation_prompt','weekly_summary','predictive_rebooking',
     'reschedule_proposed','feedback_request','feedback_followup','staff_new_booking',
     'daily_digest','waitlist_offer','staff_change'
-  ));
+  )) not valid;
 
 -- Absolute link to a public page, or NULL when app.base_url isn't set (so
 -- callers can skip the link instead of sending a broken relative one).
@@ -55,7 +55,7 @@ $$;
 alter table public.rebooking_tokens add column if not exists preferred_date date;
 alter table public.rebooking_tokens drop constraint if exists rebooking_tokens_reason_check;
 alter table public.rebooking_tokens add constraint rebooking_tokens_reason_check
-  check (reason in ('closure', 'predictive', 'manual', 'waitlist'));
+  check (reason in ('closure', 'predictive', 'manual', 'waitlist')) not valid;
 
 alter table public.waitlist add column if not exists notified_at timestamptz;
 

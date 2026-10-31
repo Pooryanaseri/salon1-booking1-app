@@ -31,7 +31,7 @@ alter table public.sms_messages add constraint sms_messages_kind_check check (ki
   'confirmation', 'reminder', 'cancellation', 'reschedule', 'campaign', 'loyalty', 'custom',
   'reconciliation_prompt', 'weekly_summary', 'predictive_rebooking', 'reschedule_proposed',
   'feedback_request', 'feedback_followup', 'staff_new_booking', 'daily_digest', 'waitlist_offer',
-  'staff_change', 'quote_request', 'quote'));
+  'staff_change', 'quote_request', 'quote')) not valid;
 
 create table if not exists public.quote_requests (
   id              uuid primary key default gen_random_uuid(),
@@ -68,7 +68,7 @@ create policy p_quotes_staff_read on public.quote_requests for select
   using ((select public.is_staff()) and salon_id = (select public.current_salon_id()));
 
 alter table public.rebooking_tokens drop constraint if exists rebooking_tokens_reason_check;
-alter table public.rebooking_tokens add constraint rebooking_tokens_reason_check check (reason in ('closure', 'predictive', 'manual', 'waitlist', 'quote'));
+alter table public.rebooking_tokens add constraint rebooking_tokens_reason_check check (reason in ('closure', 'predictive', 'manual', 'waitlist', 'quote')) not valid;
 alter table public.rebooking_tokens add column if not exists quote_id uuid references public.quote_requests (id) on delete cascade;
 alter table public.appointments add column if not exists quote_id uuid references public.quote_requests (id) on delete set null;
 alter table public.appointments add column if not exists services_label text;

@@ -74,6 +74,13 @@ select cron.schedule(
   $$ select public.expire_unpaid_orders(); $$
 );
 
+-- هر ساعت: کارت هدیه و بستهٔ آنلاینی که یک روز پرداخت نشده لغو می‌شود (v2.50).
+select cron.schedule(
+  'salon-expire-unpaid-purchases',
+  '7 * * * *',
+  $$ select public.expire_unpaid_purchases(); $$
+);
+
 select cron.schedule(
   'salon-transition-elapsed-appointments',
   '*/20 * * * *',
