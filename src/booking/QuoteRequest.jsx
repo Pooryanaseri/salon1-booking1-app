@@ -1,8 +1,8 @@
-import { useState } from "react";
-import { ArrowRight, Check, CheckCircle2, Loader2, MessageSquareText, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowRight, Camera, Check, CheckCircle2, Loader2, MessageSquareText, Sparkles, X } from "lucide-react";
 import { CATEGORY_LABEL, PET_SIZE_LABEL, SERVICE_ICONS, hasPrice } from "../app/shared";
 import { formatToman, normalizeMobile, toFa } from "../lib/format";
-import { requestQuote } from "../lib/api";
+import { MAX_QUOTE_PHOTOS, requestQuote, uploadQuotePhotos } from "../lib/api";
 
 /* ============================================================
    v2.46 pet salons — price quotes. The customer tells the salon
@@ -65,6 +65,17 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
   const [times, setTimes] = useState([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  // v2.47: photos of the animal (coat, mats, size) help the groomer price it
+  const [photos, setPhotos] = useState([]); // [{file, url}]
+  const fileRef = useRef(null);
+  useEffect(() => () => photos.forEach((p) => URL.revokeObjectURL(p.url)), []); // eslint-disable-line react-hooks/exhaustive-deps
+  function addPhotos(fileList) {
+    const picked = Array.from(fileList || []).filter((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
+    setPhotos((cur) => [...cur, ...picked.map((file) => ({ file, url: URL.createObjectURL(file) }))].slice(0, MAX_QUOTE_PHOTOS));
+  }
+  function removePhoto(i) {
+    setPhotos((cur) => { URL.revokeObjectURL(cur[i].url); return cur.filter((_, j) => j !== i); });
+  }
   const phoneValid = /^09\d{9}$/.test(phone);
   const label = services.map((s) => s.name).join(" + ");
 
@@ -81,9 +92,14 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
       serviceIds: services.map((s) => s.id), servicesLabel: label,
       note: note.trim(), preferredTime: times.join("، "),
     });
+    if (!res?.ok) { setSending(false); setError(res?.error || "ثبت درخواست ناموفق بود"); return; }
+    let photoNote = "";
+    if (photos.length && res.id) {
+      const up = await uploadQuotePhotos(res.id, photos.map((p) => p.file));
+      if (up.failed) photoNote = up.uploaded ? `${toFa(up.failed)} عکس ارسال نشد` : "عکس‌ها ارسال نشدند";
+    }
     setSending(false);
-    if (!res?.ok) { setError(res?.error || "ثبت درخواست ناموفق بود"); return; }
-    onSent({ phone });
+    onSent({ phone, photoNote });
   }
 
   const chip = (on) => ({
@@ -113,6 +129,29 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
             placeholder="مثلاً موهایش گره زیادی دارد، مدل خاصی می‌خواهم، بار اول است…" style={{ width: "100%", padding: "11px 14px", fontSize: 14, marginTop: 4, resize: "vertical", fontFamily: "inherit" }} />
         </div>
         <div>
+          <span className="muted" style={{ fontSize: 12 }}>عکس {pet.name.trim() || "حیوان"} (اختیاری، تا {toFa(MAX_QUOTE_PHOTOS)} عکس)</span>
+          <p className="muted" style={{ fontSize: 11.5, marginTop: 2, lineHeight: 1.8 }}>یک عکس از کل بدن و یکی از نزدیکِ موها کمک می‌کند آرایشگر قیمت دقیق‌تری بدهد.</p>
+          <div className="flex gap-2 flex-wrap" style={{ marginTop: 6 }}>
+            {photos.map((p, i) => (
+              <div key={p.url} style={{ position: "relative", width: 72, height: 72 }}>
+                <img src={p.url} alt={`عکس ${toFa(i + 1)}`} style={{ width: 72, height: 72, objectFit: "cover", borderRadius: "var(--radius-md)", border: "1px solid var(--color-border)" }} />
+                <button type="button" onClick={() => removePhoto(i)} aria-label={`حذف عکس ${toFa(i + 1)}`} className="tap"
+                  style={{ position: "absolute", top: -6, left: -6, width: 22, height: 22, borderRadius: "50%", background: "var(--color-danger)", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+            {photos.length < MAX_QUOTE_PHOTOS && (
+              <button type="button" className="tap" onClick={() => fileRef.current?.click()}
+                style={{ width: 72, height: 72, borderRadius: "var(--radius-md)", border: `1px dashed ${section.color}`, color: section.color, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, fontSize: 11, fontWeight: 700 }}>
+                <Camera size={20} /> افزودن عکس
+              </button>
+            )}
+          </div>
+          <input ref={fileRef} type="file" accept="image/*" multiple hidden aria-label="انتخاب عکس"
+            onChange={(e) => { addPhotos(e.target.files); e.target.value = ""; }} />
+        </div>
+        <div>
           <span className="muted" style={{ fontSize: 12 }}>چه زمانی برایتان بهتر است؟ (اختیاری)</span>
           <div className="flex gap-2 flex-wrap" style={{ marginTop: 4 }}>
             {TIME_CHIPS.map((t) => (
@@ -125,7 +164,7 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
         <div className="sticky-cta">
           <button type="submit" disabled={!phoneValid || sending} className="tap accent-btn w-full flex items-center justify-center gap-1.5" style={{ padding: 13 }}>
             {sending && <Loader2 size={15} className="salon-spin" />}
-            {sending ? "در حال ارسال..." : "ارسال درخواست قیمت"}
+            {sending ? (photos.length ? "در حال ارسال درخواست و عکس‌ها..." : "در حال ارسال...") : "ارسال درخواست قیمت"}
           </button>
         </div>
       </form>
@@ -133,7 +172,7 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
   );
 }
 
-export function QuoteSent({ petName, onTrack, onNew, demo }) {
+export function QuoteSent({ petName, onTrack, onNew, demo, photoNote }) {
   return (
     <div className="fade-in" style={{ textAlign: "center", paddingTop: 12 }}>
       <div style={{ width: 64, height: 64, borderRadius: "50%", background: "color-mix(in oklch, var(--color-success) 18%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
@@ -144,6 +183,7 @@ export function QuoteSent({ petName, onTrack, onNew, demo }) {
         آرایشگر درخواست {petName} را بررسی می‌کند و قیمت را همراه لینک انتخاب زمان برایتان پیامک می‌کند.
         قیمت در «داشبورد من» هم نمایش داده می‌شود.
       </p>
+      {photoNote && <p role="alert" style={{ fontSize: 12, marginTop: 6, color: "var(--color-warning)" }}>{photoNote} — درخواست بدون آن ثبت شد.</p>}
       {demo && <p className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>حالت نمایشی: درخواست در «پنل مدیریت ← استعلام قیمت» دیده می‌شود.</p>}
       <div className="flex gap-2 mt-5">
         {onTrack && (

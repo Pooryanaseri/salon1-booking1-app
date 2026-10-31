@@ -151,6 +151,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const quoteMode = petSalon ? automation?.pet_quote_mode || "off" : "off";
   const [quoteIds, setQuoteIds] = useState([]);
   const [quoteDemo, setQuoteDemo] = useState(false);
+  const [quotePhotoNote, setQuotePhotoNote] = useState("");
 
   // v2.45: add-ons (e.g. detangling) are added by staff at checkout, not booked online
   const sectionServices = services.filter((s) => s.is_active && !s.is_addon && s.gender === gender).map(forPet);
@@ -648,7 +649,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           section={section}
           services={sectionServices.filter((s) => quoteIds.includes(s.id))}
           onBack={goBack}
-          onSent={({ phone: p }) => {
+          onSent={({ phone: p, photoNote }) => {
+            setQuotePhotoNote(photoNote || "");
             rememberPet(getCurrentSalonId(), { ...pet, species: gender, name: pet.name.trim() });
             setSavedPets(loadSavedPets(getCurrentSalonId()));
             setPhone(p); setQuoteDemo(!SUPABASE_ENABLED); goTo(21);
@@ -656,7 +658,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
         />
       )}
       {step === 21 && (
-        <QuoteSent petName={pet.name.trim()} demo={quoteDemo} onNew={reset} onTrack={onTrack ? () => onTrack(phone) : null} />
+        <QuoteSent petName={pet.name.trim()} demo={quoteDemo} photoNote={quotePhotoNote} onNew={reset} onTrack={onTrack ? () => onTrack(phone) : null} />
       )}
 
       {/* Step 2 — service selection, scoped to the chosen section */}

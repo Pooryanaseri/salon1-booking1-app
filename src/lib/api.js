@@ -1242,7 +1242,7 @@ export async function requestQuote({ name, phone, species, pet, serviceIds, serv
       service_ids: serviceIds, services_label: servicesLabel, customer_note: note || "", preferred_time: preferredTime || "",
       status: "pending", created_at: new Date().toISOString(), demoPet: pet,
     });
-    return { ok: true, demo: true };
+    return { ok: true, demo: true, id: demoQuotes[0].id };
   }
   const { data, error } = await supabase.rpc("request_quote", {
     p_customer_name: name || "", p_customer_phone: phone, p_species: species, p_pet: pet,
@@ -1250,6 +1250,60 @@ export async function requestQuote({ name, phone, species, pet, serviceIds, serv
   });
   if (error) { fail("request_quote", error); return { ok: false, error: "ثبت درخواست ناموفق بود" }; }
   return data;
+}
+
+/* v2.47 — photos with a quote request (private bucket; see the migration). */
+const QUOTE_PHOTO_BUCKET = "quote-photos";
+export const MAX_QUOTE_PHOTOS = 4;
+
+/** Shrinks a phone photo to ~1600 px JPEG (a few hundred KB) before upload. */
+export async function shrinkImage(file, maxDim = 1600, quality = 0.82) {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close?.();
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+    if (blob) return blob;
+  } catch { /* undecodable here (e.g. HEIC on desktop) — fall through */ }
+  return /^image\/(jpeg|png|webp)$/.test(file.type) && file.size <= 3 * 1024 * 1024 ? file : null;
+}
+
+/** Uploads the request's photos → {uploaded, failed}. */
+export async function uploadQuotePhotos(quoteId, files) {
+  const list = files.slice(0, MAX_QUOTE_PHOTOS);
+  if (!SUPABASE_ENABLED) {
+    const q = demoQuotes.find((x) => x.id === quoteId);
+    if (q) q.demoPhotos = list.map((f) => URL.createObjectURL(f));
+    return { uploaded: list.length, failed: 0 };
+  }
+  let uploaded = 0, failed = 0;
+  for (const file of list) {
+    const blob = await shrinkImage(file);
+    if (!blob) { failed++; continue; }
+    const ext = blob.type === "image/png" ? "png" : blob.type === "image/webp" ? "webp" : "jpg";
+    const name = `${(crypto.randomUUID?.() || Math.random().toString(36).slice(2)).replace(/[^a-z0-9-]/g, "")}.${ext}`;
+    const { error } = await supabase.storage.from(QUOTE_PHOTO_BUCKET)
+      .upload(`${getCurrentSalonId()}/${quoteId}/${name}`, blob, { contentType: blob.type || "image/jpeg", upsert: false });
+    if (error) { fail("quote photo upload", error); failed++; } else uploaded++;
+  }
+  return { uploaded, failed };
+}
+
+/** Staff: signed URLs (1 hour) of a request's photos. */
+export async function fetchQuotePhotos(quote) {
+  if (!SUPABASE_ENABLED) return quote.demoPhotos || [];
+  const folder = `${getCurrentSalonId()}/${quote.id}`;
+  const { data: files, error } = await supabase.storage.from(QUOTE_PHOTO_BUCKET).list(folder, { limit: MAX_QUOTE_PHOTOS + 2 });
+  if (error) { fail("quote photos list", error); return []; }
+  const paths = (files || []).filter((f) => f.name && !f.name.startsWith(".")).map((f) => `${folder}/${f.name}`);
+  if (!paths.length) return [];
+  const { data: signed, error: signErr } = await supabase.storage.from(QUOTE_PHOTO_BUCKET).createSignedUrls(paths, 3600);
+  if (signErr) { fail("quote photos sign", signErr); return []; }
+  return (signed || []).map((x) => x.signedUrl).filter(Boolean);
 }
 
 /** Staff: the salon's quote requests, newest first. */

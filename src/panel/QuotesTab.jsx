@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { MessageSquareText, RefreshCw, Clock, Phone, Send, X } from "lucide-react";
+import { MessageSquareText, RefreshCw, Clock, Phone, Send, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { formatToman, toFa } from "../lib/format";
-import { fetchQuotes, sendQuote, declineQuote } from "../lib/api";
+import { fetchQuotes, fetchQuotePhotos, sendQuote, declineQuote } from "../lib/api";
 import { GenderBadge, Modal, PanelSectionHeader } from "../components/ui";
 import { PET_SIZE_LABEL, hasPrice, petService, staffServesSection } from "../app/shared";
 import { TemperamentBadge } from "./PetsTab";
@@ -97,6 +97,7 @@ export function QuotesTab({ services, stylists, pets, automation, notify, onPend
                 </div>
                 <p style={{ fontSize: 13, fontWeight: 700, marginTop: 6 }}>{q.services_label}</p>
                 {q.customer_note && <p style={{ fontSize: 12.5, marginTop: 4, lineHeight: 1.8, background: "var(--color-surface-raised)", padding: "6px 10px", borderRadius: "var(--radius-sm)" }}>«{q.customer_note}»</p>}
+                <QuotePhotos quote={q} />
                 {pet?.owner_notes && pet.owner_notes !== q.customer_note && <p className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>توضیح پروفایل: {pet.owner_notes}</p>}
                 <div className="muted flex items-center gap-3 flex-wrap tabular" style={{ fontSize: 11.5, marginTop: 6 }}>
                   <span className="flex items-center gap-1"><Phone size={11} /> {q.customer_name} · <span dir="ltr">{toFa(q.customer_phone)}</span></span>
@@ -139,6 +140,40 @@ export function QuotesTab({ services, stylists, pets, automation, notify, onPend
         />
       )}
     </div>
+  );
+}
+
+/* v2.47 — the customer's photos (signed URLs, loaded per card). */
+function QuotePhotos({ quote }) {
+  const [urls, setUrls] = useState([]);
+  const [open, setOpen] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    fetchQuotePhotos(quote).then((u) => { if (alive) setUrls(u); });
+    return () => { alive = false; };
+  }, [quote]);
+  if (!urls.length) return null;
+  return (
+    <>
+      <div className="flex gap-2 flex-wrap" style={{ marginTop: 8 }}>
+        {urls.map((u, i) => (
+          <button key={u} type="button" className="tap" onClick={() => setOpen(i)} aria-label={`نمایش عکس ${toFa(i + 1)}`} style={{ padding: 0, borderRadius: "var(--radius-md)" }}>
+            <img src={u} alt="" loading="lazy" style={{ width: 64, height: 64, objectFit: "cover", borderRadius: "var(--radius-md)", border: "1px solid var(--color-border)", display: "block" }} />
+          </button>
+        ))}
+      </div>
+      {open != null && (
+        <Modal title={`عکس ${toFa(open + 1)} از ${toFa(urls.length)} — ${quote.pet_name}`} onClose={() => setOpen(null)} wide>
+          <img src={urls[open]} alt={`عکس ${quote.pet_name}`} style={{ width: "100%", maxHeight: "70vh", objectFit: "contain", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }} />
+          {urls.length > 1 && (
+            <div className="flex justify-between mt-3">
+              <button className="tap ghost-btn flex items-center gap-1" style={{ padding: "8px 12px" }} onClick={() => setOpen((open + 1) % urls.length)}><ChevronRight size={14} /> بعدی</button>
+              <button className="tap ghost-btn flex items-center gap-1" style={{ padding: "8px 12px" }} onClick={() => setOpen((open - 1 + urls.length) % urls.length)}>قبلی <ChevronLeft size={14} /></button>
+            </div>
+          )}
+        </Modal>
+      )}
+    </>
   );
 }
 
