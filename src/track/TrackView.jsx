@@ -324,13 +324,13 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
 
       {searched && reports.length > 0 && (
         <div className="card fade-in mt-4" style={{ padding: 14 }}>
-          <p style={{ fontSize: 13.5, fontWeight: 800, color: "var(--color-heading)", marginBottom: 6 }}>گزارش‌های آرایش</p>
+          <p style={{ fontSize: 13.5, fontWeight: 800, color: "var(--color-heading)", marginBottom: 6 }}>گزارش‌های نوبت (عکس قبل و بعد)</p>
           {reports.map((r) => {
             const found = HEALTH_CHECKS.filter((h) => r.checks?.[h.id]).map((h) => h.label);
             return (
               <div key={r.appointment_id} style={{ padding: "8px 0", borderTop: "1px dashed var(--color-border)" }}>
-                <p style={{ fontSize: 13, fontWeight: 700 }}>{r.pet_name} · {jalaliLabel(parseDateKey(String(r.date).slice(0, 10)), { short: true })}</p>
-                <p style={{ fontSize: 12, color: found.length ? "var(--color-warning)" : "var(--color-success)" }}>{found.length ? found.join("، ") : "مشکلی دیده نشد"}</p>
+                <p style={{ fontSize: 13, fontWeight: 700 }}>{r.pet_name ? `${r.pet_name} · ` : "نوبت "}{jalaliLabel(parseDateKey(String(r.date).slice(0, 10)), { short: true })}</p>
+                {r.pet_name && <p style={{ fontSize: 12, color: found.length ? "var(--color-warning)" : "var(--color-success)" }}>{found.length ? found.join("، ") : "مشکلی دیده نشد"}</p>}
                 {r.note && <p className="muted" style={{ fontSize: 12 }}>{r.note}</p>}
                 {(r.photos || []).length > 0 && (
                   <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 6 }}>

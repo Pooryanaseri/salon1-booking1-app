@@ -3,6 +3,7 @@ import { X, Percent, Banknote, CheckCircle2, XCircle, Plus, TrendingUp, Trending
 import { gregorianToJalali, MONTHS_FA, toFa, formatToman, jalaliLabel, dateKey, parseDateKey } from "../lib/format";
 import { EXPENSE_CATEGORY_META, SECTION_META, makeSeedExpense } from "../app/shared";
 import { GenderBadge, Modal, StatCard } from "../components/ui";
+import { useOtherIncome } from "./ShopInsights";
 
 /* ============================================================
    Accounting tab — real numbers computed from booking + expense data
@@ -111,8 +112,13 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
     return expenses.filter((e) => keys.has(e.date));
   }, [expenses, days, canEditExpenses]);
   const totalExpenses = rangeExpenses.reduce((s, e) => s + e.amount, 0);
-  const netProfit = realizedRevenue - totalExpenses;
-  const profitMargin = realizedRevenue > 0 ? netProfit / realizedRevenue : null;
+  // v2.52: shop (gross profit), packages and gift cards sold count too —
+  // managers only; a stylist's own view stays services-only.
+  const other = useOtherIncome(Number(range), bookings, canEditExpenses && !staffId);
+  const otherIncome = other?.total || 0;
+  const totalIncome = realizedRevenue + (other ? other.shopRevenue + other.packages + other.gifts : 0);
+  const netProfit = realizedRevenue + otherIncome - totalExpenses;
+  const profitMargin = totalIncome > 0 ? netProfit / totalIncome : null;
 
   const byExpenseCategory = useMemo(() => {
     const map = new Map();
@@ -219,6 +225,33 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
         <StatCard label="درآمد در انتظار" value={formatToman(expectedRevenue)} icon={Hourglass} color="var(--color-info)" />
         <StatCard label="تخفیف اعطاشده" value={formatToman(discountGiven)} icon={Percent} color="var(--color-accent-700)" />
       </div>
+
+      {other && (other.shopRevenue > 0 || other.packages > 0 || other.gifts > 0) && (
+        <div className="card mb-2" style={{ padding: 14 }} data-card="income-sources">
+          <p className="flex items-center gap-2 mb-2" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
+            <Coins size={15} /> درآمد به تفکیک منبع
+          </p>
+          {[
+            ["خدمات (نوبت‌های انجام‌شده)", realizedRevenue],
+            ["فروشگاه", other.shopRevenue, other.shopCogs > 0 ? `قیمت خرید کالاها: ${formatToman(other.shopCogs)} — سود ناخالص ${formatToman(other.shopGross)}` : null],
+            ["فروش بسته‌های پیش‌پرداخت", other.packages],
+            ["فروش کارت هدیه", other.gifts],
+          ].filter(([, v], i) => i === 0 || v > 0).map(([label, v, sub]) => (
+            <div key={label} style={{ padding: "6px 0", borderTop: "1px dashed var(--color-border)" }}>
+              <div className="flex justify-between gap-2" style={{ fontSize: 13 }}>
+                <span>{label}</span><b className="tabular">{formatToman(v)}</b>
+              </div>
+              {sub && <p className="muted tabular" style={{ fontSize: 11.5 }}>{sub}</p>}
+            </div>
+          ))}
+          <div className="flex justify-between gap-2" style={{ fontSize: 13.5, padding: "8px 0 0", borderTop: "1px solid var(--color-border)", fontWeight: 800 }}>
+            <span>جمع درآمد</span><span className="tabular">{formatToman(totalIncome)}</span>
+          </div>
+          <p className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.8 }}>
+            در سود خالص، از فروشگاه فقط سود ناخالص (فروش منهای قیمت خرید) حساب می‌شود؛ اگر قیمت خرید کالاها را وارد کرده‌اید، خرید کالای فروشگاه را جداگانه در هزینه‌ها ثبت نکنید.
+          </p>
+        </div>
+      )}
 
       <div className="flex gap-2 mb-3">
         <StatCard

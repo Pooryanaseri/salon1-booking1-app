@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Plus, Pencil, Gift, Ticket, AlertTriangle, ShieldCheck, Download, Database, Camera, ScanLine, Building2, Image as ImageIcon, X, TrendingUp, Users } from "lucide-react";
+import { Loader2, Plus, Pencil, Gift, Ticket, AlertTriangle, ShieldCheck, Download, Database, Camera, ScanLine, Building2, Image as ImageIcon, X, TrendingUp, Users, Layers } from "lucide-react";
+import { PackagesSection } from "./PetCare";
 import { Modal, Switch } from "../components/ui";
 import { formatToman, toFa, digitsOnly, normalizeMobile, isoToJalaliLabel, formatClock } from "../lib/format";
 import {
@@ -110,12 +111,13 @@ export function CommissionCard({ bookings, stylists }) {
 }
 
 /* --------------------------------------------- 3. coupons + gift cards --- */
-export function MarketingTab({ isManager, notify }) {
+export function MarketingTab({ isManager, notify, services = [], showPackages = false }) {
   const [seg, setSeg] = useState(isManager ? "coupons" : "gifts");
   return (
     <div className="fade-in">
       <div className="flex gap-2 mb-3" role="tablist" aria-label="تخفیف و هدیه">
-        {[...(isManager ? [["coupons", "کد تخفیف", Ticket]] : []), ["gifts", "کارت هدیه", Gift]].map(([id, label, Icon]) => (
+        {[...(isManager ? [["coupons", "کد تخفیف", Ticket]] : []), ["gifts", "کارت هدیه", Gift],
+          ...(showPackages ? [["packages", "بسته‌ها", Layers]] : [])].map(([id, label, Icon]) => (
           <button key={id} role="tab" aria-selected={seg === id} className="tap flex-1 flex items-center justify-center gap-1" onClick={() => setSeg(id)}
             style={{ padding: "9px 6px", borderRadius: "var(--radius-md)", fontSize: 12.5, fontWeight: 700,
               background: seg === id ? "var(--color-accent-500)" : "var(--color-surface)", color: seg === id ? "white" : "var(--color-body)",
@@ -126,6 +128,8 @@ export function MarketingTab({ isManager, notify }) {
       </div>
       {seg === "coupons" && isManager && <CouponsSection notify={notify} />}
       {seg === "gifts" && <GiftCardsSection notify={notify} />}
+      {/* v2.52: prepaid packages for men's / women's salons (pet salons keep them under «حیوانات») */}
+      {seg === "packages" && showPackages && <PackagesSection services={services} notify={notify} isManager={isManager} />}
     </div>
   );
 }

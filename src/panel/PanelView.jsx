@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode } from "lucide-react";
+import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -22,6 +22,7 @@ import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, Com
 import { GroomStageBar, VisitReportModal, PetCareBadges } from "./PetCare";
 import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
 import { redeemGiftCard } from "../lib/business";
+import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceModal } from "./ClientRecord";
 
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
@@ -143,7 +144,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       {subTab === "quotes" && petSalon && (
         <QuotesTab services={services} stylists={stylists} pets={pets} automation={automation} notify={notify} onPendingChange={setQuotesPending} />
       )}
-      {subTab === "marketing" && <MarketingTab isManager={!currentStylist} notify={notify} />}
+      {subTab === "marketing" && <MarketingTab isManager={!currentStylist} notify={notify} services={services} showPackages={!petSalon} />}
       {subTab === "shop" && (
         <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} />
       )}
@@ -476,16 +477,21 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
   const [giftCode, setGiftCode] = useState("");
   const [completePkgs, setCompletePkgs] = useState([]);
   const [reportFor, setReportFor] = useState(null); // v2.49 visit report modal
+  const [pkgChoice, setPkgChoice] = useState(null); // v2.52 {booking, packages} in a men's / women's salon
+  const [recordFor, setRecordFor] = useState(null); // v2.52 client record
+  const [recTick, setRecTick] = useState(0);
   async function handleComplete(b) {
     setMenuFor(null);
+    // v2.49 / v2.52: a prepaid package of this customer for this service
+    const today = new Date().toISOString().slice(0, 10);
+    const usable = (await fetchPurchases(b.customer_phone)).filter((p) => p.service_id === b.service_id && p.sessions_left > 0
+      && p.expires_at >= today && (!p.status || p.status === "active"));
     if (petSalonDash) {
-      // v2.49: a prepaid package of this customer for this service
-      const today = new Date().toISOString().slice(0, 10);
-      const list = await fetchPurchases(b.customer_phone);
-      setCompletePkgs(list.filter((p) => p.service_id === b.service_id && p.sessions_left > 0 && p.expires_at >= today));
+      setCompletePkgs(usable);
       setCompleteFor(b);
       return;
     }
+    if (usable.length) { setPkgChoice({ booking: b, packages: usable }); return; }
     finishComplete(b, {});
   }
   async function completeWithPackage(b, pkg, newCharges) {
@@ -510,6 +516,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
   const dayBookings = bookings
     .filter((b) => b.date === viewDateKey)
     .sort((a, b) => a.start_min - b.start_min);
+  const records = useClientRecords(dayBookings, !petSalonDash, recTick); // v2.52
   const todays = dayBookings.filter(
     (b) => (genderFilter === "all" || b.customer_gender === genderFilter) && (staffFilter === "all" || b.staff_id === staffFilter)
   );
@@ -756,6 +763,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                         </span>
                       )}
                       {petSalonDash && <PetCareBadges booking={b} pet={petOf(b)} />}
+                      {!petSalonDash && <ClientRecordBadges record={records.get(b.customer_phone)} booking={b} />}
                       {b.customer_response === "confirmed" && ["confirmed", "rescheduled", "pending"].includes(b.status) && (
                         <span className="badge" style={{ background: "color-mix(in oklch, var(--color-success) 15%, transparent)", color: "var(--color-success)" }}>
                           <CheckCircle2 size={12} /> مشتری حضور را تایید کرد
@@ -765,10 +773,16 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                     {petSalonDash && b.pet_name && isToday && ["pending", "confirmed", "rescheduled"].includes(b.status) && (
                       <GroomStageBar booking={b} notify={notify} onChanged={(stage) => updateBooking(b.id, { groom_stage: stage })} />
                     )}
-                    {petSalonDash && b.pet_name && (b.status === "completed" || (isToday && ["confirmed", "rescheduled", "pending"].includes(b.status))) && (
+                    {(petSalonDash ? !!b.pet_name : true) && (b.status === "completed" || (isToday && ["confirmed", "rescheduled", "pending"].includes(b.status))) && (
                       <button type="button" className="tap flex items-center gap-1" onClick={() => setReportFor(b)}
-                        style={{ fontSize: 12, fontWeight: 700, color: "var(--color-pet-500)", marginTop: 6, minHeight: 32 }}>
-                        <Camera size={13} /> عکس قبل و بعد و کارت سلامت
+                        style={{ fontSize: 12, fontWeight: 700, color: petSalonDash ? "var(--color-pet-500)" : "var(--color-accent-500)", marginTop: 6, minHeight: 32 }}>
+                        <Camera size={13} /> {petSalonDash ? "عکس قبل و بعد و کارت سلامت" : "عکس قبل و بعد و گزارش برای مشتری"}
+                      </button>
+                    )}
+                    {!petSalonDash && /^09\d{9}$/.test(b.customer_phone || "") && (
+                      <button type="button" className="tap flex items-center gap-1" onClick={() => setRecordFor(b)}
+                        style={{ fontSize: 12, fontWeight: 700, color: "var(--color-info)", marginTop: 2, minHeight: 32 }}>
+                        <ClipboardList size={13} /> پروندهٔ مشتری{records.get(b.customer_phone) ? "" : " (خالی)"}
                       </button>
                     )}
                     {b.status === "completed" && (b.final_price || 0) > 0 && b.gift_card_amount == null && (
@@ -868,6 +882,14 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
             else finishComplete(b, extra);
           }}
         />
+      )}
+      {pkgChoice && (
+        <PackageChoiceModal booking={pkgChoice.booking} packages={pkgChoice.packages} onClose={() => setPkgChoice(null)}
+          onConfirm={(pkg) => { const b = pkgChoice.booking; setPkgChoice(null); if (pkg) completeWithPackage(b, pkg, []); else finishComplete(b, {}); }} />
+      )}
+      {recordFor && (
+        <ClientRecordModal phone={recordFor.customer_phone} name={recordFor.customer_name} record={records.get(recordFor.customer_phone)} notify={notify}
+          onClose={() => setRecordFor(null)} onSaved={() => setRecTick((t) => t + 1)} />
       )}
       {giftFor && (
         <Modal title="پرداخت با کارت هدیه" onClose={() => setGiftFor(null)}>

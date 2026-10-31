@@ -155,10 +155,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const [petCare, setPetCare] = useState(null);
   const [packagesOffer, setPackagesOffer] = useState([]);
   useEffect(() => {
-    if (!petSalon) return;
     let alive = true;
-    fetchPublicPetCare().then((c) => { if (alive) setPetCare(c); });
+    // v2.52: prepaid packages are offered by every salon type
     fetchPublicPackages().then((k) => { if (alive) setPackagesOffer(k); });
+    if (petSalon) fetchPublicPetCare().then((c) => { if (alive) setPetCare(c); });
     return () => { alive = false; };
   }, [petSalon]);
   const [consentOk, setConsentOk] = useState(false);
@@ -691,7 +691,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               );
             })}
           </div>
-          {petSalon && packagesOffer.length > 0 && (
+          {packagesOffer.length > 0 && (
             <div className="card mt-4" style={{ padding: 14 }}>
               <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
                 <Ticket size={15} color="var(--color-tab-panel)" /> بسته‌های پیش‌پرداخت

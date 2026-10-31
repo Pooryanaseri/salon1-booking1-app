@@ -360,3 +360,33 @@ export async function watermark(file, text) {
     return file;
   }
 }
+
+/* ------------------------------------------- v2.52 client records ---- */
+const demoRecords = new Map([
+  ["09121234567", { phone: "09121234567", allergies: "حساسیت به آمونیاک", hair_type: "فر و خشک", skin_type: "", color_formula: "۷٫۱ + اکسیدان ۶٪ — ۳۵ دقیقه", patch_test_at: null, notes: "" }],
+]);
+export const CLIENT_RECORD_FIELDS = [
+  ["allergies", "حساسیت‌ها (رنگ، مواد، عطر…)", 300],
+  ["hair_type", "نوع مو", 60],
+  ["skin_type", "نوع پوست", 60],
+  ["color_formula", "فرمول رنگ / مواد استفاده‌شده", 400],
+  ["notes", "یادداشت (سلیقه، نکته‌ها)", 600],
+];
+/** phone → record, for the given phones (staff; RLS limits a stylist to their clients). */
+export async function fetchClientRecords(phones) {
+  const list = [...new Set((phones || []).filter((p) => /^09\d{9}$/.test(p || "")))];
+  if (!list.length) return new Map();
+  if (!SUPABASE_ENABLED) return new Map(list.filter((p) => demoRecords.has(p)).map((p) => [p, { ...demoRecords.get(p) }]));
+  const { data, error } = await supabase.from("client_records").select("*").in("phone", list.slice(0, 200));
+  if (error) { if (!missing(error, "client_records")) log("client_records", error); return new Map(); }
+  return new Map((data || []).map((r) => [r.phone, r]));
+}
+export async function saveClientRecord(r) {
+  if (!/^09\d{9}$/.test(r.phone || "")) return { ok: false, error: "شمارهٔ مشتری نامعتبر است" };
+  const row = { phone: r.phone, patch_test_at: r.patch_test_at || null };
+  for (const [k, , max] of CLIENT_RECORD_FIELDS) row[k] = String(r[k] || "").trim().slice(0, max);
+  if (!SUPABASE_ENABLED) { demoRecords.set(r.phone, row); return { ok: true }; }
+  const { error } = await supabase.from("client_records").upsert({ ...row, salon_id: getCurrentSalonId() }, { onConflict: "salon_id,phone" });
+  if (error) { log("client_records.save", error); return { ok: false, error: "ذخیره ناموفق بود — فقط مدیر یا آرایشگر همین مشتری می‌تواند پرونده را ویرایش کند" }; }
+  return { ok: true };
+}
