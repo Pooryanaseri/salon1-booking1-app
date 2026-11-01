@@ -5,6 +5,7 @@ import { formatToman, toFa, digitsOnly, MONTHS_FA, gregorianToJalali } from "../
 import {
   CONTRACT_KINDS, COLLECTORS, LEDGER_KINDS, contractLabel, ledgerLabel, monthKey, shiftMonth, contractOn,
   fetchContracts, saveContract, fetchStatement, addLedgerEntry, deleteLedgerEntry, fetchContractIncome,
+  fetchStylistPrices, saveStylistPrice, priceFor,
 } from "../lib/contracts";
 
 /* ============================================================
@@ -21,10 +22,11 @@ function monthLabel(key) {
 const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 
 /* ------------------------------------------------------- manager card ---- */
-export function ContractsCard({ stylists, bookings, notify }) {
+export function ContractsCard({ stylists, bookings, services = [], notify }) {
   const [contracts, setContracts] = useState(null);
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
+  const [pricing, setPricing] = useState(null);
   const [tick, setTick] = useState(0);
   useEffect(() => { fetchContracts().then((c) => setContracts(c || [])); }, [tick]);
   if (!contracts) return null;
@@ -47,8 +49,12 @@ export function ContractsCard({ stylists, bookings, notify }) {
                 {c && ["rent", "hybrid"].includes(kind) && ` · اجاره ${formatToman(c.rent_amount)}`}
                 {c && ["share", "hybrid"].includes(kind) && ` · ${toFa(Number(c.service_share_pct))}٪ سهم سالن`}
                 {c && kind !== "employee" && ` · ${c.collector === "salon" ? "پول دست سالن" : "پول دست آرایشگر"}`}
+                {c?.own_prices && " · قیمت اختصاصی"}{c?.private_clients && " · مشتری اختصاصی"}
               </p>
             </div>
+            {c?.own_prices && (
+              <button className="tap ghost-btn" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => setPricing(s)}>قیمت‌ها</button>
+            )}
             {kind !== "employee" && (
               <button className="tap ghost-btn" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => setViewing(s)}>صورت‌حساب</button>
             )}
@@ -65,6 +71,7 @@ export function ContractsCard({ stylists, bookings, notify }) {
         </Modal>
       )}
       {viewing && <StatementModal stylist={viewing} bookings={bookings} isManager notify={notify} onClose={() => setViewing(null)} />}
+      {pricing && <PricesModal stylist={pricing} services={services} notify={notify} onClose={() => setPricing(null)} />}
     </div>
   );
 }
@@ -108,6 +115,21 @@ function ContractForm({ stylist, initial, onDone }) {
           ))}
         </div>
       )}
+      {c.kind !== "employee" && (
+        <>
+          <label className="muted" style={{ fontSize: 12 }}>پورسانت آرایشگر از فروش محصولات فروشگاه ٪
+            <input dir="ltr" inputMode="decimal" value={toFa(c.product_commission_pct ?? "")} onChange={(e) => set("product_commission_pct")(e.target.value.replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)).replace(/[^0-9.]/g, "").slice(0, 5))} style={{ ...input, textAlign: "left" }} />
+          </label>
+          <label className="flex items-start gap-2" style={{ fontSize: 13 }}>
+            <input type="checkbox" checked={!!c.own_prices} onChange={(e) => set("own_prices")(e.target.checked)} style={{ marginTop: 4 }} />
+            <span>قیمت‌های خودش را تعیین کند<span className="muted" style={{ display: "block", fontSize: 11.5 }}>در صفحهٔ رزرو، وقتی مشتری این آرایشگر را انتخاب کند، قیمت او نمایش داده و ثبت می‌شود</span></span>
+          </label>
+          <label className="flex items-start gap-2" style={{ fontSize: 13 }}>
+            <input type="checkbox" checked={!!c.private_clients} onChange={(e) => set("private_clients")(e.target.checked)} style={{ marginTop: 4 }} />
+            <span>مشتری‌هایش اختصاصی باشند<span className="muted" style={{ display: "block", fontSize: 11.5 }}>مشتری‌هایی که فقط پیش این آرایشگر آمده‌اند، پیامک تبلیغاتی و پیشنهاد نوبت خالی سالن را نمی‌گیرند</span></span>
+          </label>
+        </>
+      )}
       <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.8 }}>
         از ابتدای {monthLabel(c.effective_from)} اعمال می‌شود؛ ماه‌های قبل با قرارداد قبلی حساب می‌مانند. یادآوری اجاره در روز سررسید برای آرایشگر پیامک می‌شود.
       </p>
@@ -118,7 +140,7 @@ function ContractForm({ stylist, initial, onDone }) {
 }
 
 /* ---------------------------------------------------- the statement ---- */
-function StatementBody({ s }) {
+function StatementBody({ s, name }) {
   const row = (label, value, opts = {}) => (
     <div className="flex justify-between gap-2 tabular" style={{ fontSize: 13, padding: "5px 0", borderTop: "1px dashed var(--color-border)", fontWeight: opts.bold ? 800 : 400, color: opts.color }}>
       <span>{label}</span><span>{value}</span>
@@ -127,6 +149,7 @@ function StatementBody({ s }) {
   const owes = s.balance < 0;
   return (
     <div className="statement-print">
+      <p className="print-only" style={{ display: "none", fontSize: 15, fontWeight: 800, marginBottom: 4 }}>صورت‌حساب {name || s.name || ""} — {monthLabel(s.month)}</p>
       <p className="muted" style={{ fontSize: 12 }}>
         {contractLabel(s.kind)}{s.service_share_pct > 0 ? ` · ${toFa(s.service_share_pct)}٪ سهم سالن` : ""}{s.rent > 0 ? ` · اجاره ${formatToman(s.rent)}` : ""} · {s.collector === "salon" ? "پول دست سالن" : "پول دست آرایشگر"}
       </p>
@@ -140,6 +163,7 @@ function StatementBody({ s }) {
       {s.rent > 0 && row("اجارهٔ صندلی", "− " + formatToman(s.rent))}
       {s.charges > 0 && row("بدهی‌های ثبت‌شده", "− " + formatToman(s.charges))}
       {s.credits > 0 && row("طلب‌های ثبت‌شده", "+ " + formatToman(s.credits))}
+      {s.product_sales > 0 && row(`فروش محصول (${formatToman(s.product_sales)}) — پورسانت ${toFa(s.product_commission_pct)}٪`, "+ " + formatToman(s.product_commission))}
       {row("درآمد خالص آرایشگر این ماه", formatToman(s.stylist_net), { bold: true })}
       {s.paid_to_stylist > 0 && row("پرداخت‌شده به آرایشگر", formatToman(s.paid_to_stylist))}
       {s.paid_to_salon > 0 && row("پرداخت‌شده به سالن", formatToman(s.paid_to_salon))}
@@ -152,7 +176,25 @@ function StatementBody({ s }) {
   );
 }
 
-export function StatementModal({ stylist, bookings, isManager, notify, onClose }) {
+export // Prints only the statement: a copy goes into a hidden iframe with the app's
+// styles, so the rest of the page (and its height) never reaches the printer.
+function printStatement() {
+  const el = document.querySelector(".statement-print");
+  if (!el) { window.print(); return; }
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  Object.assign(frame.style, { position: "fixed", width: "0", height: "0", border: "0", right: "0", bottom: "0" });
+  document.body.appendChild(frame);
+  const doc = frame.contentDocument;
+  const styles = [...document.querySelectorAll("style, link[rel=stylesheet]")].map((n) => n.outerHTML).join("");
+  doc.open();
+  doc.write(`<!doctype html><html dir="rtl" lang="fa"><head><meta charset="utf-8">${styles}<style>body{background:#fff;color:#000;padding:16px;margin:0}.print-only{display:block!important}</style></head><body><div class="salon-app">${el.outerHTML}</div></body></html>`);
+  doc.close();
+  const go = () => { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(() => frame.remove(), 1000); };
+  if (doc.readyState === "complete") setTimeout(go, 150); else frame.onload = go;
+}
+
+function StatementModal({ stylist, bookings, isManager, notify, onClose }) {
   const [month, setMonth] = useState(monthKey());
   const [s, setS] = useState(null);
   const [tick, setTick] = useState(0);
@@ -182,7 +224,7 @@ export function StatementModal({ stylist, bookings, isManager, notify, onClose }
         : s.kind === "employee" ? <p className="muted" style={{ fontSize: 13 }}>در این ماه قرارداد «کارمند» برقرار بوده؛ حساب آن در «پورسانت کارکنان» است.</p>
         : (
           <>
-            <StatementBody s={s} />
+            <StatementBody s={s} name={stylist.name} />
             {(s.ledger || []).length > 0 && (
               <div style={{ marginTop: 12 }}>
                 <p className="muted" style={{ fontSize: 12, marginBottom: 4 }}>ثبت‌های این ماه</p>
@@ -213,7 +255,7 @@ export function StatementModal({ stylist, bookings, isManager, notify, onClose }
                   ثبت تسویه ({formatToman(Math.abs(s.balance))})
                 </button>
               )}
-              <button className="tap ghost-btn flex items-center gap-1" style={{ padding: "11px 14px" }} onClick={() => window.print()}><Printer size={14} /> چاپ</button>
+              <button className="tap ghost-btn flex items-center gap-1" style={{ padding: "11px 14px" }} onClick={printStatement}><Printer size={14} /> چاپ</button>
             </div>
           </>
         )}
@@ -257,4 +299,57 @@ export function useContractIncome(days, bookings, enabled) {
     return () => { alive = false; };
   }, [days, bookings, enabled]);
   return r;
+}
+
+/* ------------------------------------------- v2.55: own prices ---- */
+function PricesEditor({ stylist, services, notify }) {
+  const [prices, setPrices] = useState(null);
+  const [draft, setDraft] = useState({});
+  useEffect(() => { fetchStylistPrices().then(setPrices); }, []);
+  if (!prices) return <div className="flex justify-center" style={{ padding: 14 }}><Loader2 size={15} className="salon-spin" /></div>;
+  const list = services.filter((v) => v.is_active !== false && !v.is_addon && v.price > 0);
+  async function save(v) {
+    const val = draft[v.id];
+    const r = await saveStylistPrice(stylist.id, v.id, val === "" ? null : val);
+    notify(r.ok ? "قیمت ذخیره شد" : r.error);
+    if (r.ok) setPrices(await fetchStylistPrices());
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.8, marginBottom: 4 }}>خالی = قیمت عادی سالن. وقتی مشتری این آرایشگر را انتخاب کند، این قیمت نمایش داده و ثبت می‌شود.</p>
+      {list.map((v) => {
+        const own = priceFor(prices, stylist.id, v.id);
+        const val = draft[v.id] ?? (own ?? "");
+        return (
+          <div key={v.id} className="flex items-center gap-2" style={{ padding: "5px 0", borderTop: "1px dashed var(--color-border)" }} data-price={v.name}>
+            <span style={{ flex: 1, fontSize: 13 }}>{v.name}<span className="muted tabular" style={{ display: "block", fontSize: 11 }}>سالن: {formatToman(v.price)}</span></span>
+            <input {...money(val, (x) => setDraft((d) => ({ ...d, [v.id]: x })))} aria-label={`قیمت ${v.name}`} style={{ ...input, marginTop: 0, width: 120, textAlign: "left" }} />
+            <button className="tap ghost-btn" style={{ padding: "6px 10px", fontSize: 12 }} disabled={draft[v.id] === undefined} onClick={() => save(v)}>ثبت</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+function PricesModal({ stylist, services, notify, onClose }) {
+  return <Modal title={`قیمت‌های ${stylist.name}`} onClose={onClose}><PricesEditor stylist={stylist} services={services} notify={notify} /></Modal>;
+}
+/** A stylist with an own-prices contract edits them here. */
+export function MyPricesCard({ stylist, services, notify }) {
+  const [allowed, setAllowed] = useState(false);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!stylist) return;
+    fetchContracts().then((cs) => setAllowed(!!contractOn(cs || [], stylist.id, todayIso())?.own_prices));
+  }, [stylist]);
+  if (!stylist || !allowed) return null;
+  return (
+    <div className="card mb-4" style={{ padding: 14 }} data-card="my-prices">
+      <div className="flex items-center justify-between gap-2">
+        <span style={{ fontSize: 14, fontWeight: 800 }}>قیمت‌های من</span>
+        <button className="tap ghost-btn" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => setOpen((o) => !o)}>{open ? "بستن" : "ویرایش"}</button>
+      </div>
+      {open && <div style={{ marginTop: 8 }}><PricesEditor stylist={stylist} services={services} notify={notify} /></div>}
+    </div>
+  );
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeStatement, contractOn, shiftMonth, monthKey } from "../src/lib/contracts";
+import { computeStatement, contractOn, shiftMonth, monthKey, priceFor } from "../src/lib/contracts";
 
 const bk = (id, staff, price, extra = {}) => ({ id, staff_id: staff, status: "completed", date: "2026-11-3", final_price: price, ...extra });
 
@@ -38,5 +38,26 @@ describe("computeStatement", () => {
     expect(computeStatement({ contract: null, bookings: [], month: "2026-11-01", stylistId: "a" }).kind).toBe("employee");
     const s = computeStatement({ contract: { kind: "rent", rent_amount: 100, collector: "stylist" }, bookings: [bk("1", "a", 500)], month: "2026-10-01", stylistId: "a" });
     expect(s).toMatchObject({ visits: 0, gross: 0, balance: -100 });
+  });
+});
+
+describe("v2.55 independent stylists", () => {
+  it("adds product commission to what the salon owes", () => {
+    const contract = { kind: "share", service_share_pct: 20, collector: "salon", product_commission_pct: 10 };
+    const orders = [
+      { sold_by: "a", status: "pending", subtotal: 2000000, created_at: new Date(2026, 10, 5).toISOString() },
+      { sold_by: "a", status: "cancelled", subtotal: 500000, created_at: new Date(2026, 10, 5).toISOString() },
+      { sold_by: "b", status: "delivered", subtotal: 900000, created_at: new Date(2026, 10, 5).toISOString() },
+      { sold_by: "a", status: "delivered", subtotal: 700000, created_at: new Date(2026, 9, 5).toISOString() },
+    ];
+    const s = computeStatement({ contract, bookings: [bk(1, "a", 1000000, { date: "2026-11-02" }), bk(2, "a", 1000000, { date: "2026-11-03" })], month: "2026-11-01", stylistId: "a", orders });
+    expect(s.product_sales).toBe(2000000);
+    expect(s.product_commission).toBe(200000);
+    expect(s.balance).toBe(2000000 - 400000 + 200000);
+  });
+  it("priceFor finds the stylist's own price", () => {
+    const prices = [{ stylist_id: "a", service_id: "cut", price: 1500000 }];
+    expect(priceFor(prices, "a", "cut")).toBe(1500000);
+    expect(priceFor(prices, "b", "cut")).toBeNull();
   });
 });

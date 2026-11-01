@@ -23,7 +23,7 @@ import { GroomStageBar, VisitReportModal, PetCareBadges } from "./PetCare";
 import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
 import { redeemGiftCard } from "../lib/business";
 import { GrowthTab, EventsTab, TargetsCard } from "./GrowthTools";
-import { ContractsCard, MyStatementCard } from "./Contracts";
+import { ContractsCard, MyStatementCard, MyPricesCard } from "./Contracts";
 import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceModal } from "./ClientRecord";
 
 /* ============================================================
@@ -144,6 +144,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       </div>
 
       {subTab === "dashboard" && currentStylist && <MyStatementCard stylist={currentStylist} bookings={bookings} notify={notify} />}
+      {subTab === "dashboard" && currentStylist && <MyPricesCard stylist={currentStylist} services={services} notify={notify} />}
       {subTab === "dashboard" && currentStylist && (
         <TargetsCard bookings={bookings} stylists={stylists} isManager={false} currentStylistId={currentStylistId} notify={notify} />
       )}
@@ -155,14 +156,14 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       )}
       {subTab === "marketing" && <MarketingTab isManager={!currentStylist} notify={notify} services={services} showPackages={!petSalon} />}
       {subTab === "shop" && (
-        <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} />
+        <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} stylists={stylists} />
       )}
       {subTab === "pets" && petSalon && (
         <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} isManager={!currentStylist} />
       )}
       {subTab === "growth" && !currentStylist && <GrowthTab services={services} bookings={bookings} notify={notify} />}
       {subTab === "events" && !petSalon && <EventsTab notify={notify} isManager={!currentStylist} />}
-      {subTab === "accounting" && !currentStylist && <ContractsCard stylists={stylists} bookings={bookings} notify={notify} />}
+      {subTab === "accounting" && !currentStylist && <ContractsCard stylists={stylists} bookings={bookings} services={services} notify={notify} />}
       {subTab === "accounting" && !currentStylist && <TargetsCard bookings={bookings} stylists={stylists} isManager notify={notify} />}
       {subTab === "accounting" && !currentStylist && <RevenueExtrasCard />}
       {subTab === "accounting" && !currentStylist && <CommissionCard bookings={bookings} stylists={stylists} />}

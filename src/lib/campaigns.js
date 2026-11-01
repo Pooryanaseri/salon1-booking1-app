@@ -7,6 +7,7 @@
 import { createCampaign, addCampaignTargets, logCampaignSend, updateCampaignLogResult } from "./api";
 import { sendBulkSms, renderTemplate } from "./sms";
 import { toFa } from "./format";
+import { fetchPrivateClientPhones } from "./contracts";
 
 const VALID_PHONE = /^09\d{9}$/;
 
@@ -26,8 +27,10 @@ export function segmentMembers(rfmRows, segmentKey) {
  */
 export async function sendCampaign({ name, templateId, templateLabel, segment = null, draft, recipients }) {
   const seen = new Set();
+  // v2.55: an independent stylist's private clients are not the salon's to market to
+  const privatePhones = new Set(await fetchPrivateClientPhones());
   const members = recipients.filter((r) => {
-    if (!VALID_PHONE.test(r.phone || "") || seen.has(r.phone)) return false;
+    if (!VALID_PHONE.test(r.phone || "") || seen.has(r.phone) || privatePhones.has(r.phone)) return false;
     seen.add(r.phone);
     return true;
   });

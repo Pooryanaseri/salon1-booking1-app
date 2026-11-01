@@ -442,3 +442,9 @@ export function groupVariants(products) {
   }
   return out;
 }
+
+/** v2.55 demo: the panel's "seller" select on an order. */
+export function demoSetOrderSeller(id, stylistId) {
+  const o = demo.orders.find((x) => x.id === id);
+  if (o) o.sold_by = stylistId;
+}

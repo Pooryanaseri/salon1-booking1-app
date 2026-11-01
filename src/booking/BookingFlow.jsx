@@ -12,6 +12,7 @@ import { fetchPublicPetCare, fetchPublicPackages, consentRequired, largeDogsAt }
 import { checkCoupon } from "../lib/business";
 import { BuyPackageModal } from "./BuyPackageModal";
 import { fetchPublicOffpeak, fetchPublicUpsells, offpeakFor } from "../lib/growth";
+import { fetchStylistPrices, priceFor } from "../lib/contracts";
 
 /* ============================================================
    Booking flow (customer) — gender section chosen first, each
@@ -161,8 +162,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const [offpeakRules, setOffpeakRules] = useState([]);
   const [upsells, setUpsells] = useState([]);
   const [upsellPick, setUpsellPick] = useState(null);
+  const [stylistPrices, setStylistPrices] = useState([]); // v2.55 independent stylists' own prices
   useEffect(() => {
     let alive = true;
+    fetchStylistPrices().then((r) => { if (alive) setStylistPrices(r); });
     fetchPublicOffpeak().then((r) => { if (alive) setOffpeakRules(r); });
     fetchPublicUpsells(services).then((r) => { if (alive) setUpsells(r); });
     return () => { alive = false; };
@@ -449,7 +452,10 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   // meaning exactly what they already mean (the service-level discount
   // only); the loyalty layer is tracked separately as loyalty_discount_pct/
   // loyalty_discount_amount so nothing about the existing columns changes.
-  const servicePrice = service ? finalPriceFor(service) : 0;
+  // v2.55: the chosen stylist's own price replaces the list price (discounts kept as an amount)
+  const ownPrice = service && effectiveStaff ? priceFor(stylistPrices, effectiveStaff.id, service.id) : null;
+  const listPrice = ownPrice ?? service?.price;
+  const servicePrice = service ? (ownPrice != null && hasPrice(service) ? Math.max(0, finalPriceFor(service) + (ownPrice - service.price)) : finalPriceFor(service)) : 0;
   const loyaltyDiscountAmount = service && hasPrice(service) && servicePrice != null
     ? Math.round((servicePrice * loyaltyDiscountPct) / 100)
     : 0;
@@ -497,7 +503,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           // Demo-mode-only fields (ignored by create_public_booking in real
           // mode, which computes these itself) — kept so the demo flow still
           // shows a realistic price breakdown with no backend to compute it.
-          originalPrice: service.price,
+          originalPrice: listPrice,
           discountType: service.discount_type,
           discountValue: service.discount_value,
           discountReason: [service.discount_reason, loyaltyDiscountAmount > 0 ? `${toFa(loyaltyDiscountPct)}٪ تخفیف باشگاه مشتریان` : ""].filter(Boolean).join(" · "),
@@ -891,6 +897,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, color: "var(--color-heading)", fontSize: 14 }}>{st.name}</div>
+                  {service && priceFor(stylistPrices, st.id, service.id) != null && (
+                    <div className="muted tabular" style={{ fontSize: 12 }}>قیمت این آرایشگر: {formatToman(priceFor(stylistPrices, st.id, service.id))}</div>
+                  )}
                 </div>
               </button>
             ))}
@@ -1189,7 +1198,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             <Row label="شماره تماس" value={<span dir="ltr">{toFa(phone)}</span>} />
             <div style={{ borderTop: "1px dashed var(--color-border)", margin: "10px 0" }} />
             {!hasPrice(service) && <Row label="مبلغ" value={priceLabel(service)} bold />}
-            {hasPrice(service) && (discount > 0 || loyaltyDiscountAmount > 0) && <Row label="قیمت اصلی" value={formatToman(service.price)} strike />}
+            {hasPrice(service) && (discount > 0 || loyaltyDiscountAmount > 0) && <Row label="قیمت اصلی" value={formatToman(listPrice)} strike />}
+            {hasPrice(service) && ownPrice != null && <Row label="قیمت این آرایشگر" value={formatToman(ownPrice)} />}
             {hasPrice(service) && discount > 0 && <Row label="تخفیف" value={"- " + formatToman(discount)} />}
             {hasPrice(service) && loyaltyDiscountAmount > 0 && (
               <Row label={`تخفیف باشگاه مشتریان (${toFa(loyaltyDiscountPct)}٪)`} value={"- " + formatToman(loyaltyDiscountAmount)} />

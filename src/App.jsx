@@ -18,6 +18,7 @@ import { fetchShop } from "./lib/shop";
 import { requestPetTransport } from "./lib/petcare";
 import { applyBookingCoupon } from "./lib/business";
 import { applyOffpeak, applyUpsell, setBookingSource, currentSource, captureSource } from "./lib/growth";
+import { applyStylistPrice, fetchStylistPrices } from "./lib/contracts";
 
 captureSource(); // v2.53: ?src=instagram on the link the client came from
 
@@ -427,6 +428,11 @@ export default function App() {
       }
     }
 
+    // v2.55: an independent stylist's own price comes first
+    if (booking.final_price != null && booking.staff_id) {
+      const sp = await applyStylistPrice(booking.id, params.customerPhone, booking, await fetchStylistPrices());
+      if (sp?.ok) booking = { ...booking, original_price: Number(sp.price), final_price: Number(sp.final_price) };
+    }
     // v2.53: quiet-hour discount (before the add-on and the code, so neither is discounted twice)
     if (booking.final_price != null) {
       const o = await applyOffpeak(booking.id, params.customerPhone, booking);

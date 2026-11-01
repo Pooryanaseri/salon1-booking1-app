@@ -309,6 +309,14 @@ Deno.serve(async (req) => {
         continue;
       }
     }
+    // v2.55: an independent stylist's private client gets no salon campaign
+    if (m.kind === "campaign") {
+      const { data: isPrivate } = await admin.rpc("is_private_client", { p_salon: salonId, p_phone: to });
+      if (isPrivate === true) {
+        results.push({ to, ok: false, error: "مشتری اختصاصی آرایشگر مستقل است" });
+        continue;
+      }
+    }
 
     const r = await sendOne(to, body, await accounts.forSalon(salonId));
 

@@ -4,6 +4,7 @@ import { formatToman, toFa, digitsOnly } from "../lib/format";
 import { Modal, Switch } from "../components/ui";
 import { SuppliesSection } from "./BusinessTools";
 import { isPetSalon } from "../lib/tenant";
+import { setOrderSeller } from "../lib/contracts";
 import {
   fetchOrders, setOrderStatus, markOrderRefunded, fetchProducts, saveProduct, deleteProduct, uploadProductPhoto,
   fetchShopSettings, saveShopSettings, ORDER_STATUS, shopCategories, categoryLabel, productPhotoUrl, PRODUCT_AUDIENCE, audienceLabel,
@@ -19,7 +20,7 @@ const FILTERS = [
   ["open", "باز"], ["pending", "جدید"], ["done", "بسته‌شده"], ["all", "همه"],
 ];
 
-export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChange }) {
+export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChange, stylists = [] }) {
   const [segment, setSegment] = useState("orders");
   const segs = [
     { id: "orders", label: "سفارش‌ها", Icon: ShoppingBag },
@@ -41,7 +42,7 @@ export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChang
           ))}
         </div>
       )}
-      {segment === "orders" && <OrdersSection isManager={isManager} notify={notify} onPendingChange={onPendingChange} />}
+      {segment === "orders" && <OrdersSection isManager={isManager} notify={notify} onPendingChange={onPendingChange} stylists={stylists} />}
       {segment === "products" && isManager && <ProductsSection notify={notify} />}
       {segment === "settings" && isManager && <SettingsSection notify={notify} onShopEnabledChange={onShopEnabledChange} />}
       {segment === "supplies" && <SuppliesSection isManager={isManager} notify={notify} />}
@@ -50,7 +51,7 @@ export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChang
 }
 
 /* ------------------------------------------------------------ orders --- */
-function OrdersSection({ isManager, notify, onPendingChange }) {
+function OrdersSection({ isManager, notify, onPendingChange, stylists = [] }) {
   const [orders, setOrders] = useState(null);
   const [filter, setFilter] = useState("open");
   const [tick, setTick] = useState(0);
@@ -158,6 +159,21 @@ function OrdersSection({ isManager, notify, onPendingChange }) {
                 )}
                 {o.customer_note && <span className="muted">توضیح مشتری: {o.customer_note}</span>}
                 {o.staff_note && <span className="muted">یادداشت: {o.staff_note}</span>}
+                {isManager && stylists.length > 0 && (
+                  <label className="flex items-center gap-1.5 muted" style={{ fontSize: 12 }}>
+                    فروشنده:
+                    <select value={o.sold_by || ""} aria-label="فروشنده" style={{ padding: "3px 6px", fontSize: 12 }}
+                      onChange={async (e) => {
+                        const v = e.target.value || null;
+                        const r = await setOrderSeller(o.id, v);
+                        notify(r?.ok ? "فروشنده ثبت شد" : r?.error || "ناموفق بود");
+                        if (r?.ok) setOrders((list) => list.map((x) => (x.id === o.id ? { ...x, sold_by: v } : x)));
+                      }}>
+                      <option value="">سالن</option>
+                      {stylists.filter((st) => st.active !== false).map((st) => <option key={st.id} value={st.id}>{st.name}</option>)}
+                    </select>
+                  </label>
+                )}
                 {o.tracking_code && <span>کد رهگیری{o.carrier ? ` ${o.carrier}` : ""}: <b className="tabular" dir="ltr">{o.tracking_code}</b></span>}
                 {o.coupon_code && <span className="muted">کد تخفیف {o.coupon_code}{o.coupon_discount ? ` (−${formatToman(o.coupon_discount)})` : ""}</span>}
                 {o.status === "cancelled" && o.cancel_reason && <span style={{ color: "var(--color-danger)" }}>دلیل لغو: {o.cancel_reason === "expired" ? "پرداخت نشد" : o.cancel_reason}</span>}
