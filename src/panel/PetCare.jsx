@@ -81,6 +81,9 @@ function PhotoSlot({ label, paths, onAdd, onRemove, busy }) {
 
 /* ------------------------------------------------------ visit report --- */
 export function VisitReportModal({ booking, notify, onClose, afterComplete }) {
+  // v2.52: men's / women's salons use the same report — photos, note, products
+  const isPet = !!booking.pet_name;
+  const who = isPet ? `صاحب ${booking.pet_name}` : "مشتری";
   const [loaded, setLoaded] = useState(false);
   const [checks, setChecks] = useState({});
   const [behavior, setBehavior] = useState("");
@@ -136,23 +139,23 @@ export function VisitReportModal({ booking, notify, onClose, afterComplete }) {
     setSaving(false);
     if (!res?.ok) { notify(res?.error || "ذخیره ناموفق بود"); return; }
     if (send && !res.sent && !res.demo) notify("گزارش ذخیره شد ولی لینک ساخته نشد (آدرس سایت تنظیم نشده)");
-    else notify(send ? "گزارش برای صاحب حیوان پیامک شد" : "گزارش ذخیره شد");
+    else notify(send ? `گزارش برای ${isPet ? "صاحب حیوان" : "مشتری"} پیامک شد` : "گزارش ذخیره شد");
     onClose(true);
   }
   const toggle = (id) => setChecks((c) => ({ ...c, [id]: !c[id] }));
 
   return (
-    <Modal title={`گزارش ${booking.pet_name || ""}`} onClose={() => onClose(false)}>
+    <Modal title={isPet ? `گزارش ${booking.pet_name}` : `گزارش نوبت ${booking.customer_name || ""}`} onClose={() => onClose(false)}>
       {!loaded ? (
         <div className="flex justify-center" style={{ padding: 20 }}><Loader2 size={18} className="salon-spin" /></div>
       ) : (
         <div className="flex flex-col gap-3">
-          {afterComplete && <p style={{ fontSize: 12.5, color: "var(--color-success)", fontWeight: 700 }}>نوبت ثبت شد. عکس و گزارش برای صاحب {booking.pet_name} بفرستید؟</p>}
+          {afterComplete && <p style={{ fontSize: 12.5, color: "var(--color-success)", fontWeight: 700 }}>نوبت ثبت شد. عکس و گزارش برای {who} بفرستید؟</p>}
           <div className="flex gap-4 flex-wrap">
             <PhotoSlot label="عکس قبل" paths={before} busy={uploading === "before"} onAdd={(f) => add("before", f)} onRemove={(p) => setBefore((x) => x.filter((y) => y !== p))} />
             <PhotoSlot label="عکس بعد" paths={after} busy={uploading === "after"} onAdd={(f) => add("after", f)} onRemove={(p) => setAfter((x) => x.filter((y) => y !== p))} />
           </div>
-          <div>
+          {isPet && <div>
             <span className="muted" style={{ fontSize: 12 }}>کارت سلامت — موارد دیده‌شده را بزنید</span>
             <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 6 }}>
               {HEALTH_CHECKS.map((h) => (
@@ -166,21 +169,22 @@ export function VisitReportModal({ booking, notify, onClose, afterComplete }) {
               ))}
             </div>
             {!Object.values(checks).some(Boolean) && <p className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>اگر چیزی نزنید، «مشکلی دیده نشد» نمایش داده می‌شود.</p>}
-          </div>
+          </div>}
           {booking.pet_id && (
             <label className="muted" style={{ fontSize: 12 }}>وزن امروز (کیلو، اختیاری — در نمودار وزن ثبت می‌شود)
               <input dir="ltr" inputMode="decimal" value={weight} onChange={(e) => setWeight(e.target.value.replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)))}
                 className="tabular" style={{ ...input, textAlign: "left" }} />
             </label>
           )}
-          <label className="muted" style={{ fontSize: 12 }}>رفتار در این نوبت
+          {isPet && <label className="muted" style={{ fontSize: 12 }}>رفتار در این نوبت
             <select value={behavior} onChange={(e) => setBehavior(e.target.value)} style={input}>
               <option value="">—</option>
               {Object.entries(BEHAVIOR_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
-          </label>
-          <label className="muted" style={{ fontSize: 12 }}>توضیح برای صاحب حیوان
-            <textarea rows={2} maxLength={600} value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً گوش‌ها را تمیز کردیم؛ پیشنهاد می‌کنیم به دامپزشک نشان دهید"
+          </label>}
+          <label className="muted" style={{ fontSize: 12 }}>توضیح برای {who}
+            <textarea rows={2} maxLength={600} value={note} onChange={(e) => setNote(e.target.value)}
+              placeholder={isPet ? "مثلاً گوش‌ها را تمیز کردیم؛ پیشنهاد می‌کنیم به دامپزشک نشان دهید" : "مثلاً تا ۴۸ ساعت موها را نشویید؛ هفته‌ای یک بار ماسک بزنید"}
               style={{ ...input, resize: "vertical", fontFamily: "inherit" }} />
           </label>
           {products.length > 0 && (
@@ -206,7 +210,7 @@ export function VisitReportModal({ booking, notify, onClose, afterComplete }) {
           {sentAt && <p className="muted" style={{ fontSize: 11.5 }}>قبلاً ارسال شده — ارسال دوباره لینک تازه می‌فرستد.</p>}
           <div className="flex gap-2">
             <button disabled={saving || !!uploading} className="tap accent-btn flex-1 flex items-center justify-center gap-1" style={{ padding: 12 }} onClick={() => save(true)}>
-              {saving ? <Loader2 size={14} className="salon-spin" /> : <Send size={14} />} ذخیره و پیامک به صاحب
+              {saving ? <Loader2 size={14} className="salon-spin" /> : <Send size={14} />} ذخیره و پیامک به {isPet ? "صاحب" : "مشتری"}
             </button>
             <button disabled={saving || !!uploading} className="tap ghost-btn" style={{ padding: "12px 14px" }} onClick={() => save(false)}>فقط ذخیره</button>
           </div>

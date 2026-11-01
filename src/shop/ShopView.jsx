@@ -3,7 +3,8 @@ import { ShoppingBag, ShoppingCart, Plus, Minus, Trash2, ArrowRight, Loader2, Pa
 import { formatToman, toFa, normalizeMobile, digitsOnly } from "../lib/format";
 import { startOrderPayment } from "../lib/api";
 import { checkCoupon } from "../lib/business";
-import { groupVariants, fetchShop, placeOrder, priceCart, shippingFor, productPhotoUrl, categoryLabel, loadCart, saveCart } from "../lib/shop";
+import { groupVariants, fetchShop, placeOrder, priceCart, shippingFor, productPhotoUrl, categoryLabel, loadCart, saveCart, PRODUCT_AUDIENCE } from "../lib/shop";
+import { isPetSalon } from "../lib/tenant";
 
 /* ============================================================
    v2.48 — the salon's shop: catalog → cart → checkout → done.
@@ -77,8 +78,13 @@ export function ShopView({ notify, onTrack }) {
 function Catalog({ shop, products, qtyOf, setQty, priced, onCart }) {
   const [cat, setCat] = useState("all");
   const [q, setQ] = useState("");
-  const cats = useMemo(() => [...new Set(products.map((p) => p.category || ""))], [products]);
-  const shown = products.filter((p) => (cat === "all" || (p.category || "") === cat) && (!q.trim() || p.name.includes(q.trim())));
+  // v2.52: a men's + women's salon can split its shelf
+  const [aud, setAud] = useState("all");
+  const audiences = useMemo(() => new Set(products.map((p) => p.audience || "all")), [products]);
+  const splitAudience = audiences.has("men") && audiences.has("women");
+  const forAud = (p) => aud === "all" || !p.audience || p.audience === "all" || p.audience === aud;
+  const cats = useMemo(() => [...new Set(products.filter(forAud).map((p) => p.category || ""))], [products, aud]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = products.filter((p) => forAud(p) && (cat === "all" || (p.category || "") === cat) && (!q.trim() || p.name.includes(q.trim())));
   const chip = (on) => ({
     padding: "7px 12px", borderRadius: "var(--radius-full)", fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap",
     border: `1px solid ${on ? "var(--color-accent-500)" : "var(--color-border)"}`,
@@ -92,7 +98,20 @@ function Catalog({ shop, products, qtyOf, setQty, priced, onCart }) {
           {[shop.pickup && "تحویل در سالن", shop.shipping && "ارسال"].filter(Boolean).join(" · ")}
         </span>
       </div>
+      {!isPetSalon() && !shop.note && <p className="muted" style={{ fontSize: 12.5, marginBottom: 8, lineHeight: 1.8 }}>همان محصولاتی که آرایشگرهای ما در سالن استفاده می‌کنند — تحویل در سالن یا ارسال به خانه.</p>}
       {shop.note && <p className="muted" style={{ fontSize: 12.5, marginBottom: 8, lineHeight: 1.8 }}>{shop.note}</p>}
+      {splitAudience && (
+        <div className="seg flex gap-1 mb-2" role="radiogroup" aria-label="محصولات برای" style={{ background: "var(--color-surface-raised)", padding: 3, borderRadius: "var(--radius-md)" }}>
+          {PRODUCT_AUDIENCE.map(([k, label]) => (
+            <button key={k} role="radio" aria-checked={aud === k} className="tap" onClick={() => { setAud(k); setCat("all"); }}
+              style={{ flex: 1, padding: "7px 8px", borderRadius: "var(--radius-sm)", fontSize: 12.5, fontWeight: 700,
+                background: aud === k ? "var(--color-surface)" : "transparent", color: aud === k ? "var(--color-heading)" : "var(--color-muted)",
+                boxShadow: aud === k ? "var(--shadow-sm)" : "none" }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       {shop.shipping && shop.free_shipping_over > 0 && (
         <p style={{ fontSize: 12, marginBottom: 8, color: "var(--color-success)" }}>
           <Truck size={13} style={{ display: "inline", verticalAlign: "-2px" }} /> ارسال رایگان برای خرید بالای {formatToman(shop.free_shipping_over)}

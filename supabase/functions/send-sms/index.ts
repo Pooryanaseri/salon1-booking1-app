@@ -177,6 +177,13 @@ Deno.serve(async (req) => {
   if (auth.role !== "system" && !isManager(auth) && auth.role !== "stylist") {
     return json({ ok: false, error: "دسترسی ارسال پیامک ندارید" }, 403);
   }
+  // v2.58: a salon whose subscription has ended (past the renewal window) sends nothing.
+  if (auth.role !== "system" && auth.salonId) {
+    const { data: state, error: stErr } = await admin.rpc("subscription_state", { p_salon: auth.salonId });
+    if (!stErr && state === "locked") {
+      return json({ ok: false, error: "اشتراک سالن به پایان رسیده — برای ارسال پیامک تمدید کنید" }, 402);
+    }
+  }
   /** Stylist-sent rows must be booking notices about the stylist's own appointments. */
   async function stylistMayUse(rows: { appointment_id?: string | null; kind?: string }[]): Promise<boolean> {
     if (auth.role !== "stylist") return true;
@@ -306,6 +313,14 @@ Deno.serve(async (req) => {
         .from("customers").select("sms_opt_out").eq("phone", to).eq("salon_id", salonId).maybeSingle();
       if (cust?.sms_opt_out) {
         results.push({ to, ok: false, error: "مشتری از دریافت پیام‌های تبلیغاتی انصراف داده" });
+        continue;
+      }
+    }
+    // v2.55: an independent stylist's private client gets no salon campaign
+    if (m.kind === "campaign") {
+      const { data: isPrivate } = await admin.rpc("is_private_client", { p_salon: salonId, p_phone: to });
+      if (isPrivate === true) {
+        results.push({ to, ok: false, error: "مشتری اختصاصی آرایشگر مستقل است" });
         continue;
       }
     }

@@ -61,8 +61,11 @@ export async function saveProfileSettings(p) {
     about: (p.about || "").trim().slice(0, 1500), address: (p.address || "").trim().slice(0, 300), phone: (p.phone || "").trim().slice(0, 20),
     instagram: (p.instagram || "").trim().replace(/^@/, "").slice(0, 30), map_url: (p.map_url || "").trim(),
     gallery: (p.gallery || []).slice(0, 24), show_reviews: p.show_reviews !== false,
+    // v2.53: where 5-star clients are sent (sent only when set, for older databases)
+    ...(p.review_url != null && (p.review_url || p.hadReviewUrl) ? { review_url: (p.review_url || "").trim() } : {}),
   };
   if (row.map_url && !/^https:\/\//.test(row.map_url)) return { ok: false, error: "لینک نقشه باید با https شروع شود" };
+  if (row.review_url && !/^https:\/\/\S{4,250}$/.test(row.review_url)) return { ok: false, error: "لینک ثبت نظر باید با https شروع شود" };
   if (row.instagram && !/^[A-Za-z0-9._]+$/.test(row.instagram)) return { ok: false, error: "نام کاربری اینستاگرام نامعتبر است" };
   if (!SUPABASE_ENABLED) { Object.assign(demo.profile, row); return { ok: true }; }
   const { error } = await supabase.from("salon_profiles").upsert({ salon_id: getCurrentSalonId(), ...row, updated_at: new Date().toISOString() }, { onConflict: "salon_id" });
@@ -346,7 +349,7 @@ export async function watermark(file, text) {
     g.drawImage(bmp, 0, 0, c.width, c.height);
     bmp.close?.();
     const size = Math.max(16, Math.round(c.width / 26));
-    g.font = `800 ${size}px "Noto Kufi Arabic Variable", "Vazirmatn Variable", sans-serif`;
+    g.font = `800 ${size}px "Estedad Variable", "Vazirmatn Variable", sans-serif`;
     g.direction = "rtl"; g.textAlign = "right"; g.textBaseline = "bottom";
     const pad = Math.round(size * 0.7);
     const w = g.measureText(text).width;
@@ -359,4 +362,34 @@ export async function watermark(file, text) {
   } catch {
     return file;
   }
+}
+
+/* ------------------------------------------- v2.52 client records ---- */
+const demoRecords = new Map([
+  ["09121234567", { phone: "09121234567", allergies: "حساسیت به آمونیاک", hair_type: "فر و خشک", skin_type: "", color_formula: "۷٫۱ + اکسیدان ۶٪ — ۳۵ دقیقه", patch_test_at: null, notes: "" }],
+]);
+export const CLIENT_RECORD_FIELDS = [
+  ["allergies", "حساسیت‌ها (رنگ، مواد، عطر…)", 300],
+  ["hair_type", "نوع مو", 60],
+  ["skin_type", "نوع پوست", 60],
+  ["color_formula", "فرمول رنگ / مواد استفاده‌شده", 400],
+  ["notes", "یادداشت (سلیقه، نکته‌ها)", 600],
+];
+/** phone → record, for the given phones (staff; RLS limits a stylist to their clients). */
+export async function fetchClientRecords(phones) {
+  const list = [...new Set((phones || []).filter((p) => /^09\d{9}$/.test(p || "")))];
+  if (!list.length) return new Map();
+  if (!SUPABASE_ENABLED) return new Map(list.filter((p) => demoRecords.has(p)).map((p) => [p, { ...demoRecords.get(p) }]));
+  const { data, error } = await supabase.from("client_records").select("*").in("phone", list.slice(0, 200));
+  if (error) { if (!missing(error, "client_records")) log("client_records", error); return new Map(); }
+  return new Map((data || []).map((r) => [r.phone, r]));
+}
+export async function saveClientRecord(r) {
+  if (!/^09\d{9}$/.test(r.phone || "")) return { ok: false, error: "شمارهٔ مشتری نامعتبر است" };
+  const row = { phone: r.phone, patch_test_at: r.patch_test_at || null };
+  for (const [k, , max] of CLIENT_RECORD_FIELDS) row[k] = String(r[k] || "").trim().slice(0, max);
+  if (!SUPABASE_ENABLED) { demoRecords.set(r.phone, row); return { ok: true }; }
+  const { error } = await supabase.from("client_records").upsert({ ...row, salon_id: getCurrentSalonId() }, { onConflict: "salon_id,phone" });
+  if (error) { log("client_records.save", error); return { ok: false, error: "ذخیره ناموفق بود — فقط مدیر یا آرایشگر همین مشتری می‌تواند پرونده را ویرایش کند" }; }
+  return { ok: true };
 }

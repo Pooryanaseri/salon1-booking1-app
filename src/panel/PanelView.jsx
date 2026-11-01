@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode } from "lucide-react";
+import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, TrendingUp, Sparkles } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
-import { AIAnalysisTab } from "./AIAnalysisTab";
+import { RevenueForecastCard } from "./RevenueForecast";
+import { SubscriptionBanner, SubscriptionLock } from "./Subscription";
 import { AccountingTab } from "./AccountingTab";
 import { BITab } from "./BITab";
 import { Badge, DayTimeline, GenderBadge, MenuItem, Modal, PanelSectionHeader, Row, StatCard, Switch } from "../components/ui";
@@ -11,23 +12,29 @@ import { CancelModal, ReferralVerifyModal, RescheduleModal } from "../components
 import { LoyaltyTab } from "./LoyaltyTab";
 import { PET_SIZE_LABEL, SECTION_META, STATUS_META, sectionFilters, sectionsFor, staffSectionsFor, makeSeedStylist, occupiedEndFor, schemaDayOf } from "../app/shared";
 import { getBusinessType } from "../lib/tenant";
-import { ScheduleTab } from "./ScheduleTab";
+import { ScheduleTab, AutomationCard, DepositCard, AppHealthCard } from "./ScheduleTab";
 import { ServicesTab } from "./ServicesTab";
 import { SmsTab } from "./SmsTab";
 import { QuotesTab } from "./QuotesTab";
 import { ShopTab } from "./ShopTab";
-import { RevenueExtrasCard, CommissionCard, MarketingTab, BranchBar, CheckInModal } from "./BusinessTools";
+import { CommissionCard, MarketingTab, BranchBar, CheckInModal, ProfileSettingsCard, SecurityCard } from "./BusinessTools";
 import { fetchOrders } from "../lib/shop";
 import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
 import { GroomStageBar, VisitReportModal, PetCareBadges } from "./PetCare";
 import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
 import { redeemGiftCard } from "../lib/business";
+import { GrowthTab, EventsTab, TargetsCard, GrowthAutomations, PlanCard } from "./GrowthTools";
+import { ContractsCard, MyStatementCard, MyPricesCard } from "./Contracts";
+import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceModal } from "./ClientRecord";
 
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
    ============================================================ */
-export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange, onReminderHoursSaved, onShopEnabledChange }) {
-  const [subTab, setSubTab] = useState("dashboard");
+export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange, onReminderHoursSaved, onShopEnabledChange, subscription }) {
+  // The last section is remembered per person, so the panel reopens where they left off.
+  const navKey = `salon-panel-tab:${currentStylistId || "manager"}`;
+  const [subTab, setSubTabRaw] = useState(() => { try { return localStorage.getItem(navKey) || "dashboard"; } catch { return "dashboard"; } });
+  const setSubTab = (id) => { setSubTabRaw(id); try { localStorage.setItem(navKey, id); } catch { /* private mode */ } };
   const [pendingSmsSegment, setPendingSmsSegment] = useState(null);
   const currentStylist = stylists.find((s) => s.id === currentStylistId) || null;
 
@@ -60,38 +67,44 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     return () => { alive = false; };
   }, [subTab]);
 
-  // Everyone gets the same tabs — each one shows only what belongs to the logged-in
-  // person (their own bookings/revenue/hours). Only staff management is owner-only,
-  // since letting a stylist add/remove colleagues doesn't make sense.
+  // Every section, grouped into a few clear areas. Each one shows only what
+  // belongs to the logged-in person; manager-only sections are left out for stylists.
+  const manager = !currentStylist;
   const subTabs = [
-    { id: "dashboard", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList, color: "var(--color-tab-book)" },
-    ...(petSalon ? [{ id: "quotes", label: quotesPending ? `استعلام قیمت (${toFa(quotesPending)})` : "استعلام قیمت", Icon: QuoteIcon, color: "var(--color-pet-500)" }] : []),
-    ...(petSalon ? [{ id: "pets", label: "حیوانات", Icon: PawPrint, color: "var(--color-pet-500)" }] : []),
-    { id: "marketing", label: "تخفیف و هدیه", Icon: Gift, color: "var(--color-female-500)" },
-    { id: "shop", label: ordersPending ? `فروشگاه (${toFa(ordersPending)})` : "فروشگاه", Icon: ShoppingBag, color: "var(--color-tab-shop)" },
-    ...(currentStylist ? [] : [{ id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" }]),
-    ...(currentStylist ? [] : [{ id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" }]),
-    ...(currentStylist ? [] : [{ id: "staff", label: "آرایشگرها", Icon: Users, color: "var(--color-info)" }]),
-    { id: "schedule", label: currentStylist ? "ساعات کاری من" : "ساعات کاری", Icon: CalendarIcon, color: "var(--color-tab-dash)" },
-    // NEW — پنل ارسال پیامک: owner/manager only, same rule as staff management.
-    ...(currentStylist ? [] : [{ id: "sms", label: "پیامک", Icon: MessageSquareText, color: "var(--color-tab-panel)" }]),
-    // باشگاه مشتریان: owner/manager AND stylist (discount settings should be
-    // adjustable by either, per explicit request — stylists interact with
-    // customers directly about redeeming rewards). Segment/category views
-    // within this tab are separately gated to manager-only (they expose the
-    // full customer bank, not just the stylist's own customers).
-    { id: "loyalty", label: "باشگاه مشتریان", Icon: Gift, color: "var(--color-success)" },
-    // v2.15: AIAnalysisTab includes a salon-wide revenue forecast —
-    // owner/manager only, same rule as accounting/BI.
-    ...(currentStylist ? [] : [{ id: "ai", label: "تحلیل هوشمند", Icon: Brain, color: "var(--color-tab-dash)" }]),
-    ...(currentStylist ? [] : [{ id: "bi", label: "هوش تجاری", Icon: BarChart3, color: "var(--color-tab-panel)" }]),
+    { id: "dashboard", group: "today", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList },
+    ...(petSalon ? [{ id: "quotes", group: "today", label: "استعلام قیمت", badge: quotesPending, Icon: QuoteIcon }] : []),
+    ...(petSalon ? [{ id: "pets", group: "today", label: "حیوانات", Icon: PawPrint }] : []),
+    { id: "loyalty", group: "clients", label: "باشگاه مشتریان", Icon: Gift },
+    { id: "marketing", group: "clients", label: "تخفیف و هدیه", Icon: Gift },
+    ...(manager ? [{ id: "growth", group: "clients", label: "رشد فروش", Icon: TrendingUp }] : []),
+    ...(manager ? [{ id: "sms", group: "clients", label: "پیامک", Icon: MessageSquareText }] : []),
+    ...(petSalon ? [] : [{ id: "events", group: "clients", label: "مراسم و عروس", Icon: Sparkles }]),
+    { id: "shop", group: "shop", label: "فروشگاه", badge: ordersPending, Icon: ShoppingBag },
+    ...(manager ? [{ id: "accounting", group: "money", label: "حسابداری", Icon: Wallet }] : []),
+    ...(manager ? [{ id: "bi", group: "money", label: "گزارش و تحلیل", Icon: BarChart3 }] : []),
+    { id: "schedule", group: "setup", label: currentStylist ? "ساعات کاری من" : "ساعات کاری", Icon: CalendarIcon },
+    ...(manager ? [{ id: "services", group: "setup", label: "خدمات", Icon: Settings }] : []),
+    ...(manager ? [{ id: "staff", group: "setup", label: "آرایشگرها", Icon: Users }] : []),
+    ...(manager ? [{ id: "automation", group: "setup", label: "خودکارها", Icon: Bell }] : []),
+    { id: "settings", group: "setup", label: manager ? "پروفایل و امنیت" : "امنیت حساب", Icon: ShieldCheck },
   ];
+  const GROUPS = [
+    { id: "today", label: currentStylist ? "نوبت‌های من" : "نوبت‌ها", Icon: LayoutList, color: "var(--color-tab-book)" },
+    { id: "clients", label: "مشتری و فروش", Icon: Gift, color: "var(--color-female-500)" },
+    { id: "shop", label: "فروشگاه", Icon: ShoppingBag, color: "var(--color-tab-shop)" },
+    { id: "money", label: "مالی و گزارش", Icon: Wallet, color: "var(--color-warning)" },
+    { id: "setup", label: currentStylist ? "تنظیمات من" : "تنظیمات سالن", Icon: Settings, color: "var(--color-info)" },
+  ].map((g) => ({ ...g, tabs: subTabs.filter((t) => t.group === g.id) })).filter((g) => g.tabs.length);
+  const activeTab = subTabs.find((t) => t.id === subTab) || subTabs[0];
+  const activeGroup = GROUPS.find((g) => g.id === activeTab.group) || GROUPS[0];
+  // a remembered section that this person can't open (or an old one) falls back to the first
+  useEffect(() => { if (activeTab.id !== subTab) setSubTabRaw(activeTab.id); }, [activeTab.id, subTab]);
 
   return (
     <div className="fade-in">
       <div
         className="flex items-center justify-between mb-3"
-        style={{ padding: "12px 14px", borderRadius: "var(--radius-lg)", background: "var(--grad-tab-panel)" }}
+        style={{ padding: "8px 8px 8px 14px", borderRadius: "var(--radius-lg)", background: "var(--grad-tab-panel)", boxShadow: "0 10px 24px -14px color-mix(in oklch, var(--color-tab-panel) 80%, transparent)" }}
       >
         <p className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 800, color: "white" }}>
           <ShieldCheck size={16} />
@@ -106,51 +119,92 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
         </button>
       </div>
 
+      {subscription?.state === "locked" ? (
+        <SubscriptionLock status={subscription} isManager={!currentStylist} notify={notify} />
+      ) : (<>
+      {!currentStylist && <SubscriptionBanner status={subscription} onRenew={() => setSubTab("settings")} />}
       {!currentStylist && <BranchBar notify={notify} />}
 
-      {/* Sub-nav — a grid, not a scrolling strip, so every tab is visible at
-          once with nothing hidden off-screen. Each tab keeps its own color
-          identity (solid fill when active, soft tint when inactive). */}
-      <div className="grid gap-2 mb-4" style={{ gridTemplateColumns: "repeat(3, 1fr)" }} role="tablist" aria-label="بخش‌های پنل">
-        {subTabs.map((t) => {
-          const active = subTab === t.id;
+      {/* Two levels: a few big areas, then the sections of the open area. */}
+      <div className="grid gap-2 mb-2" style={{ gridTemplateColumns: `repeat(${GROUPS.length}, 1fr)` }} role="tablist" aria-label="بخش‌های پنل">
+        {GROUPS.map((g) => {
+          const active = g.id === activeGroup.id;
+          const badge = g.tabs.reduce((n, t) => n + (t.badge || 0), 0);
           return (
             <button
-              key={t.id}
+              key={g.id}
               role="tab"
               aria-selected={active}
-              onClick={() => setSubTab(t.id)}
+              onClick={() => setSubTab(g.tabs[0].id)}
               className="tap flex flex-col items-center justify-center gap-1"
               style={{
-                padding: "10px 4px", borderRadius: "var(--radius-md)", fontSize: 10.5, fontWeight: active ? 800 : 700, textAlign: "center",
-                background: active ? t.color : `color-mix(in oklch, ${t.color} 11%, var(--color-surface))`,
-                color: active ? "white" : t.color,
-                border: active ? "none" : `1px solid color-mix(in oklch, ${t.color} 22%, transparent)`,
-                boxShadow: active ? `0 3px 10px -3px color-mix(in oklch, ${t.color} 55%, transparent)` : "none",
+                position: "relative", padding: "10px 2px", borderRadius: "var(--radius-md)", fontSize: 10.5, fontWeight: active ? 800 : 700, textAlign: "center",
+                background: active ? "var(--grad-brand)" : "var(--color-surface)",
+                color: active ? "white" : "var(--color-body)",
+                border: active ? "1px solid transparent" : "1px solid color-mix(in oklch, var(--color-border) 70%, transparent)",
+                boxShadow: active ? "var(--shadow-glow-accent)" : "var(--shadow-sm)",
                 lineHeight: 1.3,
               }}
             >
-              <t.Icon size={17} />
-              {t.label}
+              <g.Icon size={18} color={active ? "white" : g.color} />
+              {g.label}
+              {badge > 0 && (
+                <span className="tabular" aria-label={`${toFa(badge)} مورد جدید`} style={{ position: "absolute", top: 4, left: 4, minWidth: 17, height: 17, borderRadius: 9, background: "var(--color-danger)", color: "white", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{toFa(badge)}</span>
+              )}
             </button>
           );
         })}
       </div>
+      {activeGroup.tabs.length > 1 && (
+        <div className="flex gap-1.5 mb-4" style={{ flexWrap: "wrap" }} role="tablist" aria-label={activeGroup.label}>
+          {activeGroup.tabs.map((t) => {
+            const active = t.id === activeTab.id;
+            return (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setSubTab(t.id)}
+                className="tap flex items-center gap-1"
+                style={{
+                  padding: "7px 12px", borderRadius: "var(--radius-full)", fontSize: 12, fontWeight: active ? 800 : 600,
+                  background: active ? "color-mix(in oklch, var(--color-accent-500) 13%, var(--color-surface))" : "var(--color-surface)",
+                  color: active ? "var(--color-accent-700)" : "var(--color-body)",
+                  border: `1px solid ${active ? "color-mix(in oklch, var(--color-accent-500) 45%, transparent)" : "var(--color-border)"}`,
+                }}
+              >
+                <t.Icon size={13} />
+                {t.label}
+                {t.badge > 0 && <span className="tabular" style={{ color: "var(--color-danger)", fontWeight: 800 }}>({toFa(t.badge)})</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {activeGroup.tabs.length === 1 && <div className="mb-3" />}
 
+      {subTab === "dashboard" && currentStylist && <MyStatementCard stylist={currentStylist} bookings={bookings} notify={notify} />}
+      {subTab === "dashboard" && currentStylist && <MyPricesCard stylist={currentStylist} services={services} notify={notify} />}
+      {subTab === "dashboard" && currentStylist && (
+        <TargetsCard bookings={bookings} stylists={stylists} isManager={false} currentStylistId={currentStylistId} notify={notify} />
+      )}
       {subTab === "dashboard" && (
         <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} pets={pets} setPets={setPets} notify={notify} automation={automation} />
       )}
       {subTab === "quotes" && petSalon && (
         <QuotesTab services={services} stylists={stylists} pets={pets} automation={automation} notify={notify} onPendingChange={setQuotesPending} />
       )}
-      {subTab === "marketing" && <MarketingTab isManager={!currentStylist} notify={notify} />}
+      {subTab === "marketing" && <MarketingTab isManager={!currentStylist} notify={notify} services={services} showPackages={!petSalon} />}
       {subTab === "shop" && (
-        <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} />
+        <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} stylists={stylists} />
       )}
       {subTab === "pets" && petSalon && (
         <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} isManager={!currentStylist} />
       )}
-      {subTab === "accounting" && !currentStylist && <RevenueExtrasCard />}
+      {subTab === "growth" && !currentStylist && <GrowthTab services={services} bookings={bookings} notify={notify} />}
+      {subTab === "events" && !petSalon && <EventsTab notify={notify} isManager={!currentStylist} />}
+      {subTab === "accounting" && !currentStylist && <ContractsCard stylists={stylists} bookings={bookings} services={services} notify={notify} />}
+      {subTab === "accounting" && !currentStylist && <TargetsCard bookings={bookings} stylists={stylists} isManager notify={notify} />}
       {subTab === "accounting" && !currentStylist && <CommissionCard bookings={bookings} stylists={stylists} />}
       {subTab === "accounting" && !currentStylist && (
         <AccountingTab
@@ -187,6 +241,21 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           notify={notify}
         />
       )}
+      {subTab === "automation" && !currentStylist && (
+        <>
+          <AutomationCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />
+          {SUPABASE_ENABLED && <DepositCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
+          <GrowthAutomations notify={notify} />
+        </>
+      )}
+      {subTab === "settings" && (
+        <>
+          {!currentStylist && <ProfileSettingsCard notify={notify} />}
+          {!currentStylist && <PlanCard notify={notify} />}
+          <SecurityCard notify={notify} isManager={!currentStylist} />
+          {!currentStylist && SUPABASE_ENABLED && <AppHealthCard />}
+        </>
+      )}
       {subTab === "sms" && !currentStylist && (
         <SmsTab
           bookings={bookings}
@@ -207,7 +276,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           onNavigateToSmsSegment={(segment) => { setPendingSmsSegment(segment); setSubTab("sms"); }}
         />
       )}
-      {subTab === "ai" && !currentStylist && <AIAnalysisTab bookings={bookings} />}
+      {subTab === "bi" && !currentStylist && <RevenueForecastCard bookings={bookings} />}
       {subTab === "bi" && !currentStylist && (
         <BITab
           bookings={bookings}
@@ -224,6 +293,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           notify={notify}
         />
       )}
+      </>)}
     </div>
   );
 }
@@ -476,16 +546,21 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
   const [giftCode, setGiftCode] = useState("");
   const [completePkgs, setCompletePkgs] = useState([]);
   const [reportFor, setReportFor] = useState(null); // v2.49 visit report modal
+  const [pkgChoice, setPkgChoice] = useState(null); // v2.52 {booking, packages} in a men's / women's salon
+  const [recordFor, setRecordFor] = useState(null); // v2.52 client record
+  const [recTick, setRecTick] = useState(0);
   async function handleComplete(b) {
     setMenuFor(null);
+    // v2.49 / v2.52: a prepaid package of this customer for this service
+    const today = new Date().toISOString().slice(0, 10);
+    const usable = (await fetchPurchases(b.customer_phone)).filter((p) => p.service_id === b.service_id && p.sessions_left > 0
+      && p.expires_at >= today && (!p.status || p.status === "active"));
     if (petSalonDash) {
-      // v2.49: a prepaid package of this customer for this service
-      const today = new Date().toISOString().slice(0, 10);
-      const list = await fetchPurchases(b.customer_phone);
-      setCompletePkgs(list.filter((p) => p.service_id === b.service_id && p.sessions_left > 0 && p.expires_at >= today));
+      setCompletePkgs(usable);
       setCompleteFor(b);
       return;
     }
+    if (usable.length) { setPkgChoice({ booking: b, packages: usable }); return; }
     finishComplete(b, {});
   }
   async function completeWithPackage(b, pkg, newCharges) {
@@ -510,6 +585,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
   const dayBookings = bookings
     .filter((b) => b.date === viewDateKey)
     .sort((a, b) => a.start_min - b.start_min);
+  const records = useClientRecords(dayBookings, !petSalonDash, recTick); // v2.52
   const todays = dayBookings.filter(
     (b) => (genderFilter === "all" || b.customer_gender === genderFilter) && (staffFilter === "all" || b.staff_id === staffFilter)
   );
@@ -756,6 +832,7 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                         </span>
                       )}
                       {petSalonDash && <PetCareBadges booking={b} pet={petOf(b)} />}
+                      {!petSalonDash && <ClientRecordBadges record={records.get(b.customer_phone)} booking={b} />}
                       {b.customer_response === "confirmed" && ["confirmed", "rescheduled", "pending"].includes(b.status) && (
                         <span className="badge" style={{ background: "color-mix(in oklch, var(--color-success) 15%, transparent)", color: "var(--color-success)" }}>
                           <CheckCircle2 size={12} /> مشتری حضور را تایید کرد
@@ -765,10 +842,16 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                     {petSalonDash && b.pet_name && isToday && ["pending", "confirmed", "rescheduled"].includes(b.status) && (
                       <GroomStageBar booking={b} notify={notify} onChanged={(stage) => updateBooking(b.id, { groom_stage: stage })} />
                     )}
-                    {petSalonDash && b.pet_name && (b.status === "completed" || (isToday && ["confirmed", "rescheduled", "pending"].includes(b.status))) && (
+                    {(petSalonDash ? !!b.pet_name : true) && (b.status === "completed" || (isToday && ["confirmed", "rescheduled", "pending"].includes(b.status))) && (
                       <button type="button" className="tap flex items-center gap-1" onClick={() => setReportFor(b)}
-                        style={{ fontSize: 12, fontWeight: 700, color: "var(--color-pet-500)", marginTop: 6, minHeight: 32 }}>
-                        <Camera size={13} /> عکس قبل و بعد و کارت سلامت
+                        style={{ fontSize: 12, fontWeight: 700, color: petSalonDash ? "var(--color-pet-500)" : "var(--color-accent-500)", marginTop: 6, minHeight: 32 }}>
+                        <Camera size={13} /> {petSalonDash ? "عکس قبل و بعد و کارت سلامت" : "عکس قبل و بعد و گزارش برای مشتری"}
+                      </button>
+                    )}
+                    {!petSalonDash && /^09\d{9}$/.test(b.customer_phone || "") && (
+                      <button type="button" className="tap flex items-center gap-1" onClick={() => setRecordFor(b)}
+                        style={{ fontSize: 12, fontWeight: 700, color: "var(--color-info)", marginTop: 2, minHeight: 32 }}>
+                        <ClipboardList size={13} /> پروندهٔ مشتری{records.get(b.customer_phone) ? "" : " (خالی)"}
                       </button>
                     )}
                     {b.status === "completed" && (b.final_price || 0) > 0 && b.gift_card_amount == null && (
@@ -868,6 +951,14 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
             else finishComplete(b, extra);
           }}
         />
+      )}
+      {pkgChoice && (
+        <PackageChoiceModal booking={pkgChoice.booking} packages={pkgChoice.packages} onClose={() => setPkgChoice(null)}
+          onConfirm={(pkg) => { const b = pkgChoice.booking; setPkgChoice(null); if (pkg) completeWithPackage(b, pkg, []); else finishComplete(b, {}); }} />
+      )}
+      {recordFor && (
+        <ClientRecordModal phone={recordFor.customer_phone} name={recordFor.customer_name} record={records.get(recordFor.customer_phone)} notify={notify}
+          onClose={() => setRecordFor(null)} onSaved={() => setRecTick((t) => t + 1)} />
       )}
       {giftFor && (
         <Modal title="پرداخت با کارت هدیه" onClose={() => setGiftFor(null)}>

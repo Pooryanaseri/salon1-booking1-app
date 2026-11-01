@@ -17,10 +17,16 @@ export const SHOP_CATEGORIES = {
     ["grooming", "بهداشتی و آرایشی"], ["accessories", "قلاده و لوازم"], ["health", "مکمل و مراقبت"],
   ],
   beauty: [
-    ["hair", "مراقبت مو"], ["skin", "مراقبت پوست"], ["makeup", "آرایشی"],
-    ["nails", "ناخن"], ["tools", "لوازم"], ["other", "سایر"],
+    ["hair", "مراقبت مو"], ["styling", "حالت‌دهنده مو"], ["beard", "ریش و اصلاح آقایان"],
+    ["skin", "مراقبت پوست"], ["makeup", "آرایشی"], ["nails", "ناخن"],
+    ["fragrance", "عطر و بادی‌اسپلش"], ["tools", "ابزار و لوازم"], ["other", "سایر"],
   ],
 };
+/* v2.52: who a beauty product is for — the storefront filters by it */
+export const PRODUCT_AUDIENCE = [["all", "همه"], ["women", "بانوان"], ["men", "آقایان"]];
+export function audienceLabel(a) {
+  return (PRODUCT_AUDIENCE.find(([k]) => k === a) || PRODUCT_AUDIENCE[0])[1];
+}
 export function shopCategories() {
   return SHOP_CATEGORIES[isPetSalon() ? "pet" : "beauty"];
 }
@@ -100,16 +106,42 @@ function demoProducts() {
         ["توپ جویدنی", "toys", 95000, 0, ""],
       ]
     : [
-        ["شامپو بدون سولفات", "hair", 420000, 10, "مناسب موهای رنگ‌شده"],
-        ["ماسک موی کراتینه", "hair", 560000, 6, ""],
-        ["کرم آبرسان", "skin", 380000, 8, ""],
-        ["لاک ناخن", "nails", 120000, 25, ""],
-        ["برس مو حرفه‌ای", "tools", 290000, 4, ""],
+        // [name, category, price, stock, description, audience, cost, variant_group, variant_label]
+        ["شامپو بدون سولفات ۲۵۰ میل", "hair", 420000, 10, "مناسب موهای رنگ‌شده — همان شامپوی سالن", "women", 260000, "شامپو بدون سولفات", "۲۵۰ میل"],
+        ["شامپو بدون سولفات ۵۰۰ میل", "hair", 690000, 6, "مناسب موهای رنگ‌شده — همان شامپوی سالن", "women", 430000, "شامپو بدون سولفات", "۵۰۰ میل"],
+        ["ماسک موی کراتینه", "hair", 560000, 6, "بعد از کراتین و رنگ", "women", 340000, "", ""],
+        ["سرم ضد وز", "hair", 480000, 2, "", "women", 290000, "", ""],
+        ["واکس حالت‌دهنده مات", "styling", 350000, 12, "حالت ماندگار بدون براقی", "men", 190000, "", ""],
+        ["روغن ریش آرگان", "beard", 390000, 8, "نرم‌کننده و خوشبوکننده ریش", "men", 210000, "", ""],
+        ["افترشیو آرام‌بخش", "beard", 310000, 0, "", "men", 170000, "", ""],
+        ["کرم آبرسان صورت", "skin", 380000, 8, "", "all", 230000, "", ""],
+        ["لاک ناخن ماندگار", "nails", 120000, 25, "", "women", 60000, "", ""],
+        ["برس گرد حرفه‌ای", "tools", 290000, 4, "", "all", 150000, "", ""],
       ];
-  demo.products = rows.map(([name, category, price, stock, description], i) => ({
+  demo.products = rows.map(([name, category, price, stock, description, audience = "all", cost = null, variant_group = "", variant_label = ""], i) => ({
     id: `demo-p-${i + 1}`, name, category, price, stock, description, active: true, photo_path: null, sort_order: i,
+    audience, cost_price: cost, variant_group, variant_label,
   }));
+  seedDemoOrders();
   return demo.products;
+}
+/* a few past orders so BI and accounting have shop numbers in the demo */
+function seedDemoOrders() {
+  if (demo.orders.length) return;
+  const list = demo.products;
+  const spec = [[1, [[0, 1], [2, 1]], "09121234567"], [3, [[4, 2]], "09351112233"], [6, [[5, 1], [6, 1]], "09129998877"],
+    [9, [[1, 1]], "09123334455"], [13, [[7, 2], [8, 1]], "09125556677"], [18, [[3, 1]], "09121234567"]];
+  for (const [ago, lines, phone] of spec) {
+    const items = lines.filter(([i]) => list[i]).map(([i, qty]) => ({ id: demoId("demo-i"), name: list[i].name, unit_price: list[i].price, qty, product_id: list[i].id }));
+    if (!items.length) continue;
+    const subtotal = items.reduce((t, i) => t + i.unit_price * i.qty, 0);
+    demo.orders.push({
+      id: demoId("demo-o"), code: String(100000 + Math.floor(Math.random() * 900000)), customer_name: "مشتری", customer_phone: phone,
+      delivery: "pickup", address: "", postal_code: "", customer_note: "", subtotal, shipping_fee: 0, total: subtotal, coupon_discount: 0,
+      payment_method: "cash", status: "delivered", paid_at: null, refund_needed: false, staff_note: "", cancel_reason: "",
+      created_at: new Date(Date.now() - ago * 86400000).toISOString(), order_items: items,
+    });
+  }
 }
 function demoShopView() {
   const s = demo.settings;
@@ -117,7 +149,7 @@ function demoShopView() {
     enabled: s.enabled, pickup: s.pickup_enabled || !s.shipping_enabled, pickup_address: s.pickup_address,
     shipping: s.shipping_enabled, shipping_fee: s.shipping_fee, free_shipping_over: s.free_shipping_over,
     shipping_area: s.shipping_area, note: s.note, online: false, cash: true,
-    products: s.enabled ? demoProducts().filter((p) => p.active).map((p) => ({ ...p })) : [],
+    products: s.enabled ? demoProducts().filter((p) => p.active).map(({ cost_price, ...p }) => ({ ...p })) : [], // eslint-disable-line no-unused-vars
     demo: true,
   };
 }
@@ -244,7 +276,10 @@ export async function fetchProducts() {
   if (!SUPABASE_ENABLED) return demoProducts().map((p) => ({ ...p }));
   const { data, error } = await supabase.from("products").select("*").order("sort_order").order("created_at");
   if (error) { logFail("products", error); return []; }
-  return data || [];
+  // v2.52: purchase costs (managers only — RLS returns nothing to others)
+  const { data: costs } = await supabase.from("product_costs").select("product_id, cost_price");
+  const byId = new Map((costs || []).map((c) => [c.product_id, Number(c.cost_price)]));
+  return (data || []).map((p) => ({ ...p, cost_price: byId.has(p.id) ? byId.get(p.id) : null }));
 }
 /** Insert (no id) or update a product → {ok, product} */
 export async function saveProduct(p) {
@@ -254,17 +289,20 @@ export async function saveProduct(p) {
     active: p.active !== false, photo_path: p.photo_path || null, sort_order: Number(p.sort_order) || 0,
     // v2.51 sizes — sent only when used, so an older database still saves products
     ...(p.variant_group || p.variant_label ? { variant_group: (p.variant_group || "").trim().slice(0, 80), variant_label: (p.variant_label || "").trim().slice(0, 40) } : {}),
+    // v2.52 men / women — sent only when set (or being reset), like the sizes above
+    ...((p.audience && p.audience !== "all") || (p.prevAudience && p.prevAudience !== "all") ? { audience: ["men", "women"].includes(p.audience) ? p.audience : "all" } : {}),
   };
+  const cost = p.cost_price === "" || p.cost_price == null ? null : Math.max(0, Math.round(Number(p.cost_price) || 0));
   if (!row.name) return { ok: false, error: "نام کالا لازم است" };
   if (row.price < 1000) return { ok: false, error: "قیمت را درست وارد کنید" };
   if (!SUPABASE_ENABLED) {
     const list = demoProducts();
     if (p.id) {
       const cur = list.find((x) => x.id === p.id);
-      Object.assign(cur, row, p.demoPhoto ? { demoPhoto: p.demoPhoto } : {});
+      Object.assign(cur, row, { cost_price: cost }, p.demoPhoto ? { demoPhoto: p.demoPhoto } : {});
       return { ok: true, product: { ...cur } };
     }
-    const created = { id: demoId("demo-p"), ...row, demoPhoto: p.demoPhoto };
+    const created = { id: demoId("demo-p"), ...row, cost_price: cost, demoPhoto: p.demoPhoto };
     list.push(created);
     return { ok: true, product: { ...created } };
   }
@@ -273,7 +311,64 @@ export async function saveProduct(p) {
     : supabase.from("products").insert({ ...row, salon_id: getCurrentSalonId() }).select().single();
   const { data, error } = await q;
   if (error) { logFail("products.save", error); return { ok: false, error: "ذخیره ناموفق بود" }; }
-  return { ok: true, product: data };
+  if (cost != null) {
+    const { error: e2 } = await supabase.from("product_costs").upsert({ product_id: data.id, salon_id: getCurrentSalonId(), cost_price: cost, updated_at: new Date().toISOString() });
+    if (e2) logFail("product_costs.save", e2);
+  } else if (p.prevCost != null) {
+    await supabase.from("product_costs").delete().eq("product_id", data.id);
+  }
+  return { ok: true, product: { ...data, cost_price: cost } };
+}
+
+/* ------------------------------------------------------- analytics ---- */
+const ACTIVE_ORDER = ["pending", "confirmed", "ready", "shipped", "delivered"];
+/** Pure: shop numbers from orders (demo, and the unit tests). from/to are Date. */
+export function computeShopAnalytics(orders, products, bookings, from, to) {
+  const inRange = (d) => d >= from && d <= to;
+  const o = orders.filter((x) => ACTIVE_ORDER.includes(x.status) && inRange(new Date(x.created_at)));
+  const costOf = new Map(products.map((p) => [p.id, p.cost_price]));
+  const catOf = new Map(products.map((p) => [p.id, p.category]));
+  const lines = o.flatMap((x) => x.order_items || []);
+  const top = new Map(); const cats = new Map(); const daily = new Map();
+  let cogs = 0, withCost = 0, items = 0, itemsRevenue = 0;
+  for (const l of lines) {
+    const c = costOf.get(l.product_id);
+    const rev = l.unit_price * l.qty;
+    items += l.qty; itemsRevenue += rev;
+    if (c != null) { cogs += c * l.qty; withCost += rev; }
+    const t = top.get(l.name) || { name: l.name, qty: 0, revenue: 0, profit: 0, costKnown: true };
+    t.qty += l.qty; t.revenue += rev; if (c != null) t.profit += rev - c * l.qty; else t.costKnown = false;
+    top.set(l.name, t);
+    const cat = catOf.get(l.product_id) || "other";
+    cats.set(cat, (cats.get(cat) || 0) + rev);
+  }
+  for (const x of o) {
+    const d = new Date(x.created_at); const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    daily.set(k, (daily.get(k) || 0) + x.subtotal - (x.coupon_discount || 0));
+  }
+  const buyers = new Set(o.map((x) => x.customer_phone));
+  const visits = new Set(bookings.filter((b) => b.status === "completed" && b.date && (() => {
+    const [y, m, d] = String(b.date).split("-").map(Number); return inRange(new Date(y, m - 1, d, 12));
+  })()).map((b) => b.customer_phone));
+  return {
+    ok: true, orders: o.length, revenue: o.reduce((t, x) => t + x.subtotal - (x.coupon_discount || 0), 0),
+    shipping: o.reduce((t, x) => t + (x.shipping_fee || 0), 0), discount: o.reduce((t, x) => t + (x.coupon_discount || 0), 0),
+    items, items_revenue: itemsRevenue, buyers: buyers.size, cogs, revenue_with_cost: withCost,
+    visit_customers: visits.size, buyers_with_visit: [...buyers].filter((ph) => visits.has(ph)).length,
+    top_products: [...top.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 8).map(({ costKnown, ...t }) => ({ ...t, profit: costKnown ? t.profit : null })),
+    by_category: [...cats.entries()].map(([category, revenue]) => ({ category, revenue })).sort((a, b) => b.revenue - a.revenue),
+    daily: [...daily.entries()].sort().map(([date, revenue]) => ({ date, revenue })),
+  };
+}
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** Shop numbers for BI / accounting over the last `days` days (managers). */
+export async function fetchShopAnalytics(days, bookings = []) {
+  const to = new Date(); to.setHours(23, 59, 59, 999);
+  const from = new Date(); from.setHours(0, 0, 0, 0); from.setDate(from.getDate() - (days - 1));
+  if (!SUPABASE_ENABLED) return { ...computeShopAnalytics(demo.orders, demoProducts(), bookings, from, to), demo: true };
+  const { data, error } = await supabase.rpc("shop_analytics", { p_from: isoDay(from), p_to: isoDay(to) });
+  if (error) { if (!/shop_analytics|function/i.test(error.message || "")) logFail("shop_analytics", error); return null; }
+  return data;
 }
 export async function deleteProduct(id) {
   if (!SUPABASE_ENABLED) { demo.products = demoProducts().filter((x) => x.id !== id); return { ok: true }; }
@@ -346,4 +441,10 @@ export function groupVariants(products) {
     byKey.get(key).items.push(p);
   }
   return out;
+}
+
+/** v2.55 demo: the panel's "seller" select on an order. */
+export function demoSetOrderSeller(id, stylistId) {
+  const o = demo.orders.find((x) => x.id === id);
+  if (o) o.sold_by = stylistId;
 }

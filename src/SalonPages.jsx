@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Loader2, MapPin, Phone, Instagram, Star, Clock, Gift, CalendarPlus, ShoppingBag, CheckCircle2, CreditCard } from "lucide-react";
+import { Loader2, MapPin, Phone, Instagram, Star, Clock, Gift, CalendarPlus, ShoppingBag, CheckCircle2, CreditCard, Sparkles } from "lucide-react";
+import { createEventRequest, getEventQuote, acceptEventQuote, startEventPayment, EVENT_KINDS, eventKindLabel } from "./lib/growth";
 import { fetchPublicProfile, galleryUrl, buyGiftCardOnline, startPurchasePayment, giftCardBalance } from "./lib/business";
 import { fetchDepositTerms } from "./lib/api";
 import { getSalonName } from "./lib/tenant";
@@ -11,7 +12,7 @@ import { formatToman, toFa, normalizeMobile, digitsOnly, isoToJalaliLabel } from
    ============================================================ */
 const C = { bg: "#f6f2ec", card: "#fff", text: "#2b2420", muted: "#7a6a5e", brand: "#c2703a", line: "#eadfd4" };
 const FONT = "'Vazirmatn Variable', Vazirmatn, system-ui, sans-serif";
-const DISPLAY = "'Noto Kufi Arabic Variable', 'Vazirmatn Variable', system-ui, sans-serif";
+const DISPLAY = "'Estedad Variable', 'Vazirmatn Variable', system-ui, sans-serif";
 const wrap = { minHeight: "100vh", background: C.bg, color: C.text, fontFamily: FONT, padding: "20px 16px 48px" };
 const card = { maxWidth: 520, margin: "0 auto 14px", background: C.card, borderRadius: 18, padding: 18, boxShadow: "0 6px 24px -14px rgba(60,40,20,.35)" };
 const btn = { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "12px 14px", borderRadius: 12, background: `linear-gradient(135deg, #e9a24b, ${C.brand} 55%, #b8462f)`, color: "white", fontWeight: 800, textDecoration: "none", border: 0, fontFamily: FONT, fontSize: 14.5, cursor: "pointer", width: "100%", boxSizing: "border-box" };
@@ -198,6 +199,152 @@ export function GiftCardPage() {
         )}
       </div>
       <div style={{ maxWidth: 520, margin: "0 auto" }}><a href={`/${slug()}`} style={ghost}><CalendarPlus size={16} /> رزرو نوبت</a></div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------- v2.53 events (request) ---- */
+export function EventRequestPage() {
+  const [f, setF] = useState({ kind: "bride", date: "", guests: "1", name: "", phone: "", services: "", note: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+  useEffect(() => { setMeta(`رزرو مراسم در ${getSalonName()}`, `میکاپ و آرایش عروس، نامزدی و مهمانی در ${getSalonName()} — درخواست بدهید، پیش‌فاکتور می‌گیرید.`); }, []);
+  const set = (k) => (v) => setF((x) => ({ ...x, [k]: v }));
+  const minDate = (() => { const d = new Date(Date.now() + 86400000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })();
+  const ok = f.name.trim() && /^09\d{9}$/.test(f.phone) && f.date >= minDate;
+  async function send() {
+    setBusy(true); setErr("");
+    const r = await createEventRequest(f);
+    setBusy(false);
+    if (!r?.ok) { setErr(r?.error || "ثبت ناموفق بود"); return; }
+    setDone(true);
+  }
+  const input = { width: "100%", padding: "11px 12px", fontSize: 15, marginTop: 4, borderRadius: 12, border: `1.5px solid ${C.line}`, fontFamily: FONT, boxSizing: "border-box", background: "white" };
+  const label = { fontSize: 12.5, color: C.muted, display: "block", marginTop: 10 };
+  return (
+    <div dir="rtl" style={wrap}>
+      <div style={{ ...card, background: `linear-gradient(135deg, #e9a24b, ${C.brand} 55%, #b8462f)`, color: "white", textAlign: "center" }}>
+        <Sparkles size={32} style={{ margin: "0 auto" }} />
+        <h1 style={{ fontFamily: DISPLAY, fontSize: 22, margin: "8px 0 0" }}>رزرو مراسم در {getSalonName()}</h1>
+        <p style={{ fontSize: 13.5, opacity: 0.92, marginTop: 6, lineHeight: 1.9 }}>عروس، داماد، نامزدی و مهمانی — درخواست بدهید، پیش‌فاکتور و شرایط را پیامک می‌گیرید.</p>
+      </div>
+      <div style={card}>
+        {done ? (
+          <div style={{ textAlign: "center" }}>
+            <CheckCircle2 size={36} color="#3a8f5c" style={{ margin: "0 auto 8px" }} />
+            <p style={{ fontWeight: 800, fontSize: 16 }}>درخواست شما ثبت شد</p>
+            <p style={{ color: C.muted, fontSize: 13.5, lineHeight: 1.9, marginTop: 6 }}>سالن به‌زودی پیش‌فاکتور و شرایط را برایتان پیامک می‌کند. با تایید و پرداخت بیعانه، تاریخ برایتان رزرو می‌شود.</p>
+            <a href={`/${slug()}`} style={{ ...ghost, marginTop: 14 }}><CalendarPlus size={16} /> بازگشت به صفحهٔ سالن</a>
+          </div>
+        ) : (
+          <>
+            <label style={{ ...label, marginTop: 0 }}>نوع مراسم
+              <select value={f.kind} onChange={(e) => set("kind")(e.target.value)} style={input}>
+                {EVENT_KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <label style={{ ...label, flex: 2 }}>تاریخ مراسم
+                <input type="date" dir="ltr" min={minDate} value={f.date} onChange={(e) => set("date")(e.target.value)} style={input} />
+              </label>
+              <label style={{ ...label, flex: 1 }}>تعداد نفرات
+                <input inputMode="numeric" dir="ltr" value={toFa(f.guests)} onChange={(e) => set("guests")(digitsOnly(e.target.value, 2) || "1")} style={input} />
+              </label>
+            </div>
+            <label style={label}>نام
+              <input value={f.name} maxLength={80} onChange={(e) => set("name")(e.target.value)} style={input} />
+            </label>
+            <label style={label}>موبایل
+              <input dir="ltr" type="tel" inputMode="tel" value={f.phone} onChange={(e) => set("phone")(normalizeMobile(e.target.value))} placeholder="09xxxxxxxxx" style={input} />
+            </label>
+            <label style={label}>خدمات مورد نظر (اختیاری)
+              <input value={f.services} maxLength={400} placeholder="مثلاً میکاپ و شینیون عروس + ۲ همراه" onChange={(e) => set("services")(e.target.value)} style={input} />
+            </label>
+            <label style={label}>توضیحات (اختیاری)
+              <textarea rows={2} maxLength={600} value={f.note} placeholder="ساعت آماده بودن، آتلیه، …" onChange={(e) => set("note")(e.target.value)} style={{ ...input, resize: "vertical" }} />
+            </label>
+            {err && <p role="alert" style={{ color: "#b4483a", fontSize: 13, marginTop: 8 }}>{err}</p>}
+            <button disabled={!ok || busy} onClick={send} style={{ ...btn, marginTop: 14, opacity: !ok || busy ? 0.6 : 1 }}>
+              {busy && <Loader2 size={16} />} ارسال درخواست
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------- v2.53 events (quote) ---- */
+export function EventQuotePage({ token }) {
+  const [q, setQ] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [agree, setAgree] = useState(false);
+  useEffect(() => { getEventQuote(token).then((r) => setQ(r?.ok ? r : { invalid: true })); }, [token]);
+  if (!q) return <div dir="rtl" style={{ ...wrap, display: "flex", alignItems: "center", justifyContent: "center" }}><Loader2 size={24} color={C.brand} /></div>;
+  if (q.invalid) return <div dir="rtl" style={wrap}><div style={{ ...card, textAlign: "center" }}>این پیش‌فاکتور پیدا نشد یا دیگر معتبر نیست.</div></div>;
+  const left = Math.max(0, (q.quote_total || 0) - (q.paid || 0));
+  const depositLeft = Math.max(0, (q.deposit_amount || 0) - (q.paid || 0));
+  async function accept() {
+    setBusy(true); setErr("");
+    const r = await acceptEventQuote(token);
+    if (!r?.ok) { setBusy(false); setErr(r?.error || "تایید ناموفق بود"); return; }
+    if (depositLeft > 0 && q.online) {
+      const p = await startEventPayment(token);
+      if (p?.ok && p.url) { window.location.assign(p.url); return; }
+      setErr(p?.error || "اتصال به درگاه پرداخت ناموفق بود");
+    }
+    setBusy(false);
+    setQ((x) => ({ ...x, status: "accepted" }));
+  }
+  const row = (l, v, bold) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "7px 0", borderTop: `1px dashed ${C.line}`, fontSize: 14, fontWeight: bold ? 800 : 400 }}>
+      <span>{l}</span><span>{v}</span>
+    </div>
+  );
+  return (
+    <div dir="rtl" style={wrap}>
+      <div style={{ ...card, background: `linear-gradient(135deg, #e9a24b, ${C.brand} 55%, #b8462f)`, color: "white" }}>
+        <p style={{ fontSize: 12.5, opacity: 0.9 }}>{q.salon_name}</p>
+        <h1 style={{ fontFamily: DISPLAY, fontSize: 21, margin: "4px 0 0" }}>پیش‌فاکتور {eventKindLabel(q.kind)} — {q.customer_name}</h1>
+        <p style={{ fontSize: 13.5, opacity: 0.92, marginTop: 4 }}>{isoToJalaliLabel(String(q.event_date).slice(0, 10))} · {toFa(q.guests)} نفر</p>
+      </div>
+      <div style={card}>
+        {q.services && <p style={{ fontSize: 14, lineHeight: 1.9, marginBottom: 6 }}>{q.services}</p>}
+        {row("مبلغ کل", formatToman(q.quote_total || 0), true)}
+        {q.deposit_amount > 0 && row("بیعانه برای قطعی شدن تاریخ", formatToman(q.deposit_amount))}
+        {q.paid > 0 && row("پرداخت‌شده", formatToman(q.paid))}
+        {q.paid > 0 && row("مانده", formatToman(left), true)}
+        {q.quote_note && <p style={{ fontSize: 13.5, lineHeight: 1.9, marginTop: 10, background: "#faf6f1", borderRadius: 12, padding: "10px 12px" }}>{q.quote_note}</p>}
+        {q.quote_terms && (
+          <div style={{ marginTop: 12 }}>
+            <p style={{ fontWeight: 800, fontSize: 14 }}>شرایط و قوانین</p>
+            <p style={{ fontSize: 13, lineHeight: 2, color: C.muted, whiteSpace: "pre-wrap" }}>{q.quote_terms}</p>
+          </div>
+        )}
+      </div>
+      <div style={card}>
+        {q.status === "accepted" && depositLeft === 0 ? (
+          <p style={{ display: "flex", alignItems: "center", gap: 6, color: "#3a8f5c", fontWeight: 800, fontSize: 15 }}><CheckCircle2 size={18} /> تاریخ مراسم برای شما رزرو است</p>
+        ) : q.status === "accepted" && !q.online ? (
+          <p style={{ fontSize: 14, lineHeight: 1.9 }}>پیش‌فاکتور را تایید کردید. برای قطعی شدن تاریخ، بیعانه ({formatToman(depositLeft)}) را در سالن پرداخت کنید.</p>
+        ) : (
+          <>
+            {q.quote_terms && (
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 14, fontWeight: 700, marginBottom: 10 }}>
+                <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} /> شرایط را خواندم و می‌پذیرم
+              </label>
+            )}
+            {err && <p role="alert" style={{ color: "#b4483a", fontSize: 13, marginBottom: 8 }}>{err}</p>}
+            <button disabled={busy || (q.quote_terms && !agree)} onClick={accept} style={{ ...btn, opacity: busy || (q.quote_terms && !agree) ? 0.6 : 1 }}>
+              {busy ? <Loader2 size={16} /> : <CreditCard size={16} />}
+              {depositLeft > 0 && q.online ? `تایید و پرداخت بیعانه (${formatToman(depositLeft)})` : "تایید پیش‌فاکتور"}
+            </button>
+            {depositLeft > 0 && !q.online && <p style={{ color: C.muted, fontSize: 12.5, marginTop: 8 }}>بیعانه در سالن دریافت می‌شود.</p>}
+          </>
+        )}
+      </div>
     </div>
   );
 }

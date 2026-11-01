@@ -78,3 +78,53 @@ describe("groupVariants", () => {
     expect(g[0].items.map((p) => p.id)).toEqual([1, 3]);
   });
 });
+
+/* v2.52 — shop analytics for BI and accounting */
+import { computeShopAnalytics } from "../src/lib/shop";
+import { shopKpis, shopInsight } from "../src/panel/ShopInsights";
+import { fetchClientRecords, saveClientRecord } from "../src/lib/business";
+
+describe("computeShopAnalytics", () => {
+  const products = [{ id: "p1", category: "beard", cost_price: 100 }, { id: "p2", category: "hair", cost_price: null }];
+  const day = (n) => new Date(Date.now() - n * 86400000).toISOString();
+  const orders = [
+    { status: "delivered", created_at: day(1), customer_phone: "09120000001", subtotal: 500, coupon_discount: 50, shipping_fee: 20,
+      order_items: [{ product_id: "p1", name: "روغن", unit_price: 300, qty: 1 }, { product_id: "p2", name: "سرم", unit_price: 200, qty: 1 }] },
+    { status: "cancelled", created_at: day(1), customer_phone: "09120000002", subtotal: 900, order_items: [] },
+    { status: "pending", created_at: day(40), customer_phone: "09120000003", subtotal: 900, order_items: [] },
+  ];
+  const now = new Date(); const pad = (n) => n;
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const bookings = [{ status: "completed", date: today, customer_phone: "09120000001" }, { status: "completed", date: today, customer_phone: "09120000009" }];
+  const from = new Date(Date.now() - 30 * 86400000); const to = new Date(Date.now() + 86400000);
+  const a = computeShopAnalytics(orders, products, bookings, from, to);
+  it("counts only live orders in range", () => {
+    expect(a).toMatchObject({ orders: 1, revenue: 450, shipping: 20, discount: 50, items: 2, cogs: 100, revenue_with_cost: 300 });
+  });
+  it("attach rate and categories", () => {
+    expect(a.visit_customers).toBe(2);
+    expect(a.buyers_with_visit).toBe(1);
+    expect(a.by_category.map((c) => c.category)).toEqual(["beard", "hair"]);
+    expect(a.top_products.find((p) => p.name === "سرم").profit).toBeNull();
+  });
+  it("kpis and the manager hint", () => {
+    const k = shopKpis(a, 1550);
+    expect(k.share).toBeCloseTo(450 / 2000);
+    expect(k.grossProfit).toBe(200);
+    expect(k.attachRate).toBe(0.5);
+    expect(shopInsight(k, a)).toBeNull(); // 60% of sales have a cost, margin 67%
+    expect(shopInsight({ ...k, costCoverage: 0.3 }, a)).toMatch(/قیمت خرید/);
+    expect(shopInsight({ ...k, attachRate: 0.05 }, { ...a, visit_customers: 20 })).toMatch(/گزارش نوبت/);
+    expect(shopInsight(shopKpis({ ok: true, orders: 0 }), {})).toMatch(/سفارشی ثبت نشده/);
+    expect(shopKpis(null)).toBeNull();
+  });
+});
+
+describe("client records (demo)", () => {
+  it("saves and reads back, trimming fields", async () => {
+    expect((await saveClientRecord({ phone: "123" })).ok).toBe(false);
+    expect((await saveClientRecord({ phone: "09125550000", allergies: "  هنا  ", color_formula: "6.0" })).ok).toBe(true);
+    const m = await fetchClientRecords(["09125550000", "bad"]);
+    expect(m.get("09125550000")).toMatchObject({ allergies: "هنا", color_formula: "6.0" });
+  });
+});

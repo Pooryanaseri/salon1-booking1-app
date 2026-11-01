@@ -1,11 +1,7 @@
 import { useMemo } from "react";
-import { Sparkles, TrendingUp, TrendingDown, Wand2, Target, Info } from "lucide-react";
+import { TrendingUp, TrendingDown, Target } from "lucide-react";
 import { gregorianToJalali, MONTHS_FA, toFa, formatToman, parseDateKey } from "../lib/format";
 
-/* ============================================================
-   AI Analysis tab — placeholder only. Not implemented yet;
-   this UI reserves the spot and previews what will land here.
-   ============================================================ */
 // Revenue forecast — the one piece of BI_MATURITY_SKILL's 5-step method that's
 // actually implemented (see the note rendered above it). Pure client-side
 // least-squares trend over completed months already in `bookings`; no new
@@ -62,28 +58,13 @@ export function forecastNextMonthRevenue(bookings) {
   };
 }
 
-export function AIAnalysisTab({ bookings }) {
+/** Revenue forecast card — shown at the top of «هوش تجاری». */
+export function RevenueForecastCard({ bookings }) {
   const forecast = useMemo(() => forecastNextMonthRevenue(bookings), [bookings]);
   const histMax = forecast.ready ? Math.max(...forecast.history.map((h) => h.revenue), forecast.point) : 1;
 
-  const PLANNED = [
-    { Icon: TrendingUp, title: "پیش‌بینی ساعات پرترافیک", desc: "پیشنهاد بهترین بازه‌های زمانی برای رزرو بر اساس روند نوبت‌های گذشته." },
-    { Icon: Wand2, title: "پیشنهاد قیمت‌گذاری و تخفیف", desc: "پیشنهاد خودکار تخفیف برای خدمات کم‌مشتری در ساعات خلوت." },
-    { Icon: Sparkles, title: "شناسایی مشتریان درخطر ریزش", desc: "هشدار برای مشتریانی که مدتی است نوبت جدید ثبت نکرده‌اند." },
-  ];
-
   return (
-    <div className="fade-in">
-      {/* What this widget is and why it's the one built first */}
-      <div className="card mb-4" style={{ padding: 14, background: "linear-gradient(135deg, color-mix(in oklch, var(--color-info) 7%, var(--color-surface)), var(--color-surface))" }}>
-        <p className="flex items-center gap-1.5" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-info)", marginBottom: 6 }}>
-          <Info size={13} /> بر اساس روش پنج‌گامهٔ سند بلوغ BI
-        </p>
-        <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.8 }}>
-          گزارش‌های توصیفی (حسابداری، هوش تجاری) قبلاً پایدار شده‌اند — یعنی این پروژه فراتر از سطح «کودکی/نوجوانیِ» TDWI و روی نردبان تحلیل، در سطح «تشخیصی» (drill-down) قرار داره. طبق ماتریس گارتنر، منطقی‌ترین قدم بعدی (ارزش بالا، دشواری پایین) یک پیش‌بینی روند ساده بود — نه یک مدل پیچیده — چون کاملاً از داده‌های موجود، بدون جمع‌آوری چیز جدیدی، قابل محاسبه‌ست. همین‌جا پیاده شد 👇
-        </p>
-      </div>
-
+    <div data-card="revenue-forecast">
       {/* The actual forecast */}
       <div className="card card-glass mb-4" style={{ padding: 18, background: "var(--grad-info)" }}>
         <div style={{ position: "absolute", top: -30, left: -20, width: 130, height: 130, borderRadius: "50%", background: "oklch(100% 0 0 / 0.10)", pointerEvents: "none" }} />
@@ -91,15 +72,15 @@ export function AIAnalysisTab({ bookings }) {
           <div style={{ width: 30, height: 30, borderRadius: "var(--radius-md)", background: "oklch(100% 0 0 / 0.20)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <Target size={16} />
           </div>
-          <span style={{ fontSize: 12.5, fontWeight: 700, opacity: 0.92 }}>پیش‌بینی درآمد</span>
+          <span style={{ fontSize: 12.5, fontWeight: 700, opacity: 0.92 }}>پیش‌بینی درآمد ماه بعد</span>
         </div>
 
         {!forecast.ready ? (
           <div style={{ position: "relative", marginTop: 12 }}>
             <p style={{ fontSize: 13, lineHeight: 1.8, opacity: 0.95 }}>
               {forecast.reason === "no-data"
-                ? "هنوز نوبت تکمیل‌شده‌ای ثبت نشده — به محض داشتن چند نوبت واقعی، پیش‌بینی فعال می‌شود."
-                : `فعلاً ${toFa(forecast.monthsSoFar || 0)} ماه کامل داده هست؛ برای پیش‌بینی معتبر حداقل به ۳ ماه کامل نیاز است. طبق گام ۱ سند (شمارش داده‌ها) — هنوز اول مسیریم.`}
+                ? "هنوز نوبت تکمیل‌شده‌ای ثبت نشده — با چند نوبت واقعی، پیش‌بینی درآمد ماه بعد فعال می‌شود."
+                : `فعلاً ${toFa(forecast.monthsSoFar || 0)} ماه کامل داده هست؛ برای پیش‌بینی معتبر دست‌کم ۳ ماه کامل لازم است.`}
             </p>
           </div>
         ) : (
@@ -131,20 +112,6 @@ export function AIAnalysisTab({ bookings }) {
         )}
       </div>
 
-      <p className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>بقیهٔ قابلیت‌های برنامه‌ریزی‌شده</p>
-      <div className="flex flex-col gap-2">
-        {PLANNED.map((item, i) => (
-          <div key={i} className="card" style={{ padding: 14, display: "flex", alignItems: "center", gap: 12, opacity: 0.6 }}>
-            <div style={{ width: 38, height: 38, borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <item.Icon size={17} color="var(--color-muted)" />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--color-heading)" }}>{item.title}</div>
-              <div className="muted" style={{ fontSize: 11.5, marginTop: 2, lineHeight: 1.6 }}>{item.desc}</div>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

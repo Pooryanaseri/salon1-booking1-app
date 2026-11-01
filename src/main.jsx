@@ -1,18 +1,23 @@
 // Fonts ship with the app (no third-party CDN, which is often unreachable
-// from Iran): Vazirmatn for text, Noto Kufi Arabic for headings.
+// from Iran): Vazirmatn for text, Estedad for headings and numbers.
 import "@fontsource-variable/vazirmatn";
-import "@fontsource-variable/noto-kufi-arabic";
+import "@fontsource-variable/estedad";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
-import FeedbackPage from "./FeedbackPage.jsx";
-import ReconciliationPage from "./ReconciliationPage.jsx";
-import BookingRecoveryPage from "./BookingRecoveryPage.jsx";
-import AttendancePage from "./AttendancePage.jsx";
-import PaymentCallbackPage from "./PaymentCallbackPage.jsx";
-import VisitReportPage from "./VisitReportPage";
-import { SalonProfilePage, GiftCardPage } from "./SalonPages";
-import AdminPage from "./AdminPage.jsx";
+// One-off pages (links in SMS, admin) are loaded only when opened.
+const FeedbackPage = React.lazy(() => import("./FeedbackPage.jsx"));
+const ReconciliationPage = React.lazy(() => import("./ReconciliationPage.jsx"));
+const BookingRecoveryPage = React.lazy(() => import("./BookingRecoveryPage.jsx"));
+const AttendancePage = React.lazy(() => import("./AttendancePage.jsx"));
+const PaymentCallbackPage = React.lazy(() => import("./PaymentCallbackPage.jsx"));
+const VisitReportPage = React.lazy(() => import("./VisitReportPage"));
+const AdminPage = React.lazy(() => import("./AdminPage.jsx"));
+const salonPages = () => import("./SalonPages");
+const SalonProfilePage = React.lazy(() => salonPages().then((m) => ({ default: m.SalonProfilePage })));
+const GiftCardPage = React.lazy(() => salonPages().then((m) => ({ default: m.GiftCardPage })));
+const EventRequestPage = React.lazy(() => salonPages().then((m) => ({ default: m.EventRequestPage })));
+const EventQuotePage = React.lazy(() => salonPages().then((m) => ({ default: m.EventQuotePage })));
 import { SUPABASE_ENABLED } from "./lib/supabase.js";
 import { getSession, signOut } from "./lib/auth.js";
 import { slugFromLocation, resolveSalonFromSlug } from "./lib/tenant.js";
@@ -205,11 +210,13 @@ const paymentParams = paymentMatch ? new URLSearchParams(window.location.search)
 const adminMatch = /^\/admin\/?$/.test(window.location.pathname);
 const visitMatch = /^\/visit\/?$/.test(window.location.pathname);
 // v2.50: a salon's public pages
-const salonPageMatch = window.location.pathname.match(/^\/[^/]+\/(about|gift)\/?$/);
+const salonPageMatch = window.location.pathname.match(/^\/[^/]+\/(about|gift|events)\/?$/);
+const eventQuoteMatch = /^\/event\/?$/.test(window.location.pathname); // v2.53
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <ErrorBoundary>
+      <React.Suspense fallback={<div style={{ minHeight: "60vh" }} />}>
       {feedbackMatch ? (
         <FeedbackPage bookingId={feedbackMatch[1]} />
       ) : reconcileMatch ? (
@@ -223,7 +230,9 @@ ReactDOM.createRoot(document.getElementById("root")).render(
       ) : visitMatch ? (
         <VisitReportPage token={new URLSearchParams(window.location.search).get("token")} />
       ) : salonPageMatch ? (
-        <TenantGate>{salonPageMatch[1] === "about" ? <SalonProfilePage /> : <GiftCardPage />}</TenantGate>
+        <TenantGate>{salonPageMatch[1] === "about" ? <SalonProfilePage /> : salonPageMatch[1] === "events" ? <EventRequestPage /> : <GiftCardPage />}</TenantGate>
+      ) : eventQuoteMatch ? (
+        <EventQuotePage token={new URLSearchParams(window.location.search).get("token")} />
       ) : adminMatch ? (
         <>
           <IdleSessionGuard />
@@ -236,6 +245,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <App />
         </TenantGate>
       )}
+      </React.Suspense>
     </ErrorBoundary>
   </React.StrictMode>
 );

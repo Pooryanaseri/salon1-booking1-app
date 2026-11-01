@@ -3,9 +3,11 @@ import { Boxes, ShoppingBag, Package, Settings, Plus, Pencil, Loader2, Phone, Ma
 import { formatToman, toFa, digitsOnly } from "../lib/format";
 import { Modal, Switch } from "../components/ui";
 import { SuppliesSection } from "./BusinessTools";
+import { isPetSalon } from "../lib/tenant";
+import { setOrderSeller } from "../lib/contracts";
 import {
   fetchOrders, setOrderStatus, markOrderRefunded, fetchProducts, saveProduct, deleteProduct, uploadProductPhoto,
-  fetchShopSettings, saveShopSettings, ORDER_STATUS, shopCategories, categoryLabel, productPhotoUrl,
+  fetchShopSettings, saveShopSettings, ORDER_STATUS, shopCategories, categoryLabel, productPhotoUrl, PRODUCT_AUDIENCE, audienceLabel,
 } from "../lib/shop";
 
 /* ============================================================
@@ -18,7 +20,7 @@ const FILTERS = [
   ["open", "باز"], ["pending", "جدید"], ["done", "بسته‌شده"], ["all", "همه"],
 ];
 
-export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChange }) {
+export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChange, stylists = [] }) {
   const [segment, setSegment] = useState("orders");
   const segs = [
     { id: "orders", label: "سفارش‌ها", Icon: ShoppingBag },
@@ -40,7 +42,7 @@ export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChang
           ))}
         </div>
       )}
-      {segment === "orders" && <OrdersSection isManager={isManager} notify={notify} onPendingChange={onPendingChange} />}
+      {segment === "orders" && <OrdersSection isManager={isManager} notify={notify} onPendingChange={onPendingChange} stylists={stylists} />}
       {segment === "products" && isManager && <ProductsSection notify={notify} />}
       {segment === "settings" && isManager && <SettingsSection notify={notify} onShopEnabledChange={onShopEnabledChange} />}
       {segment === "supplies" && <SuppliesSection isManager={isManager} notify={notify} />}
@@ -49,7 +51,7 @@ export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChang
 }
 
 /* ------------------------------------------------------------ orders --- */
-function OrdersSection({ isManager, notify, onPendingChange }) {
+function OrdersSection({ isManager, notify, onPendingChange, stylists = [] }) {
   const [orders, setOrders] = useState(null);
   const [filter, setFilter] = useState("open");
   const [tick, setTick] = useState(0);
@@ -157,6 +159,21 @@ function OrdersSection({ isManager, notify, onPendingChange }) {
                 )}
                 {o.customer_note && <span className="muted">توضیح مشتری: {o.customer_note}</span>}
                 {o.staff_note && <span className="muted">یادداشت: {o.staff_note}</span>}
+                {isManager && stylists.length > 0 && (
+                  <label className="flex items-center gap-1.5 muted" style={{ fontSize: 12 }}>
+                    فروشنده:
+                    <select value={o.sold_by || ""} aria-label="فروشنده" style={{ padding: "3px 6px", fontSize: 12 }}
+                      onChange={async (e) => {
+                        const v = e.target.value || null;
+                        const r = await setOrderSeller(o.id, v);
+                        notify(r?.ok ? "فروشنده ثبت شد" : r?.error || "ناموفق بود");
+                        if (r?.ok) setOrders((list) => list.map((x) => (x.id === o.id ? { ...x, sold_by: v } : x)));
+                      }}>
+                      <option value="">سالن</option>
+                      {stylists.filter((st) => st.active !== false).map((st) => <option key={st.id} value={st.id}>{st.name}</option>)}
+                    </select>
+                  </label>
+                )}
                 {o.tracking_code && <span>کد رهگیری{o.carrier ? ` ${o.carrier}` : ""}: <b className="tabular" dir="ltr">{o.tracking_code}</b></span>}
                 {o.coupon_code && <span className="muted">کد تخفیف {o.coupon_code}{o.coupon_discount ? ` (−${formatToman(o.coupon_discount)})` : ""}</span>}
                 {o.status === "cancelled" && o.cancel_reason && <span style={{ color: "var(--color-danger)" }}>دلیل لغو: {o.cancel_reason === "expired" ? "پرداخت نشد" : o.cancel_reason}</span>}
@@ -262,8 +279,15 @@ function ProductsSection({ notify }) {
                   {formatToman(p.price)} · {categoryLabel(p.category)} · {p.stock == null ? "موجودی نامحدود" : p.stock === 0 ? "ناموجود" : `${toFa(p.stock)} عدد`}
                   {!p.active && " · مخفی"}
                 </p>
+                {(p.cost_price != null || (p.audience && p.audience !== "all")) && (
+                  <p className="muted tabular" style={{ fontSize: 11.5 }}>
+                    {p.audience && p.audience !== "all" ? audienceLabel(p.audience) : ""}
+                    {p.audience && p.audience !== "all" && p.cost_price != null ? " · " : ""}
+                    {p.cost_price != null && <span style={{ color: "var(--color-success)" }}>سود هر عدد {formatToman(p.price - p.cost_price)} ({toFa(Math.round(((p.price - p.cost_price) * 100) / p.price))}٪)</span>}
+                  </p>
+                )}
               </div>
-              <button className="tap ghost-btn" style={{ width: 36, height: 36, padding: 0 }} aria-label={`ویرایش ${p.name}`} onClick={() => setEditing({ ...p, stock: p.stock ?? "" })}>
+              <button className="tap ghost-btn" style={{ width: 36, height: 36, padding: 0 }} aria-label={`ویرایش ${p.name}`} onClick={() => setEditing({ ...p, stock: p.stock ?? "", cost_price: p.cost_price ?? "", prevCost: p.cost_price ?? null, prevAudience: p.audience || "all" })}>
                 <Pencil size={15} style={{ margin: "auto" }} />
               </button>
             </div>
@@ -346,6 +370,24 @@ function ProductModal({ product, onClose, onSaved, notify }) {
           </label>
         </div>
         <p className="muted" style={{ fontSize: 11, marginTop: -6 }}>کالاهایی با «گروه اندازه»ی یکسان در فروشگاه یک کارت با انتخاب اندازه می‌شوند.</p>
+        <div className="flex gap-2">
+          {!isPetSalon() && (
+            <label className="muted" style={{ fontSize: 12, flex: 1 }}>مناسب
+              <select value={p.audience || "all"} onChange={(e) => set("audience")(e.target.value)} style={input}>
+                {PRODUCT_AUDIENCE.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+              </select>
+            </label>
+          )}
+          <label className="muted" style={{ fontSize: 12, flex: 1 }}>قیمت خرید (فقط برای حساب سود)
+            <input dir="ltr" inputMode="numeric" className="tabular" value={p.cost_price === "" || p.cost_price == null ? "" : toFa(Number(p.cost_price).toLocaleString("en-US"))}
+              onChange={(e) => set("cost_price")(digitsOnly(e.target.value, 11))} style={{ ...input, textAlign: "left" }} />
+          </label>
+        </div>
+        {p.cost_price !== "" && p.cost_price != null && Number(p.price) > 0 && (
+          <p className="tabular" style={{ fontSize: 11.5, marginTop: -6, color: Number(p.price) > Number(p.cost_price) ? "var(--color-success)" : "var(--color-danger)" }}>
+            سود هر عدد: {formatToman(Number(p.price) - Number(p.cost_price))} — مشتری قیمت خرید را نمی‌بیند.
+          </p>
+        )}
         <label className="muted" style={{ fontSize: 12 }}>دسته
           <select value={p.category} onChange={(e) => set("category")(e.target.value)} style={input}>
             {shopCategories().map(([k, label]) => <option key={k} value={k}>{label}</option>)}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { Sparkles, PawPrint, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck, ShoppingBag } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName, isPetSalon } from "./lib/tenant";
@@ -9,14 +9,21 @@ import { jalaliLabel, formatClock, dateKey, parseDateKey } from "./lib/format";
 import { TOKENS_CSS } from "./styles/tokens";
 import { BookingFlow } from "./booking/BookingFlow";
 import { FALLBACK_SMS_TEMPLATES, GENDER_TYPE_LABEL, KNOWN_CUSTOMER, SALON_GENDER_TYPE, SEED_PET_SERVICES, SEED_PET_STYLISTS, SEED_SERVICES, SEED_STYLISTS, SEED_WORKING_HOURS, STAFF_PHONE, makeSeedBooking, makeSeedExpense, persistApproved, persistSalonHours, persistServices, persistStaffHours, persistTimeOff, usePersistedState } from "./app/shared";
-import { LoginScreen } from "./components/LoginScreen";
-import { PanelView } from "./panel/PanelView";
 import { Toast } from "./components/ui";
-import { TrackView } from "./track/TrackView";
-import { ShopView } from "./shop/ShopView";
 import { fetchShop } from "./lib/shop";
 import { requestPetTransport } from "./lib/petcare";
 import { applyBookingCoupon } from "./lib/business";
+import { applyOffpeak, applyUpsell, setBookingSource, currentSource, captureSource, fetchSubscriptionStatus } from "./lib/growth";
+import { ClosedNotice } from "./components/ClosedNotice";
+import { applyStylistPrice, fetchStylistPrices } from "./lib/contracts";
+
+// Loaded on demand: a customer booking a slot never downloads the panel.
+const LoginScreen = lazy(() => import("./components/LoginScreen").then((m) => ({ default: m.LoginScreen })));
+const PanelView = lazy(() => import("./panel/PanelView").then((m) => ({ default: m.PanelView })));
+const TrackView = lazy(() => import("./track/TrackView").then((m) => ({ default: m.TrackView })));
+const ShopView = lazy(() => import("./shop/ShopView").then((m) => ({ default: m.ShopView })));
+
+captureSource(); // v2.53: ?src=instagram on the link the client came from
 
 /* ============================================================
    Main App
@@ -64,6 +71,10 @@ export default function App() {
 
   // ---- backend status -------------------------------------------------------
   const [dataReady, setDataReady] = useState(false);
+  // v2.58: subscription state (the server enforces the lock; this only explains it)
+  const [subStatus, setSubStatus] = useState({ state: "active" });
+  const locked = subStatus?.state === "locked";
+  useEffect(() => { fetchSubscriptionStatus().then((st) => setSubStatus(st || { state: "active" })); }, [panelAuthed]);
   const [backendNote, setBackendNote] = useState("");
 
   // ---- collections wired to Postgres (setter contract unchanged) ------------
@@ -424,6 +435,29 @@ export default function App() {
       }
     }
 
+    // v2.55: an independent stylist's own price comes first
+    if (booking.final_price != null && booking.staff_id) {
+      const sp = await applyStylistPrice(booking.id, params.customerPhone, booking, await fetchStylistPrices());
+      if (sp?.ok) booking = { ...booking, original_price: Number(sp.price), final_price: Number(sp.final_price) };
+    }
+    // v2.53: quiet-hour discount (before the add-on and the code, so neither is discounted twice)
+    if (booking.final_price != null) {
+      const o = await applyOffpeak(booking.id, params.customerPhone, booking);
+      if (o?.ok) booking = { ...booking, offpeak_discount: Number(o.discount) || 0, final_price: o.final_price != null ? Number(o.final_price) : booking.final_price - (Number(o.discount) || 0) };
+    }
+    // v2.53: the add-on the client ticked on the booking page
+    if (params.upsellOffer) {
+      const u = await applyUpsell(booking.id, params.customerPhone, params.upsellOffer);
+      if (u?.ok) {
+        const amt = Number(u.amount) || 0;
+        booking = { ...booking, upsell_offer_id: params.upsellOffer.id, end_min: booking.end_min + (Number(u.extra_minutes) || 0),
+          extra_charges: [...(booking.extra_charges || []), { label: u.label, amount: amt }],
+          final_price: booking.final_price != null ? booking.final_price + amt : booking.final_price };
+      } else {
+        notify(u?.error || "افزودنی اضافه نشد — در سالن هماهنگ کنید");
+      }
+    }
+
     // v2.50: a discount code, applied by the server to the fresh booking
     if (params.couponCode && booking.final_price != null) {
       // the pick-up & drop-off fee is not discounted
@@ -437,6 +471,10 @@ export default function App() {
         notify(c?.error || "کد تخفیف اعمال نشد");
       }
     }
+
+    // v2.53: where this client came from (Instagram link, QR card, …)
+    const src = currentSource();
+    if (src) { setBookingSource(booking.id, params.customerPhone, src); booking = { ...booking, source: src }; }
 
     setBookings((prev) => [...prev, booking]);
 
@@ -628,11 +666,12 @@ export default function App() {
         {/* Backend status — only shown when something is off, never in the happy path */}
         {backendNote && (
           <div
-            className="card fade-in flex items-center gap-2 mb-3"
-            style={{ padding: "9px 12px", borderColor: "var(--color-warning)", background: "var(--color-accent-50)" }}
+            className="fade-in flex items-center gap-1.5 mb-3"
+            role="status"
+            style={{ padding: "5px 12px", borderRadius: "var(--radius-full)", width: "fit-content", maxWidth: "100%", marginInline: "auto", background: "color-mix(in oklch, var(--color-warning) 12%, var(--color-surface))", border: "1px solid color-mix(in oklch, var(--color-warning) 35%, transparent)" }}
           >
-            <AlertTriangle size={14} color="var(--color-warning)" style={{ flexShrink: 0 }} />
-            <p style={{ fontSize: 11.5, color: "var(--color-body)" }}>{backendNote}</p>
+            <AlertTriangle size={12} color="var(--color-warning)" style={{ flexShrink: 0 }} />
+            <p style={{ fontSize: 11, color: "var(--color-body)" }}>{backendNote}</p>
           </div>
         )}
 
@@ -643,13 +682,15 @@ export default function App() {
           </div>
         )}
 
-        {dataReady && tab === "book" && (
+        {dataReady && locked && tab !== "panel" && <ClosedNotice status={subStatus} />}
+        {dataReady && !locked && tab === "book" && (
           <BookingFlow services={services} stylists={stylists} bookings={bookings} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} addBooking={addBooking} waitlist={waitlist} addWaitlistEntry={addWaitlistEntry} notify={notify} onSectionChange={setActiveSection} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} automation={automation} depositTerms={depositTerms} />
         )}
-        {dataReady && tab === "shop" && (
+        <Suspense fallback={<div className="flex justify-center" style={{ padding: 40 }}><Loader2 size={18} className="salon-spin" color="var(--color-accent-500)" /></div>}>
+        {dataReady && !locked && tab === "shop" && (
           <ShopView notify={notify} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} />
         )}
-        {dataReady && tab === "track" && (
+        {dataReady && !locked && tab === "track" && (
           <TrackView bookings={bookings} services={services} stylists={stylists} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} updateBooking={updateBooking} notify={notify} initialPhone={trackPhone} />
         )}
         {dataReady && tab === "panel" && !panelAuthed && (
@@ -706,8 +747,10 @@ export default function App() {
             notify={notify}
             onShopEnabledChange={setShopEnabled}
             onLogout={handleLogout}
+            subscription={subStatus}
           />
         )}
+        </Suspense>
       </main>
 
       <Toast message={toast} onDone={() => setToast("")} />

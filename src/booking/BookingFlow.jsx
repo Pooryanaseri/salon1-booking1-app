@@ -11,6 +11,8 @@ import { QuoteContactForm, QuoteSent, QuoteServicePicker } from "./QuoteRequest"
 import { fetchPublicPetCare, fetchPublicPackages, consentRequired, largeDogsAt } from "../lib/petcare";
 import { checkCoupon } from "../lib/business";
 import { BuyPackageModal } from "./BuyPackageModal";
+import { fetchPublicOffpeak, fetchPublicUpsells, offpeakFor } from "../lib/growth";
+import { fetchStylistPrices, priceFor } from "../lib/contracts";
 
 /* ============================================================
    Booking flow (customer) — gender section chosen first, each
@@ -84,6 +86,8 @@ export function WaitlistJoinCard({ onJoin, alreadyJoined, autoOffer }) {
 }
 
 const salonSlug = () => window.location.pathname.split("/").filter(Boolean)[0] || "";
+/* the service's own price after its regular discounts (codes, quiet hours and extras shown apart) */
+const servicePaid = (r) => r.final_price - extraChargesTotal(r) + (r.coupon_discount || 0) + (r.offpeak_discount || 0);
 
 export const BOOKING_STEP_LABELS = { 2: "انتخاب خدمت", 3: "انتخاب آرایشگر", 4: "تاریخ و ساعت", 5: "اطلاعات تماس", 6: "تایید نهایی" };
 
@@ -154,11 +158,23 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   // v2.49: consent, pick-up service, large-dog capacity, packages on offer
   const [petCare, setPetCare] = useState(null);
   const [packagesOffer, setPackagesOffer] = useState([]);
+  // v2.53: quiet-hour discounts and add-on offers
+  const [offpeakRules, setOffpeakRules] = useState([]);
+  const [upsells, setUpsells] = useState([]);
+  const [upsellPick, setUpsellPick] = useState(null);
+  const [stylistPrices, setStylistPrices] = useState([]); // v2.55 independent stylists' own prices
   useEffect(() => {
-    if (!petSalon) return;
     let alive = true;
-    fetchPublicPetCare().then((c) => { if (alive) setPetCare(c); });
+    fetchStylistPrices().then((r) => { if (alive) setStylistPrices(r); });
+    fetchPublicOffpeak().then((r) => { if (alive) setOffpeakRules(r); });
+    fetchPublicUpsells(services).then((r) => { if (alive) setUpsells(r); });
+    return () => { alive = false; };
+  }, [services]);
+  useEffect(() => {
+    let alive = true;
+    // v2.52: prepaid packages are offered by every salon type
     fetchPublicPackages().then((k) => { if (alive) setPackagesOffer(k); });
+    if (petSalon) fetchPublicPetCare().then((c) => { if (alive) setPetCare(c); });
     return () => { alive = false; };
   }, [petSalon]);
   const [consentOk, setConsentOk] = useState(false);
@@ -166,7 +182,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   const [couponInput, setCouponInput] = useState("");
   const [coupon, setCoupon] = useState(null); // {code, discount} | {error}
   async function tryCoupon() {
-    const total = finalPrice || 0;
+    // same base as the server: after the quiet-hour discount, with the add-on
+    const total = Math.max(0, (finalPrice || 0) - offpeakDisc + (chosenUpsell?.price || 0));
     const r = await checkCoupon(couponInput, "booking", total, phone);
     setCoupon(r?.ok ? { code: r.code || couponInput.trim().toUpperCase(), discount: Number(r.discount) || 0 } : { error: r?.error || "کد معتبر نیست" });
   }
@@ -435,13 +452,21 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   // meaning exactly what they already mean (the service-level discount
   // only); the loyalty layer is tracked separately as loyalty_discount_pct/
   // loyalty_discount_amount so nothing about the existing columns changes.
-  const servicePrice = service ? finalPriceFor(service) : 0;
+  // v2.55: the chosen stylist's own price replaces the list price (discounts kept as an amount)
+  const ownPrice = service && effectiveStaff ? priceFor(stylistPrices, effectiveStaff.id, service.id) : null;
+  const listPrice = ownPrice ?? service?.price;
+  const servicePrice = service ? (ownPrice != null && hasPrice(service) ? Math.max(0, finalPriceFor(service) + (ownPrice - service.price)) : finalPriceFor(service)) : 0;
   const loyaltyDiscountAmount = service && hasPrice(service) && servicePrice != null
     ? Math.round((servicePrice * loyaltyDiscountPct) / 100)
     : 0;
   // v2.45: the salon's surcharge for an aggressive animal (server: pet_surcharge)
   const surcharge = petSalon && service && hasPrice(service) ? petSurcharge(servicePrice, pet.temperament, surchargePct) : 0;
   const finalPrice = servicePrice != null ? Math.max(0, servicePrice - loyaltyDiscountAmount) + surcharge : null;
+  // v2.53: quiet-hour discount and the ticked add-on (the server applies both after booking)
+  const offpeakHit = selectedDate && selectedSlot != null && finalPrice != null ? offpeakFor(offpeakRules, dateKey(selectedDate), selectedSlot) : null;
+  const offpeakDisc = offpeakHit ? Math.round((finalPrice * offpeakHit.percent) / 100) : 0;
+  const serviceUpsells = service ? upsells.filter((o) => o.service_id === service.id) : [];
+  const chosenUpsell = upsellPick && service && upsellPick.service_id === service.id ? upsellPick : null;
 
   // v2.37 online deposit — what the server will ask for on this booking
   // (mirrors hold_for_deposit; the server's answer is what actually counts).
@@ -478,7 +503,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           // Demo-mode-only fields (ignored by create_public_booking in real
           // mode, which computes these itself) — kept so the demo flow still
           // shows a realistic price breakdown with no backend to compute it.
-          originalPrice: service.price,
+          originalPrice: listPrice,
           discountType: service.discount_type,
           discountValue: service.discount_value,
           discountReason: [service.discount_reason, loyaltyDiscountAmount > 0 ? `${toFa(loyaltyDiscountPct)}٪ تخفیف باشگاه مشتریان` : ""].filter(Boolean).join(" · "),
@@ -491,6 +516,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           } : null,
           transportAddress: petSalon && wantTransport && petCare?.transport_enabled ? transportAddress.trim() : null,
           couponCode: coupon?.code || null,
+          upsellOffer: upsellPick && upsellPick.service_id === service.id ? upsellPick : null, // v2.53
         },
         !knownCustomer && referralCode.trim()
           ? async () => {
@@ -654,6 +680,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               <span className="hero-chip"><Bell size={12} /> یادآوری پیامکی</span>
               <a className="hero-chip" href={`/${salonSlug()}/about`} style={{ color: "white", textDecoration: "none" }}><Info size={12} /> درباره سالن</a>
               <a className="hero-chip" href={`/${salonSlug()}/gift`} style={{ color: "white", textDecoration: "none" }}><Gift size={12} /> کارت هدیه</a>
+              {!petSalon && <a className="hero-chip" href={`/${salonSlug()}/events`} style={{ color: "white", textDecoration: "none" }}><Sparkles size={12} /> رزرو مراسم و عروس</a>}
             </div>
           </div>
           <h2 style={{ fontSize: 17, marginBottom: 12 }}>{petSalon ? "نوبت برای سگ یا گربه؟" : "بخش مورد نظر را انتخاب کنید"}</h2>
@@ -691,7 +718,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               );
             })}
           </div>
-          {petSalon && packagesOffer.length > 0 && (
+          {packagesOffer.length > 0 && (
             <div className="card mt-4" style={{ padding: 14 }}>
               <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
                 <Ticket size={15} color="var(--color-tab-panel)" /> بسته‌های پیش‌پرداخت
@@ -870,6 +897,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, color: "var(--color-heading)", fontSize: 14 }}>{st.name}</div>
+                  {service && priceFor(stylistPrices, st.id, service.id) != null && (
+                    <div className="muted tabular" style={{ fontSize: 12 }}>قیمت این آرایشگر: {formatToman(priceFor(stylistPrices, st.id, service.id))}</div>
+                  )}
                 </div>
               </button>
             ))}
@@ -983,6 +1013,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                 <span className="flex items-center gap-1 muted" style={{ fontSize: 11 }}>
                   <span style={{ width: 10, height: 10, borderRadius: 3, background: section.color, display: "inline-block" }} /> زمان انتخابی شما
                 </span>
+                {offpeakRules.length > 0 && (
+                  <span className="flex items-center gap-1" style={{ fontSize: 11, color: "var(--color-success)", fontWeight: 700 }}>٪− ساعت طلایی (تخفیف)</span>
+                )}
               </div>
               {DAY_PERIODS.map((period) => {
                 const ticks = slotTicks.filter(({ t }) => period.test(t));
@@ -999,7 +1032,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                       </span>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
-                      {ticks.map(({ t, occupied, fits }) => (
+                      {ticks.map(({ t, occupied, fits }) => { const op = fits && selectedDate ? offpeakFor(offpeakRules, dateKey(selectedDate), t) : null; return (
                         <button
                           key={t}
                           disabled={!fits}
@@ -1021,8 +1054,9 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                           }}
                         >
                           {formatClock(t)}
+                          {op && <span style={{ display: "block", fontSize: 10, fontWeight: 800, color: selectedSlot === t ? "white" : "var(--color-success)" }}>٪{toFa(op.percent)}−</span>}
                         </button>
-                      ))}
+                      ); })}
                     </div>
                   </div>
                 );
@@ -1164,14 +1198,17 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             <Row label="شماره تماس" value={<span dir="ltr">{toFa(phone)}</span>} />
             <div style={{ borderTop: "1px dashed var(--color-border)", margin: "10px 0" }} />
             {!hasPrice(service) && <Row label="مبلغ" value={priceLabel(service)} bold />}
-            {hasPrice(service) && (discount > 0 || loyaltyDiscountAmount > 0) && <Row label="قیمت اصلی" value={formatToman(service.price)} strike />}
+            {hasPrice(service) && (discount > 0 || loyaltyDiscountAmount > 0) && <Row label="قیمت اصلی" value={formatToman(listPrice)} strike />}
+            {hasPrice(service) && ownPrice != null && <Row label="قیمت این آرایشگر" value={formatToman(ownPrice)} />}
             {hasPrice(service) && discount > 0 && <Row label="تخفیف" value={"- " + formatToman(discount)} />}
             {hasPrice(service) && loyaltyDiscountAmount > 0 && (
               <Row label={`تخفیف باشگاه مشتریان (${toFa(loyaltyDiscountPct)}٪)`} value={"- " + formatToman(loyaltyDiscountAmount)} />
             )}
             {surcharge > 0 && <Row label="مبلغ خدمت" value={formatToman(finalPrice - surcharge)} />}
             {surcharge > 0 && <Row label={`افزایش برای حیوان پرخاشگر (${toFa(surchargePct)}٪)`} value={"+ " + formatToman(surcharge)} />}
-            {hasPrice(service) && <Row label="مبلغ نهایی" value={formatToman(finalPrice)} bold />}
+            {hasPrice(service) && offpeakHit && <Row label={`${offpeakHit.label} (${toFa(offpeakHit.percent)}٪)`} value={"- " + formatToman(offpeakDisc)} />}
+            {hasPrice(service) && chosenUpsell && <Row label={chosenUpsell.addon_name} value={"+ " + formatToman(chosenUpsell.price)} />}
+            {hasPrice(service) && <Row label="مبلغ نهایی" value={formatToman(finalPrice - offpeakDisc + (chosenUpsell?.price || 0))} bold />}
             {expectedDeposit > 0 && (
               <>
                 <Row label="پیش‌پرداخت آنلاین (بیعانه)" value={formatToman(expectedDeposit)} bold />
@@ -1209,6 +1246,26 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             </div>
           )}
 
+          {serviceUpsells.length > 0 && (
+            <div className="card mt-3" style={{ padding: 12, borderColor: chosenUpsell ? "var(--color-success)" : undefined }} data-card="upsell">
+              <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>پیشنهاد ویژه برای همین نوبت</p>
+              {serviceUpsells.map((o) => (
+                <label key={o.id} className="flex items-start gap-2" style={{ fontSize: 13.5, padding: "4px 0" }}>
+                  <input type="checkbox" checked={chosenUpsell?.id === o.id} onChange={(e) => setUpsellPick(e.target.checked ? o : null)} style={{ marginTop: 5 }} />
+                  <span style={{ flex: 1 }}>
+                    <b>+ {o.addon_name}</b> فقط <span className="tabular" style={{ fontWeight: 800 }}>{formatToman(o.price)}</span>
+                    {o.addon_price > o.price && <span className="muted tabular" style={{ textDecoration: "line-through", fontSize: 12, marginRight: 6 }}>{formatToman(o.addon_price)}</span>}
+                    {(o.pitch || o.extra_minutes > 0) && (
+                      <span className="muted" style={{ display: "block", fontSize: 11.5, lineHeight: 1.8 }}>
+                        {o.pitch}{o.pitch && o.extra_minutes > 0 ? " · " : ""}{o.extra_minutes > 0 ? `${toFa(o.extra_minutes)} دقیقه بیشتر` : ""}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+
           {hasPrice(service) && finalPrice > 0 && (
             <div className="card mt-3" style={{ padding: 12 }}>
               <div className="flex gap-2">
@@ -1216,7 +1273,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                   placeholder="کد تخفیف" aria-label="کد تخفیف" style={{ flex: 1, minWidth: 0, padding: "10px 12px", fontSize: 14, textAlign: "left" }} />
                 <button className="tap ghost-btn" style={{ padding: "0 14px", fontSize: 13 }} disabled={!couponInput.trim()} onClick={tryCoupon}>اعمال</button>
               </div>
-              {coupon?.discount > 0 && <p style={{ fontSize: 12.5, marginTop: 6, color: "var(--color-success)" }}>{formatToman(coupon.discount)} تخفیف — مبلغ نهایی {formatToman(Math.max(0, finalPrice - coupon.discount))}</p>}
+              {coupon?.discount > 0 && <p style={{ fontSize: 12.5, marginTop: 6, color: "var(--color-success)" }}>{formatToman(coupon.discount)} تخفیف — مبلغ نهایی {formatToman(Math.max(0, finalPrice - offpeakDisc + (chosenUpsell?.price || 0) - coupon.discount))}</p>}
               {coupon?.error && <p style={{ fontSize: 12.5, marginTop: 6, color: "var(--color-danger)" }}>{coupon.error}</p>}
             </div>
           )}
@@ -1277,12 +1334,13 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
               <Row label="مبلغ" value="قیمت در سالن اعلام می‌شود" bold />
             ) : (
               <>
-                {result.original_price > result.final_price - extraChargesTotal(result) && (
+                {result.original_price > servicePaid(result) && (
                   <>
                     <Row label="قیمت اصلی" value={formatToman(result.original_price)} strike />
-                    <Row label="تخفیف" value={"- " + formatToman(result.original_price - (result.final_price - extraChargesTotal(result)))} />
+                    <Row label="تخفیف" value={"- " + formatToman(result.original_price - servicePaid(result))} />
                   </>
                 )}
+                {result.offpeak_discount > 0 && <Row label="ساعت طلایی" value={"- " + formatToman(result.offpeak_discount)} />}
                 {(result.extra_charges || []).map((x, i) => <Row key={i} label={x.label} value={"+ " + formatToman(x.amount)} />)}
                 {result.coupon_discount > 0 && <Row label={`کد تخفیف ${result.coupon_code}`} value={"- " + formatToman(result.coupon_discount)} />}
                 <Row label="مبلغ نهایی" value={formatToman(result.final_price)} bold />

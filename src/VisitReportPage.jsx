@@ -25,7 +25,7 @@ export default function VisitReportPage({ token }) {
   const pet = "#2f8f6b";
   const wrap = { minHeight: "100vh", padding: "24px 16px 40px", background: "#f6f2ec", fontFamily: "'Vazirmatn Variable', Vazirmatn, system-ui, sans-serif", color: "#2b2420" };
   const card = { maxWidth: 460, margin: "0 auto 14px", background: "white", borderRadius: 18, padding: 18, boxShadow: "0 6px 24px -14px rgba(60,40,20,.35)" };
-  const display = { fontFamily: "'Noto Kufi Arabic Variable', 'Vazirmatn Variable', system-ui, sans-serif" };
+  const display = { fontFamily: "'Estedad Variable', 'Vazirmatn Variable', system-ui, sans-serif" };
 
   if (state === "loading") {
     return <div dir="rtl" style={{ ...wrap, display: "flex", alignItems: "center", justifyContent: "center" }}><Loader2 size={26} color={brand} style={{ animation: "spin .9s linear infinite" }} /><style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style></div>;
@@ -47,6 +47,9 @@ export default function VisitReportPage({ token }) {
   const before = photos.filter((p) => p.includes("/before-"));
   const after = photos.filter((p) => p.includes("/after-"));
   const shopLink = r.salon_slug ? `/${r.salon_slug}?tab=shop` : "/";
+  // v2.52: men's / women's salons send the same report, without the pet parts
+  const isPet = !!r.pet_name;
+  const forWhom = isPet ? r.pet_name : "شما";
 
   const Photos = ({ list, label }) => list.length > 0 && (
     <div style={{ flex: 1, minWidth: 0 }}>
@@ -65,8 +68,8 @@ export default function VisitReportPage({ token }) {
     <div dir="rtl" style={wrap}>
       <div style={{ ...card, background: `linear-gradient(135deg, #e9a24b, ${brand} 55%, #b8462f)`, color: "white" }}>
         <p style={{ fontSize: 12.5, opacity: 0.9 }}>{r.salon_name}</p>
-        <p style={{ ...display, fontSize: 22, fontWeight: 800, marginTop: 4 }}>گزارش آرایش {r.pet_name}</p>
-        <p style={{ fontSize: 13, opacity: 0.92, marginTop: 4 }}>{isoToJalaliLabel(String(r.date).slice(0, 10))}{r.services_label ? ` · ${r.services_label}` : ""}</p>
+        <p style={{ ...display, fontSize: 22, fontWeight: 800, marginTop: 4 }}>{isPet ? `گزارش آرایش ${r.pet_name}` : `${r.customer_first_name ? `${r.customer_first_name} عزیز، ` : ""}گزارش نوبت شما`}</p>
+        <p style={{ fontSize: 13, opacity: 0.92, marginTop: 4 }}>{isoToJalaliLabel(String(r.date).slice(0, 10))}{r.services_label ? ` · ${r.services_label}` : ""}{!isPet && r.staff_name ? ` · ${r.staff_name}` : ""}</p>
       </div>
 
       {(before.length > 0 || after.length > 0) && (
@@ -78,7 +81,14 @@ export default function VisitReportPage({ token }) {
         </div>
       )}
 
-      <div style={card}>
+      {!isPet && r.note && (
+        <div style={card}>
+          <p style={{ ...display, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>توصیه‌های آرایشگر</p>
+          <p style={{ fontSize: 14, lineHeight: 1.9 }}>{r.note}</p>
+        </div>
+      )}
+
+      {isPet && <div style={card}>
         <p style={{ ...display, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>کارت سلامت</p>
         {found.length === 0 ? (
           <p style={{ display: "flex", alignItems: "center", gap: 6, color: pet, fontWeight: 700, fontSize: 14 }}><CheckCircle2 size={18} /> مشکلی دیده نشد</p>
@@ -98,11 +108,11 @@ export default function VisitReportPage({ token }) {
           </p>
         )}
         {r.note && <p style={{ fontSize: 14, marginTop: 10, lineHeight: 1.9, background: "#faf6f1", borderRadius: 12, padding: "10px 12px" }}>«{r.note}»</p>}
-      </div>
+      </div>}
 
       {(r.products || []).length > 0 && (
         <div style={card}>
-          <p style={{ ...display, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>پیشنهاد آرایشگر برای {r.pet_name}</p>
+          <p style={{ ...display, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>پیشنهاد آرایشگر برای {forWhom}</p>
           {r.products.map((p) => {
             const url = productPhotoUrl(p);
             return (

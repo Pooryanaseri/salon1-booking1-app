@@ -3,6 +3,8 @@ import { X, Percent, Banknote, CheckCircle2, XCircle, Plus, TrendingUp, Trending
 import { gregorianToJalali, MONTHS_FA, toFa, formatToman, jalaliLabel, dateKey, parseDateKey } from "../lib/format";
 import { EXPENSE_CATEGORY_META, SECTION_META, makeSeedExpense } from "../app/shared";
 import { GenderBadge, Modal, StatCard } from "../components/ui";
+import { useOtherIncome } from "./ShopInsights";
+import { useContractIncome } from "./Contracts";
 
 /* ============================================================
    Accounting tab — real numbers computed from booking + expense data
@@ -111,8 +113,19 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
     return expenses.filter((e) => keys.has(e.date));
   }, [expenses, days, canEditExpenses]);
   const totalExpenses = rangeExpenses.reduce((s, e) => s + e.amount, 0);
-  const netProfit = realizedRevenue - totalExpenses;
-  const profitMargin = realizedRevenue > 0 ? netProfit / realizedRevenue : null;
+  // v2.52: shop (gross profit), packages and gift cards sold count too —
+  // managers only; a stylist's own view stays services-only.
+  const other = useOtherIncome(Number(range), bookings, canEditExpenses && !staffId);
+  const otherIncome = other?.total || 0;
+  const totalIncome = realizedRevenue + (other ? other.shopRevenue + other.packages + other.gifts + other.events : 0);
+  // v2.54: an independent stylist's turnover is not the salon's — only the
+  // share and the rent are
+  const contract = useContractIncome(Number(range), bookings, canEditExpenses && !staffId);
+  const independentGross = contract ? contract.gross : 0;
+  const contractIncome = contract ? contract.share + contract.rent : 0;
+  const netProfit = realizedRevenue - independentGross + contractIncome + otherIncome - totalExpenses;
+  const salonIncome = totalIncome - independentGross + contractIncome;
+  const profitMargin = salonIncome > 0 ? netProfit / salonIncome : null;
 
   const byExpenseCategory = useMemo(() => {
     const map = new Map();
@@ -219,6 +232,55 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
         <StatCard label="درآمد در انتظار" value={formatToman(expectedRevenue)} icon={Hourglass} color="var(--color-info)" />
         <StatCard label="تخفیف اعطاشده" value={formatToman(discountGiven)} icon={Percent} color="var(--color-accent-700)" />
       </div>
+
+      {contract && contract.rows > 0 && (
+        <div className="card mb-2" style={{ padding: 14 }} data-card="contract-income">
+          <p style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>آرایشگرهای مستقل (اجاره / درصدی)</p>
+          {[
+            ["گردش کار آن‌ها (مال خودشان)", contract.gross],
+            ["سهم سالن از کارشان", contract.share],
+            ["اجارهٔ صندلی (به نسبت روزهای بازه)", contract.rent],
+          ].map(([label, v]) => (
+            <div key={label} className="flex justify-between gap-2 tabular" style={{ fontSize: 13, padding: "5px 0", borderTop: "1px dashed var(--color-border)" }}>
+              <span>{label}</span><b>{formatToman(v)}</b>
+            </div>
+          ))}
+          <p className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.8 }}>در سود خالص به‌جای گردش کار این آرایشگرها فقط سهم سالن و اجاره حساب شده است.</p>
+        </div>
+      )}
+
+      {other && (other.shopRevenue > 0 || other.packages > 0 || other.gifts > 0 || other.events > 0) && (
+        <div className="card mb-2" style={{ padding: 14 }} data-card="income-sources">
+          <p className="flex items-center gap-2 mb-2" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
+            <Coins size={15} /> درآمد به تفکیک منبع
+          </p>
+          {[
+            ["خدمات (نوبت‌های انجام‌شده)", realizedRevenue],
+            ["فروشگاه", other.shopRevenue, other.shopCogs > 0 ? `قیمت خرید کالاها: ${formatToman(other.shopCogs)} — سود ناخالص ${formatToman(other.shopGross)}` : null],
+            ["فروش بسته‌های پیش‌پرداخت", other.packages],
+            ["فروش کارت هدیه", other.gifts, other.giftOutstanding > 0 ? `مانده قابل استفادهٔ کارت‌ها: ${formatToman(other.giftOutstanding)}` : null],
+            ["مراسم (بیعانه و اقساط)", other.events],
+          ].filter(([, v], i) => i === 0 || v > 0).map(([label, v, sub]) => (
+            <div key={label} style={{ padding: "6px 0", borderTop: "1px dashed var(--color-border)" }}>
+              <div className="flex justify-between gap-2" style={{ fontSize: 13 }}>
+                <span>{label}</span><b className="tabular">{formatToman(v)}</b>
+              </div>
+              {sub && <p className="muted tabular" style={{ fontSize: 11.5 }}>{sub}</p>}
+            </div>
+          ))}
+          <div className="flex justify-between gap-2" style={{ fontSize: 13.5, padding: "8px 0 0", borderTop: "1px solid var(--color-border)", fontWeight: 800 }}>
+            <span>جمع درآمد</span><span className="tabular">{formatToman(totalIncome)}</span>
+          </div>
+          {other.lowStock.length > 0 && (
+            <p style={{ fontSize: 12.5, marginTop: 8, color: "var(--color-warning)", lineHeight: 1.8 }}>
+              موجودی رو به اتمام: {other.lowStock.map((p) => `${p.name} (${toFa(p.stock)})`).join("، ")}
+            </p>
+          )}
+          <p className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.8 }}>
+            در سود خالص، از فروشگاه فقط سود ناخالص (فروش منهای قیمت خرید) حساب می‌شود؛ اگر قیمت خرید کالاها را وارد کرده‌اید، خرید کالای فروشگاه را جداگانه در هزینه‌ها ثبت نکنید.
+          </p>
+        </div>
+      )}
 
       <div className="flex gap-2 mb-3">
         <StatCard

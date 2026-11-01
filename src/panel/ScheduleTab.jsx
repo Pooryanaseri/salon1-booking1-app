@@ -3,12 +3,10 @@ import { useData } from "../hooks/useData";
 import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, CalendarX, CheckCircle2, CalendarCheck, Sun, Zap, UserCheck, Bell, Activity, CreditCard, Syringe } from "lucide-react";
 import { isPetSalon } from "../lib/tenant";
 import { PetCareSettingsCard } from "./PetCare";
-import { ProfileSettingsCard, SecurityCard } from "./BusinessTools";
 import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors, fetchPaymentSettings, savePaymentSettings } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey, digitsOnly } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
 import { schemaDayOf, uid } from "../app/shared";
-import { SUPABASE_ENABLED } from "../lib/supabase";
 
 /* ============================================================
    Schedule management tab (working hours + time-off)
@@ -96,7 +94,7 @@ export function ClosuresCard({ notify }) {
 // v2.28 — the switches that keep the manager and stylists out of the app for
 // routine work. Everything here is on by default; each one can be turned
 // back to the old manual way.
-function AutomationCard({ automation, onAutomationChange, notify }) {
+export function AutomationCard({ automation, onAutomationChange, notify }) {
   const [saving, setSaving] = useState(null);
   async function save(key, value) {
     const next = { ...automation, [key]: value };
@@ -128,7 +126,7 @@ function AutomationCard({ automation, onAutomationChange, notify }) {
     },
     {
       key: "waitlist_auto_offer", Icon: Bell,
-      title: "پر کردن خودکار نوبت لغوشده",
+      title: "لیست انتظار: خبر دادن نوبت لغوشده",
       on: "با لغو هر نوبت، برای افراد لیست انتظار همان روز لینک رزرو پیامک می‌شود؛ هر کس زودتر رزرو کند.",
       off: "لیست انتظار فقط نمایش داده می‌شود و باید خودتان تماس بگیرید.",
     },
@@ -242,7 +240,7 @@ function PetPricingSettings({ automation, save, saving }) {
 }
 
 // v2.37 — optional online deposit through the salon's own Zarinpal account.
-function DepositCard({ automation, onAutomationChange, notify }) {
+export function DepositCard({ automation, onAutomationChange, notify }) {
   const [merchant, setMerchant] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [percent, setPercent] = useState(automation.deposit_percent || 0);
@@ -309,7 +307,7 @@ function DepositCard({ automation, onAutomationChange, notify }) {
 // merged by message. Mostly for whoever maintains the app; a manager only
 // needs to notice "something keeps failing" and pass it on.
 const ERROR_KIND_LABEL = { render: "نمایش صفحه", runtime: "اجرای برنامه", promise: "درخواست ناتمام", save: "ذخیره روی سرور" };
-function AppHealthCard() {
+export function AppHealthCard() {
   const [rows, setRows] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -545,11 +543,6 @@ export function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, 
         </>
       )}
 
-      {!currentStylistId && <AutomationCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
-      {!currentStylistId && SUPABASE_ENABLED && <DepositCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
-      {!currentStylistId && <ProfileSettingsCard notify={notify} />}
-      <SecurityCard notify={notify} isManager={!currentStylistId} />
-      {!currentStylistId && SUPABASE_ENABLED && <AppHealthCard />}
 
       {!currentStylistId && !automation.auto_open_days && (
         <>

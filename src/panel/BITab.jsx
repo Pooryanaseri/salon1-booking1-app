@@ -1,3 +1,4 @@
+import { ShopBICard } from "./ShopInsights";
 import React, { useState, useMemo, useEffect } from "react";
 import { Clock, Percent, Banknote, XCircle, TrendingUp, TrendingDown, ChevronLeft, Wallet, Users, UserPlus, Repeat2, Award, AlertTriangle, ChevronDown, ChevronUp, PawPrint } from "lucide-react";
 import { gregorianToJalali, jalaliDayNum, MONTHS_FA, WEEKDAYS_FA_FULL, SCHEMA_DAY_LABELS, toFa, formatToman, jalaliLabel, hhmmToMin, dateKey, parseDateKey, bookingTimestamp } from "../lib/format";
@@ -688,6 +689,12 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
             </div>
           )}
         </div>
+      )}
+
+      {/* v2.52: shop sales next to service revenue */}
+      {!drill && branchFilter === "all" && staffFilter === "all" && (
+        <ShopBICard days={spanDays} bookings={bookings} onNavigate={onNavigate}
+          serviceRevenue={periodBookings.filter((b) => b.status === "completed" && b.final_price != null).reduce((t, b) => t + b.final_price, 0)} />
       )}
 
       {!drill && (

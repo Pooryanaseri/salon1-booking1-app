@@ -128,23 +128,21 @@ export function Row({ label, value, bold, strike }) {
 // doesn't read as one flat gray surface; the color also visually matches
 // that tab's icon in the sub-nav below, so the two reinforce each other.
 export function PanelSectionHeader({ Icon, title, subtitle, color }) {
+  // A light title row (no big card), so the content starts higher on the screen.
   return (
-    <div
-      className="flex items-center gap-3 mb-4"
-      style={{ padding: "14px 16px", borderRadius: "var(--radius-lg)", background: `linear-gradient(135deg, color-mix(in oklch, ${color} 12%, var(--color-surface)), var(--color-surface))`, border: `1px solid color-mix(in oklch, ${color} 18%, var(--color-border))` }}
-    >
+    <div className="flex items-center gap-2.5 mb-4" style={{ padding: "2px 2px 0" }}>
       <div
         style={{
-          width: 40, height: 40, borderRadius: "var(--radius-md)", flexShrink: 0,
-          background: color, display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: `0 4px 14px -4px color-mix(in oklch, ${color} 60%, transparent)`,
+          width: 34, height: 34, borderRadius: "var(--radius-md)", flexShrink: 0,
+          background: `color-mix(in oklch, ${color} 14%, var(--color-surface))`, border: `1px solid color-mix(in oklch, ${color} 25%, transparent)`,
+          display: "flex", alignItems: "center", justifyContent: "center",
         }}
       >
-        <Icon size={19} color="white" />
+        <Icon size={17} color={color} />
       </div>
       <div style={{ minWidth: 0 }}>
-        <h2 style={{ fontSize: 16.5, color: "var(--color-heading)" }}>{title}</h2>
-        {subtitle && <p className="muted" style={{ fontSize: 11.5, marginTop: 2, lineHeight: 1.6 }}>{subtitle}</p>}
+        <h2 style={{ fontSize: 17, color: "var(--color-heading)", lineHeight: 1.4 }}>{title}</h2>
+        {subtitle && <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>{subtitle}</p>}
       </div>
     </div>
   );

@@ -7988,3 +7988,1766 @@ language sql stable security definer set search_path = public as $fn$
 $fn$;
 grant execute on function public.get_backup(uuid) to authenticated;
 
+
+-- >>>>>>>>>> supabase/migrations/v2.52_beauty_suite.sql
+-- =============================================================================
+--  v2.52 — the men's / women's salon suite
+--
+--  1. Shop for beauty salons: products for men / women / everyone, and a
+--     purchase cost per product (managers only) so the shop's gross profit
+--     reaches accounting.
+--  2. shop_analytics(): the shop's numbers for BI and accounting (revenue,
+--     gross profit, average order, top products, categories, daily series,
+--     and how many service customers also buy products).
+--  3. Client record (the beauty-salon twin of the pet health record):
+--     allergies, hair / skin type, colour formula, patch test date, notes.
+--  4. Visit report (before / after photos + note + recommended products)
+--     for any booking, not only pets — the SMS and page text follow the
+--     salon type.
+--  Idempotent; safe to run again.
+-- =============================================================================
+
+-- ------------------------------------------------------------- 1. shop ------
+alter table public.products add column if not exists audience text not null default 'all';
+alter table public.products drop constraint if exists products_audience_check;
+alter table public.products add constraint products_audience_check check (audience in ('all', 'men', 'women'));
+
+-- Purchase cost lives apart from products: staff (and get_shop) read products,
+-- only managers see what the salon paid.
+create table if not exists public.product_costs (
+  product_id  uuid primary key references public.products (id) on delete cascade,
+  salon_id    uuid not null references public.salons (id) on delete cascade default public.current_salon_id(),
+  cost_price  bigint not null check (cost_price between 0 and 10000000000),
+  updated_at  timestamptz not null default now()
+);
+alter table public.product_costs enable row level security;
+drop policy if exists p_product_costs_mgr on public.product_costs;
+create policy p_product_costs_mgr on public.product_costs for all
+  using (public.is_manager() and salon_id = public.current_salon_id())
+  with check (public.is_manager() and salon_id = public.current_salon_id()
+              and exists (select 1 from public.products p where p.id = product_id and p.salon_id = public.current_salon_id()));
+grant select, insert, update, delete on public.product_costs to authenticated;
+
+create or replace function public.get_shop()
+returns json
+language sql stable security definer set search_path = public as $fn$
+  select json_build_object(
+    'enabled', coalesce(ss.enabled, false),
+    'pickup', coalesce(ss.pickup_enabled, true) or not coalesce(ss.shipping_enabled, false),
+    'pickup_address', coalesce(ss.pickup_address, ''),
+    'shipping', coalesce(ss.shipping_enabled, false),
+    'shipping_fee', coalesce(ss.shipping_fee, 0),
+    'free_shipping_over', coalesce(ss.free_shipping_over, 0),
+    'shipping_area', coalesce(ss.shipping_area, ''),
+    'note', coalesce(ss.note, ''),
+    'online', coalesce(pp.zarinpal_merchant_id, '') <> '',
+    'cash', coalesce(ss.cash_enabled, false) or coalesce(pp.zarinpal_merchant_id, '') = '',
+    'products', case when coalesce(ss.enabled, false) then coalesce((
+      select json_agg(json_build_object(
+               'id', p.id, 'name', p.name, 'description', p.description, 'category', p.category,
+               'price', p.price, 'stock', p.stock, 'photo_path', p.photo_path,
+               'variant_group', p.variant_group, 'variant_label', p.variant_label, 'audience', p.audience)
+             order by p.sort_order, p.created_at)
+        from public.products p where p.salon_id = c.salon_id and p.active), '[]'::json) else '[]'::json end
+  )
+  from (select public.current_salon_id() as salon_id) c
+  left join public.shop_settings ss on ss.salon_id = c.salon_id
+  left join public.salon_payment_settings pp on pp.salon_id = c.salon_id
+  where c.salon_id is not null;
+$fn$;
+grant execute on function public.get_shop() to anon, authenticated;
+
+-- --------------------------------------------------- 2. shop analytics -----
+create or replace function public.shop_analytics(p_from date, p_to date)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id();
+begin
+  if not public.is_manager() then
+    return json_build_object('ok', false, 'error', 'دسترسی ندارید');
+  end if;
+  if p_from is null or p_to is null or p_to < p_from or p_to - p_from > 400 then
+    return json_build_object('ok', false, 'error', 'بازهٔ نامعتبر');
+  end if;
+  return (
+    with o as (
+      select * from public.orders
+       where salon_id = v_salon and status in ('pending', 'confirmed', 'ready', 'shipped', 'delivered')
+         and (created_at at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))::date between p_from and p_to
+    ), li as (
+      select i.*, p.category, pc.cost_price
+        from public.order_items i join o on o.id = i.order_id
+        left join public.products p on p.id = i.product_id
+        left join public.product_costs pc on pc.product_id = i.product_id
+    ), visits as (
+      select distinct customer_phone as phone from public.appointments
+       where salon_id = v_salon and status = 'completed' and date between p_from and p_to
+    ), buyers as (
+      select distinct customer_phone as phone from o
+    )
+    select json_build_object(
+      'ok', true,
+      'orders', (select count(*) from o),
+      'revenue', coalesce((select sum(subtotal - coupon_discount) from o), 0),
+      'shipping', coalesce((select sum(shipping_fee) from o), 0),
+      'discount', coalesce((select sum(coupon_discount) from o), 0),
+      'items', coalesce((select sum(qty) from li), 0),
+      'buyers', (select count(*) from buyers),
+      'cogs', coalesce((select sum(qty * cost_price) from li where cost_price is not null), 0),
+      'revenue_with_cost', coalesce((select sum(qty * unit_price) from li where cost_price is not null), 0),
+      'items_revenue', coalesce((select sum(qty * unit_price) from li), 0),
+      'visit_customers', (select count(*) from visits),
+      'buyers_with_visit', (select count(*) from buyers b join visits v on v.phone = b.phone),
+      'top_products', coalesce((
+        select json_agg(t order by t.revenue desc) from (
+          select name, sum(qty)::int as qty, sum(qty * unit_price) as revenue,
+                 case when bool_and(cost_price is not null) then sum(qty * (unit_price - cost_price)) end as profit
+            from li group by name order by 3 desc limit 8) t), '[]'::json),
+      'by_category', coalesce((
+        select json_agg(t order by t.revenue desc) from (
+          select coalesce(nullif(category, ''), 'other') as category, sum(qty * unit_price) as revenue
+            from li group by 1) t), '[]'::json),
+      'daily', coalesce((
+        select json_agg(t order by t.date) from (
+          select (created_at at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))::date as date, sum(subtotal - coupon_discount) as revenue
+            from o group by 1) t), '[]'::json)
+    )
+  );
+end;
+$fn$;
+grant execute on function public.shop_analytics(date, date) to authenticated;
+
+-- ------------------------------------------------------ 3. client record ----
+create table if not exists public.client_records (
+  salon_id       uuid not null references public.salons (id) on delete cascade default public.current_salon_id(),
+  phone          text not null check (phone ~ '^09[0-9]{9}$'),
+  allergies      text not null default '' check (length(allergies) <= 300),
+  hair_type      text not null default '' check (length(hair_type) <= 60),
+  skin_type      text not null default '' check (length(skin_type) <= 60),
+  color_formula  text not null default '' check (length(color_formula) <= 400),
+  patch_test_at  date,
+  notes          text not null default '' check (length(notes) <= 600),
+  updated_at     timestamptz not null default now(),
+  updated_by     uuid,
+  primary key (salon_id, phone)
+);
+alter table public.client_records enable row level security;
+-- managers: every client; a stylist: clients who have booked with them
+drop policy if exists p_client_records_staff on public.client_records;
+create policy p_client_records_staff on public.client_records for all
+  using (salon_id = public.current_salon_id() and public.is_staff()
+         and (public.is_manager() or exists (select 1 from public.appointments a
+                where a.salon_id = client_records.salon_id and a.customer_phone = client_records.phone
+                  and a.staff_id = public.my_stylist_id())))
+  with check (salon_id = public.current_salon_id() and public.is_staff()
+         and (public.is_manager() or exists (select 1 from public.appointments a
+                where a.salon_id = client_records.salon_id and a.customer_phone = client_records.phone
+                  and a.staff_id = public.my_stylist_id())));
+grant select, insert, update on public.client_records to authenticated;
+
+create or replace function public.touch_client_record() returns trigger
+language plpgsql set search_path = public as $fn$
+begin
+  new.updated_at := now();
+  new.updated_by := auth.uid();
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_client_records_touch on public.client_records;
+create trigger trg_client_records_touch before insert or update on public.client_records
+  for each row execute function public.touch_client_record();
+
+-- ------------------------------------------------------ 4. visit report -----
+-- Same as v2.49, but the SMS names the client's visit when there is no pet.
+create or replace function public.save_visit_report(
+  p_appt text, p_checks jsonb, p_note text default '', p_photos text[] default '{}',
+  p_product_ids uuid[] default '{}', p_send boolean default false
+)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare a public.appointments; v_checks jsonb := '{}'::jsonb; k text; v_token text; v_link text; v_salon_name text;
+        v_photos text[]; v_products uuid[]; v_already timestamptz; v_title text;
+begin
+  if not public.is_staff() then
+    return json_build_object('ok', false, 'error', 'دسترسی ندارید');
+  end if;
+  select * into a from public.appointments where id = p_appt and salon_id = public.current_salon_id();
+  if a.id is null or not (public.is_manager() or a.staff_id = public.my_stylist_id()) then
+    return json_build_object('ok', false, 'error', 'نوبت پیدا نشد');
+  end if;
+  if a.pet_name is not null then
+    foreach k in array array['fleas', 'ticks', 'skin', 'ears', 'eyes', 'teeth', 'matting', 'nails'] loop
+      if coalesce(p_checks ->> k, '') = 'true' then v_checks := v_checks || jsonb_build_object(k, true); end if;
+    end loop;
+    if coalesce(p_checks ->> 'behavior', '') in ('calm', 'nervous', 'aggressive') then
+      v_checks := v_checks || jsonb_build_object('behavior', p_checks ->> 'behavior');
+    end if;
+  end if;
+  if length(coalesce(p_note, '')) > 600 then
+    return json_build_object('ok', false, 'error', 'یادداشت طولانی است');
+  end if;
+  select coalesce(array_agg(x), '{}') into v_photos
+    from unnest(coalesce(p_photos, '{}')) x
+   where x ~ ('^' || a.salon_id || '/' || a.id || '/(before|after)-[a-z0-9-]{8,64}\.(jpg|jpeg|png|webp)$');
+  if cardinality(v_photos) > 8 then
+    return json_build_object('ok', false, 'error', 'حداکثر ۸ عکس');
+  end if;
+  select coalesce(array_agg(p.id), '{}') into v_products
+    from public.products p where p.id = any (coalesce(p_product_ids, '{}')) and p.salon_id = a.salon_id and p.active;
+  if cardinality(v_products) > 4 then
+    return json_build_object('ok', false, 'error', 'حداکثر ۴ محصول پیشنهادی');
+  end if;
+
+  select sent_at into v_already from public.pet_visit_reports where appointment_id = a.id;
+  insert into public.pet_visit_reports as r (appointment_id, salon_id, pet_id, checks, note, photos, product_ids)
+  values (a.id, a.salon_id, a.pet_id, v_checks, trim(coalesce(p_note, '')), v_photos, v_products)
+  on conflict (appointment_id) do update
+     set checks = excluded.checks, note = excluded.note, photos = excluded.photos,
+         product_ids = excluded.product_ids, updated_at = now();
+
+  if a.pet_id is not null and v_checks ? 'behavior' then
+    update public.pets set temperament = v_checks ->> 'behavior', updated_at = now() where id = a.pet_id;
+  end if;
+
+  if p_send and a.customer_phone ~ '^09[0-9]{9}$' then
+    v_token := encode(gen_random_bytes(18), 'hex');
+    update public.pet_visit_reports set token_hash = encode(digest(v_token, 'sha256'), 'hex'), sent_at = now()
+     where appointment_id = a.id;
+    v_link := public.public_link('/visit?token=' || v_token);
+    select name into v_salon_name from public.salons where id = a.salon_id;
+    v_title := case when a.pet_name is not null
+                    then 'گزارش آرایش ' || coalesce(nullif(a.pet_name, ''), 'حیوان شما')
+                    else coalesce(nullif(split_part(trim(a.customer_name), ' ', 1), '') || ' عزیز، گزارش', 'گزارش') || ' نوبت شما' end;
+    if v_link is not null then
+      insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+      values (a.salon_id, a.customer_phone,
+              v_title || ' در ' || v_salon_name
+                || case when cardinality(v_photos) > 0 then ' (با عکس قبل و بعد)' else '' end
+                || case when cardinality(v_products) > 0 then ' و محصولات پیشنهادی' else '' end || E':\n' || v_link,
+              'pet_report', 'queued', now());
+    end if;
+    return json_build_object('ok', true, 'sent', v_link is not null, 'link', v_link, 'resent', v_already is not null);
+  end if;
+  return json_build_object('ok', true, 'sent', false);
+end;
+$fn$;
+grant execute on function public.save_visit_report(text, jsonb, text, text[], uuid[], boolean) to authenticated;
+
+create or replace function public.get_visit_report(p_token text)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare r public.pet_visit_reports; a public.appointments; v_found boolean;
+begin
+  if coalesce(p_token, '') !~ '^[0-9a-f]{36}$' then
+    return json_build_object('ok', false);
+  end if;
+  select * into r from public.pet_visit_reports where token_hash = encode(digest(p_token, 'sha256'), 'hex')
+     and sent_at > now() - interval '180 days';
+  if r.appointment_id is null then
+    return json_build_object('ok', false);
+  end if;
+  select * into a from public.appointments where id = r.appointment_id;
+  v_found := exists (select 1 from jsonb_object_keys(r.checks) k where k <> 'behavior');
+  return json_build_object(
+    'ok', true,
+    'salon_name', (select name from public.salons where id = r.salon_id),
+    'salon_slug', (select slug from public.salons where id = r.salon_id),
+    'business_type', (select business_type from public.salons where id = r.salon_id),
+    'pet_name', a.pet_name, 'customer_first_name', nullif(split_part(trim(a.customer_name), ' ', 1), ''),
+    'date', a.date, 'services_label', a.services_label, 'staff_name', a.staff_name,
+    'checks', r.checks, 'note', nullif(r.note, ''), 'photos', r.photos,
+    'vet_partner', case when v_found then nullif((select pet_vet_partner from public.app_settings where salon_id = r.salon_id), '') end,
+    'products', coalesce((select json_agg(json_build_object('id', p.id, 'name', p.name, 'price', p.price, 'photo_path', p.photo_path))
+                            from public.products p
+                            join public.shop_settings ss on ss.salon_id = p.salon_id and ss.enabled
+                           where p.id = any (r.product_ids) and p.active), '[]'::json));
+end;
+$fn$;
+grant execute on function public.get_visit_report(text) to anon, authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.53_growth.sql
+-- =============================================================================
+--  v2.53 — growth tools
+--
+--   4. Off-peak pricing ("ساعت طلایی"): discount rules for quiet hours.
+--   5. Freed slots: a cancelled booking today/tomorrow is also offered by SMS
+--      to regulars who have not been in for a while (on top of the waitlist).
+--   7. Add-on offers at booking: "+ hair mask for X" right after choosing a
+--      service.
+--   8. Events (bride, engagement, …): request → quote → accept → deposit
+--      (online or at the desk) → staged payments.
+--   9. Reviews: 5-star clients are sent to the salon's Google / Neshan page;
+--      a low score alerts the owner by SMS.
+--  10. Booking sources: ?src=instagram links, stored on the booking.
+--  12. Staff monthly targets with a bonus.
+--  13. Platform plans: plans, platform merchant, invoices paid online,
+--      payment-fee report for the platform owner.
+--  Idempotent; safe to run again.
+-- =============================================================================
+
+-- ------------------------------------------------------------ shared -------
+alter table public.sms_messages drop constraint if exists sms_messages_kind_check;
+alter table public.sms_messages add constraint sms_messages_kind_check check (kind in (
+  'confirmation', 'reminder', 'cancellation', 'reschedule', 'campaign', 'loyalty', 'custom',
+  'reconciliation_prompt', 'weekly_summary', 'predictive_rebooking', 'reschedule_proposed',
+  'feedback_request', 'feedback_followup', 'staff_new_booking', 'daily_digest', 'waitlist_offer',
+  'staff_change', 'quote_request', 'quote', 'order', 'order_staff',
+  'pet_update', 'pet_report', 'pet_reminder', 'pet_package', 'gift_card', 'checkin',
+  'slot_offer', 'event', 'rating_alert', 'plan')) not valid;
+
+alter table public.rebooking_tokens drop constraint if exists rebooking_tokens_reason_check;
+alter table public.rebooking_tokens add constraint rebooking_tokens_reason_check
+  check (reason in ('closure', 'predictive', 'manual', 'waitlist', 'quote', 'slot_offer')) not valid;
+
+alter table public.app_settings add column if not exists slot_offer_lapsed boolean not null default false;
+alter table public.app_settings add column if not exists slot_offer_lapsed_days int not null default 45;
+alter table public.app_settings drop constraint if exists app_settings_slot_offer_days_check;
+alter table public.app_settings add constraint app_settings_slot_offer_days_check check (slot_offer_lapsed_days between 14 and 365);
+alter table public.app_settings add column if not exists low_rating_alert boolean not null default true;
+
+-- Helper: weekday in the schema's numbering (0 = Saturday).
+create or replace function public.schema_dow(p date) returns int
+language sql immutable as $$ select (extract(dow from p)::int + 1) % 7 $$;
+grant execute on function public.schema_dow(date) to anon, authenticated;
+
+-- ------------------------------------------------------ 4. off-peak --------
+create table if not exists public.offpeak_rules (
+  id           uuid primary key default gen_random_uuid(),
+  salon_id     uuid not null default public.current_salon_id() references public.salons (id) on delete cascade,
+  day_of_week  int check (day_of_week between 0 and 6),          -- null = every day
+  start_min    int not null check (start_min between 0 and 1439),
+  end_min      int not null check (end_min between 1 and 1440),
+  percent      int not null check (percent between 5 and 50),
+  label        text not null default 'ساعت طلایی' check (length(label) between 1 and 30),
+  active       boolean not null default true,
+  created_at   timestamptz not null default now(),
+  check (end_min > start_min)
+);
+alter table public.offpeak_rules enable row level security;
+drop policy if exists p_offpeak_mgr on public.offpeak_rules;
+create policy p_offpeak_mgr on public.offpeak_rules for all
+  using (public.is_manager() and salon_id = public.current_salon_id())
+  with check (public.is_manager() and salon_id = public.current_salon_id());
+grant select, insert, update, delete on public.offpeak_rules to authenticated;
+
+alter table public.appointments add column if not exists offpeak_discount bigint;
+
+create or replace function public.get_offpeak_rules()
+returns json
+language sql stable security definer set search_path = public as $fn$
+  select coalesce(json_agg(json_build_object('day', day_of_week, 'start', start_min, 'end', end_min, 'percent', percent, 'label', label)
+                           order by percent desc), '[]'::json)
+    from public.offpeak_rules where salon_id = public.current_salon_id() and active;
+$fn$;
+grant execute on function public.get_offpeak_rules() to anon, authenticated;
+
+-- Best matching rule for a date + start minute (null when none).
+create or replace function public.offpeak_percent(p_salon uuid, p_date date, p_start int)
+returns int
+language sql stable security definer set search_path = public as $fn$
+  select max(percent) from public.offpeak_rules
+   where salon_id = p_salon and active
+     and (day_of_week is null or day_of_week = public.schema_dow(p_date))
+     and p_start >= start_min and p_start < end_min;
+$fn$;
+revoke all on function public.offpeak_percent(uuid, date, int) from public, anon, authenticated;
+
+-- Applied by the booking page right after the booking (like a discount code).
+create or replace function public.apply_offpeak(p_appt text, p_phone text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare a public.appointments; v_pct int; v_base bigint; v_disc bigint;
+begin
+  select * into a from public.appointments
+   where id = p_appt and salon_id = public.current_salon_id() and customer_phone = p_phone for update;
+  if a.id is null or a.created_at < now() - interval '30 minutes' or a.offpeak_discount is not null
+     or a.final_price is null or a.status in ('cancelled', 'no_show', 'completed') then
+    return json_build_object('ok', false);
+  end if;
+  v_pct := public.offpeak_percent(a.salon_id, a.date, a.start_min);
+  if v_pct is null then return json_build_object('ok', false); end if;
+  v_base := greatest(0, a.final_price - coalesce(a.transport_fee, 0));
+  v_disc := round(v_base * v_pct / 100.0);
+  perform set_config('app.trusted_rpc', 'on', true);
+  update public.appointments
+     set offpeak_discount = v_disc, final_price = final_price - v_disc,
+         deposit_amount = case when deposit_amount is not null then least(deposit_amount, greatest(1000, final_price - v_disc)) end
+   where id = a.id;
+  perform set_config('app.trusted_rpc', '', true);
+  return json_build_object('ok', true, 'percent', v_pct, 'discount', v_disc, 'final_price', a.final_price - v_disc);
+end;
+$fn$;
+grant execute on function public.apply_offpeak(text, text) to anon, authenticated;
+
+-- ------------------------------------------------- 5. freed slots ----------
+-- The waitlist offer (earlier versions) still runs first; this adds regulars
+-- who have not been in for slot_offer_lapsed_days, max 5 per cancellation,
+-- at most one such SMS per person per 14 days.
+create or replace function public.offer_freed_slot()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare
+  v_set record; v_c record; v_token text; v_link text; v_salon_name text; v_service record;
+  v_now_min int; v_sent int := 0;
+begin
+  if new.status not in ('cancelled', 'cancelled_by_salon')
+     or old.status not in ('pending', 'confirmed', 'rescheduled', 'reschedule_proposed') then
+    return new;
+  end if;
+  if new.date not in (public.salon_today(), public.salon_today() + 1) then return new; end if;
+  v_now_min := extract(hour from now() at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))::int * 60
+             + extract(minute from now() at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))::int;
+  if new.date = public.salon_today() and new.start_min < v_now_min + 60 then return new; end if;
+
+  select * into v_set from public.app_settings where salon_id = new.salon_id;
+  if not coalesce(v_set.slot_offer_lapsed, false) then return new; end if;
+  select name into v_salon_name from public.salons where id = new.salon_id;
+  select name, gender into v_service from public.services where id = new.service_id and salon_id = new.salon_id;
+
+  for v_c in
+    select c.phone, c.name from public.customers c
+     where c.salon_id = new.salon_id and not c.sms_opt_out
+       and c.phone ~ '^09[0-9]{9}$' and c.phone <> new.customer_phone
+       and c.last_booking_at between now() - interval '365 days' and now() - make_interval(days => v_set.slot_offer_lapsed_days)
+       and (v_service.gender not in ('female', 'male') or c.gender = v_service.gender)
+       and not exists (select 1 from public.appointments a
+                        where a.salon_id = c.salon_id and a.customer_phone = c.phone and a.date >= public.salon_today()
+                          and a.status in ('pending', 'confirmed', 'rescheduled', 'reschedule_proposed', 'awaiting_payment'))
+       and not exists (select 1 from public.sms_messages m
+                        where m.salon_id = c.salon_id and m.to_phone = c.phone and m.kind = 'slot_offer'
+                          and m.created_at > now() - interval '14 days')
+     order by c.total_visits desc, c.last_booking_at desc
+     limit 5
+  loop
+    v_token := public.create_rebooking_token(new.salon_id, v_c.phone, new.service_id, new.staff_id, 'slot_offer');
+    update public.rebooking_tokens
+       set preferred_date = new.date, expires_at = least(expires_at, (new.date + 1)::timestamptz)
+     where token_hash = encode(digest(v_token, 'sha256'), 'hex');
+    v_link := public.public_link('/book?token=' || v_token);
+    exit when v_link is null;
+    insert into public.sms_messages (salon_id, to_phone, body, kind, appointment_id, status, scheduled_for)
+    values (new.salon_id, v_c.phone,
+            coalesce(nullif(split_part(trim(v_c.name), ' ', 1), '') || ' عزیز، ', '') || 'یک نوبت '
+              || coalesce(v_service.name, '') || ' ' || case when new.date = public.salon_today() then 'امروز' else 'فردا' end
+              || ' ساعت ' || public.fa_clock(new.start_min) || ' در ' || v_salon_name
+              || ' خالی شد. اولین نفری که رزرو کند، نوبت مال اوست:' || E'\n' || v_link,
+            'slot_offer', new.id, 'queued', now());
+    v_sent := v_sent + 1;
+  end loop;
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_offer_freed_slot on public.appointments;
+create trigger trg_offer_freed_slot after update of status on public.appointments
+  for each row execute function public.offer_freed_slot();
+
+-- ------------------------------------------------- 7. add-on offers ---------
+create table if not exists public.upsell_offers (
+  id              uuid primary key default gen_random_uuid(),
+  salon_id        uuid not null default public.current_salon_id() references public.salons (id) on delete cascade,
+  service_id      text not null references public.services (id) on delete cascade,
+  addon_service_id text not null references public.services (id) on delete cascade,
+  price           bigint not null check (price between 1000 and 10000000000),
+  extra_minutes   int not null default 0 check (extra_minutes between 0 and 240),
+  pitch           text not null default '' check (length(pitch) <= 120),
+  active          boolean not null default true,
+  accepted_count  int not null default 0,
+  created_at      timestamptz not null default now(),
+  unique (salon_id, service_id, addon_service_id),
+  check (service_id <> addon_service_id)
+);
+alter table public.upsell_offers enable row level security;
+drop policy if exists p_upsell_mgr on public.upsell_offers;
+create policy p_upsell_mgr on public.upsell_offers for all
+  using (public.is_manager() and salon_id = public.current_salon_id())
+  with check (public.is_manager() and salon_id = public.current_salon_id());
+grant select, insert, update, delete on public.upsell_offers to authenticated;
+alter table public.appointments add column if not exists upsell_offer_id uuid;
+
+create or replace function public.get_upsell_offers()
+returns json
+language sql stable security definer set search_path = public as $fn$
+  select coalesce(json_agg(json_build_object(
+           'id', o.id, 'service_id', o.service_id, 'addon_name', s.name, 'addon_price', s.price,
+           'price', o.price, 'extra_minutes', o.extra_minutes, 'pitch', o.pitch)), '[]'::json)
+    from public.upsell_offers o join public.services s on s.id = o.addon_service_id and s.salon_id = o.salon_id
+   where o.salon_id = public.current_salon_id() and o.active and s.is_active;
+$fn$;
+grant execute on function public.get_upsell_offers() to anon, authenticated;
+
+create or replace function public.apply_upsell(p_appt text, p_phone text, p_offer uuid)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare a public.appointments; o public.upsell_offers; v_name text;
+begin
+  select * into a from public.appointments
+   where id = p_appt and salon_id = public.current_salon_id() and customer_phone = p_phone for update;
+  if a.id is null or a.created_at < now() - interval '30 minutes' or a.upsell_offer_id is not null
+     or a.status in ('cancelled', 'no_show', 'completed') then
+    return json_build_object('ok', false, 'error', 'این پیشنهاد روی این نوبت قابل اعمال نیست');
+  end if;
+  select * into o from public.upsell_offers where id = p_offer and salon_id = a.salon_id and active and service_id = a.service_id;
+  if o.id is null then return json_build_object('ok', false, 'error', 'پیشنهاد پیدا نشد'); end if;
+  select name into v_name from public.services where id = o.addon_service_id;
+  -- extra time must not run into the stylist's next booking
+  if o.extra_minutes > 0 and exists (
+       select 1 from public.appointments b
+        where b.salon_id = a.salon_id and b.id <> a.id and b.date = a.date and b.staff_id is not distinct from a.staff_id
+          and b.status in ('pending', 'confirmed', 'rescheduled', 'reschedule_proposed', 'awaiting_payment')
+          and b.start_min < a.end_min + o.extra_minutes and b.end_min > a.end_min) then
+    return json_build_object('ok', false, 'error', 'برای «' || v_name || '» بعد از این نوبت وقت خالی نیست — در سالن هماهنگ کنید');
+  end if;
+  perform set_config('app.trusted_rpc', 'on', true);
+  update public.appointments
+     set upsell_offer_id = o.id, end_min = end_min + o.extra_minutes,
+         extra_charges = coalesce(extra_charges, '[]'::jsonb) || jsonb_build_array(jsonb_build_object('label', v_name, 'amount', o.price)),
+         final_price = case when final_price is not null then final_price + o.price end
+   where id = a.id;
+  perform set_config('app.trusted_rpc', '', true);
+  update public.upsell_offers set accepted_count = accepted_count + 1 where id = o.id;
+  return json_build_object('ok', true, 'label', v_name, 'amount', o.price, 'extra_minutes', o.extra_minutes);
+end;
+$fn$;
+grant execute on function public.apply_upsell(text, text, uuid) to anon, authenticated;
+
+-- ------------------------------------------------------- 8. events ---------
+create table if not exists public.event_requests (
+  id              uuid primary key default gen_random_uuid(),
+  salon_id        uuid not null references public.salons (id) on delete cascade,
+  kind            text not null check (kind in ('bride', 'engagement', 'party', 'groom', 'other')),
+  event_date      date not null,
+  guests          int not null default 1 check (guests between 1 and 30),
+  customer_name   text not null check (length(trim(customer_name)) between 1 and 80),
+  customer_phone  text not null check (customer_phone ~ '^09[0-9]{9}$'),
+  services        text not null default '' check (length(services) <= 400),
+  note            text not null default '' check (length(note) <= 600),
+  status          text not null default 'new' check (status in ('new', 'quoted', 'accepted', 'declined', 'cancelled', 'done')),
+  quote_total     bigint check (quote_total between 0 and 100000000000),
+  deposit_amount  bigint check (deposit_amount between 0 and 100000000000),
+  quote_terms     text not null default '' check (length(quote_terms) <= 1500),
+  quote_note      text not null default '' check (length(quote_note) <= 600),
+  token_hash      text unique,
+  quoted_at       timestamptz,
+  accepted_at     timestamptz,
+  created_at      timestamptz not null default now()
+);
+create index if not exists event_requests_salon_idx on public.event_requests (salon_id, status, event_date);
+alter table public.event_requests enable row level security;
+drop policy if exists p_event_requests_staff on public.event_requests;
+create policy p_event_requests_staff on public.event_requests for select
+  using (public.is_staff() and salon_id = public.current_salon_id());
+grant select on public.event_requests to authenticated;
+
+create table if not exists public.event_payments (
+  id          uuid primary key default gen_random_uuid(),
+  event_id    uuid not null references public.event_requests (id) on delete cascade,
+  salon_id    uuid not null references public.salons (id) on delete cascade,
+  amount      bigint not null check (amount > 0),
+  method      text not null check (method in ('online', 'desk')),
+  ref         text not null default '',
+  note        text not null default '' check (length(note) <= 200),
+  created_at  timestamptz not null default now()
+);
+create index if not exists event_payments_event_idx on public.event_payments (event_id);
+alter table public.event_payments enable row level security;
+drop policy if exists p_event_payments_staff on public.event_payments;
+create policy p_event_payments_staff on public.event_payments for select
+  using (public.is_staff() and salon_id = public.current_salon_id());
+grant select on public.event_payments to authenticated;
+
+alter table public.payments add column if not exists event_request_id uuid references public.event_requests (id) on delete set null;
+
+create or replace function public.create_event_request(p_kind text, p_date date, p_guests int, p_name text, p_phone text,
+                                                       p_services text default '', p_note text default '')
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id(); v_id uuid;
+begin
+  if v_salon is null then return json_build_object('ok', false, 'error', 'سالن پیدا نشد'); end if;
+  if coalesce(p_phone, '') !~ '^09[0-9]{9}$' then return json_build_object('ok', false, 'error', 'شماره موبایل نامعتبر است'); end if;
+  if trim(coalesce(p_name, '')) = '' then return json_build_object('ok', false, 'error', 'نام لازم است'); end if;
+  if p_date is null or p_date < public.salon_today() + 1 or p_date > public.salon_today() + 365 then
+    return json_build_object('ok', false, 'error', 'تاریخ مراسم را درست انتخاب کنید');
+  end if;
+  if p_kind not in ('bride', 'engagement', 'party', 'groom', 'other') then return json_build_object('ok', false, 'error', 'نوع مراسم نامعتبر است'); end if;
+  if not public.check_rate_limit('event:' || v_salon || ':' || p_phone, 3, 1440) then
+    return json_build_object('ok', false, 'error', 'درخواست شما ثبت شده است؛ سالن با شما تماس می‌گیرد');
+  end if;
+  insert into public.event_requests (salon_id, kind, event_date, guests, customer_name, customer_phone, services, note)
+  values (v_salon, p_kind, p_date, greatest(1, least(30, coalesce(p_guests, 1))), trim(p_name), p_phone,
+          left(trim(coalesce(p_services, '')), 400), left(trim(coalesce(p_note, '')), 600))
+  returning id into v_id;
+  return json_build_object('ok', true, 'id', v_id);
+end;
+$fn$;
+grant execute on function public.create_event_request(text, date, int, text, text, text, text) to anon, authenticated;
+
+-- The manager prices it; the client gets a link to read the terms and accept.
+create or replace function public.quote_event(p_id uuid, p_total bigint, p_deposit bigint, p_terms text, p_note text default '')
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare e public.event_requests; v_token text; v_link text; v_salon_name text;
+begin
+  if not public.is_manager() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  select * into e from public.event_requests where id = p_id and salon_id = public.current_salon_id() for update;
+  if e.id is null or e.status not in ('new', 'quoted') then return json_build_object('ok', false, 'error', 'درخواست پیدا نشد'); end if;
+  if coalesce(p_total, 0) < 1000 or coalesce(p_deposit, 0) < 0 or p_deposit > p_total then
+    return json_build_object('ok', false, 'error', 'مبلغ کل و بیعانه را درست وارد کنید');
+  end if;
+  v_token := encode(gen_random_bytes(18), 'hex');
+  update public.event_requests
+     set status = 'quoted', quote_total = p_total, deposit_amount = p_deposit, quote_terms = left(trim(coalesce(p_terms, '')), 1500),
+         quote_note = left(trim(coalesce(p_note, '')), 600), token_hash = encode(digest(v_token, 'sha256'), 'hex'), quoted_at = now()
+   where id = e.id;
+  v_link := public.public_link('/event?token=' || v_token);
+  select name into v_salon_name from public.salons where id = e.salon_id;
+  if v_link is not null then
+    insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+    values (e.salon_id, e.customer_phone,
+            coalesce(nullif(split_part(e.customer_name, ' ', 1), ''), 'مشتری') || ' عزیز، پیش‌فاکتور مراسم شما در ' || v_salon_name
+              || ' آماده است. برای دیدن جزئیات و تایید:' || E'\n' || v_link,
+            'event', 'queued', now());
+  end if;
+  return json_build_object('ok', true, 'sent', v_link is not null, 'link', v_link);
+end;
+$fn$;
+grant execute on function public.quote_event(uuid, bigint, bigint, text, text) to authenticated;
+
+create or replace function public.set_event_status(p_id uuid, p_status text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if not public.is_manager() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  if p_status not in ('declined', 'cancelled', 'done') then return json_build_object('ok', false, 'error', 'وضعیت نامعتبر'); end if;
+  update public.event_requests set status = p_status where id = p_id and salon_id = public.current_salon_id();
+  return json_build_object('ok', found);
+end;
+$fn$;
+grant execute on function public.set_event_status(uuid, text) to authenticated;
+
+-- Payments at the desk (cash / card machine), any number of instalments.
+create or replace function public.record_event_payment(p_id uuid, p_amount bigint, p_note text default '')
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare e public.event_requests; v_paid bigint;
+begin
+  if not public.is_staff() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  select * into e from public.event_requests where id = p_id and salon_id = public.current_salon_id() for update;
+  if e.id is null or e.status in ('declined', 'cancelled') then return json_build_object('ok', false, 'error', 'مراسم پیدا نشد'); end if;
+  if coalesce(p_amount, 0) < 1000 then return json_build_object('ok', false, 'error', 'مبلغ را وارد کنید'); end if;
+  insert into public.event_payments (event_id, salon_id, amount, method, note) values (e.id, e.salon_id, p_amount, 'desk', left(coalesce(p_note, ''), 200));
+  if e.status in ('new', 'quoted') then update public.event_requests set status = 'accepted', accepted_at = now() where id = e.id; end if;
+  select coalesce(sum(amount), 0) into v_paid from public.event_payments where event_id = e.id;
+  return json_build_object('ok', true, 'paid', v_paid, 'left', greatest(0, coalesce(e.quote_total, 0) - v_paid));
+end;
+$fn$;
+grant execute on function public.record_event_payment(uuid, bigint, text) to authenticated;
+
+create or replace function public.get_event_quote(p_token text)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare e public.event_requests;
+begin
+  if coalesce(p_token, '') !~ '^[0-9a-f]{36}$' then return json_build_object('ok', false); end if;
+  select * into e from public.event_requests where token_hash = encode(digest(p_token, 'sha256'), 'hex');
+  if e.id is null or e.status in ('declined', 'cancelled') then return json_build_object('ok', false); end if;
+  return json_build_object('ok', true, 'id', e.id, 'kind', e.kind, 'event_date', e.event_date, 'guests', e.guests,
+    'customer_name', e.customer_name, 'services', e.services, 'status', e.status,
+    'quote_total', e.quote_total, 'deposit_amount', e.deposit_amount, 'quote_terms', e.quote_terms, 'quote_note', e.quote_note,
+    'paid', coalesce((select sum(amount) from public.event_payments p where p.event_id = e.id), 0),
+    'salon_name', (select name from public.salons where id = e.salon_id),
+    'salon_slug', (select slug from public.salons where id = e.salon_id),
+    'online', coalesce((select zarinpal_merchant_id from public.salon_payment_settings where salon_id = e.salon_id), '') <> '');
+end;
+$fn$;
+grant execute on function public.get_event_quote(text) to anon, authenticated;
+
+create or replace function public.accept_event_quote(p_token text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare e public.event_requests;
+begin
+  if coalesce(p_token, '') !~ '^[0-9a-f]{36}$' then return json_build_object('ok', false, 'error', 'لینک نامعتبر است'); end if;
+  select * into e from public.event_requests where token_hash = encode(digest(p_token, 'sha256'), 'hex') for update;
+  if e.id is null or e.status not in ('quoted', 'accepted') then return json_build_object('ok', false, 'error', 'این پیش‌فاکتور قابل تایید نیست'); end if;
+  if e.event_date < public.salon_today() then return json_build_object('ok', false, 'error', 'تاریخ مراسم گذشته است'); end if;
+  update public.event_requests set status = 'accepted', accepted_at = coalesce(accepted_at, now()) where id = e.id;
+  return json_build_object('ok', true, 'id', e.id, 'deposit', e.deposit_amount);
+end;
+$fn$;
+grant execute on function public.accept_event_quote(text) to anon, authenticated;
+
+-- Called by the payment Edge Function after Zarinpal verifies the deposit.
+create or replace function public.confirm_event_payment(p_id uuid, p_amount bigint, p_ref text)
+returns void
+language plpgsql security definer set search_path = public as $fn$
+declare e public.event_requests; v_salon_name text;
+begin
+  select * into e from public.event_requests where id = p_id for update;
+  if e.id is null then return; end if;
+  if exists (select 1 from public.event_payments where event_id = e.id and method = 'online' and ref = coalesce(p_ref, '')) then return; end if;
+  insert into public.event_payments (event_id, salon_id, amount, method, ref) values (e.id, e.salon_id, p_amount, 'online', coalesce(p_ref, ''));
+  update public.event_requests set status = 'accepted', accepted_at = coalesce(accepted_at, now()) where id = e.id and status in ('quoted', 'accepted');
+  select name into v_salon_name from public.salons where id = e.salon_id;
+  insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+  values (e.salon_id, e.customer_phone, 'بیعانهٔ مراسم شما (' || public.fa_money(p_amount) || ' تومان) دریافت شد و تاریخ '
+          || public.fa_digits(to_char(e.event_date, 'YYYY/MM/DD')) || ' برایتان رزرو است — ' || v_salon_name, 'event', 'queued', now());
+end;
+$fn$;
+revoke all on function public.confirm_event_payment(uuid, bigint, text) from public, anon, authenticated;
+grant execute on function public.confirm_event_payment(uuid, bigint, text) to service_role;
+
+-- ------------------------------------------------------- 9. reviews --------
+alter table public.salon_profiles add column if not exists review_url text not null default '';
+alter table public.salon_profiles drop constraint if exists salon_profiles_review_url_check;
+alter table public.salon_profiles add constraint salon_profiles_review_url_check check (review_url = '' or review_url ~ '^https://[^ ]{4,250}$');
+
+-- After a 5-star feedback, the page offers the salon's public review link.
+create or replace function public.feedback_followup(p_booking text)
+returns json
+language sql stable security definer set search_path = public as $fn$
+  select json_build_object('ok', true,
+           'review_url', case when f.rating = 5 then nullif(p.review_url, '') end,
+           'salon_name', s.name)
+    from public.feedbacks f
+    join public.appointments a on a.id = f.booking_id
+    join public.salons s on s.id = a.salon_id
+    left join public.salon_profiles p on p.salon_id = a.salon_id
+   where f.booking_id = p_booking and f.created_at > now() - interval '1 day';
+$fn$;
+grant execute on function public.feedback_followup(text) to anon, authenticated;
+
+create or replace function public.alert_low_rating()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare a public.appointments; v_owner text; v_on boolean;
+begin
+  if new.rating > 3 then return new; end if;
+  select * into a from public.appointments where id = new.booking_id;
+  if a.id is null then return new; end if;
+  select coalesce(low_rating_alert, true) into v_on from public.app_settings where salon_id = a.salon_id;
+  if not coalesce(v_on, true) then return new; end if;
+  select owner_phone into v_owner from public.salons where id = a.salon_id;
+  if coalesce(v_owner, '') !~ '^09[0-9]{9}$' then return new; end if;
+  insert into public.sms_messages (salon_id, to_phone, body, kind, appointment_id, status, scheduled_for)
+  values (a.salon_id, v_owner,
+          'امتیاز ' || public.fa_digits(new.rating::text) || ' از ۵ — ' || coalesce(nullif(a.customer_name, ''), 'مشتری')
+            || ' ' || a.customer_phone
+            || case when coalesce(a.staff_name, '') <> '' then ' (آرایشگر: ' || a.staff_name || ')' else '' end
+            || case when coalesce(new.comment, '') <> '' then E'\n«' || left(new.comment, 200) || '»' else '' end
+            || E'\nبا مشتری تماس بگیرید تا نارضایتی به نظر منفی در اینترنت تبدیل نشود.',
+          'rating_alert', a.id, 'queued', now());
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_alert_low_rating on public.feedbacks;
+create trigger trg_alert_low_rating after insert on public.feedbacks
+  for each row execute function public.alert_low_rating();
+
+-- ----------------------------------------------------- 10. sources ---------
+alter table public.appointments add column if not exists source text;
+alter table public.appointments drop constraint if exists appointments_source_check;
+alter table public.appointments add constraint appointments_source_check check (source is null or source ~ '^[a-z0-9_-]{1,30}$') not valid;
+
+create or replace function public.set_booking_source(p_appt text, p_phone text, p_source text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_src text := lower(trim(coalesce(p_source, ''))); n int;
+begin
+  if v_src !~ '^[a-z0-9_-]{1,30}$' then return json_build_object('ok', false); end if;
+  perform set_config('app.trusted_rpc', 'on', true);
+  update public.appointments set source = v_src
+   where id = p_appt and salon_id = public.current_salon_id() and customer_phone = p_phone
+     and source is null and created_at > now() - interval '30 minutes';
+  get diagnostics n = row_count;
+  perform set_config('app.trusted_rpc', '', true);
+  return json_build_object('ok', n = 1);
+end;
+$fn$;
+grant execute on function public.set_booking_source(text, text, text) to anon, authenticated;
+
+-- --------------------------------------------------- 12. staff targets -----
+create table if not exists public.staff_targets (
+  salon_id        uuid not null default public.current_salon_id() references public.salons (id) on delete cascade,
+  stylist_id      text not null references public.stylists (id) on delete cascade,
+  month           date not null check (extract(day from month) = 1),
+  revenue_target  bigint not null default 0 check (revenue_target >= 0),
+  visits_target   int not null default 0 check (visits_target >= 0),
+  bonus           bigint not null default 0 check (bonus >= 0),
+  primary key (stylist_id, month)
+);
+alter table public.staff_targets enable row level security;
+drop policy if exists p_staff_targets_mgr on public.staff_targets;
+create policy p_staff_targets_mgr on public.staff_targets for all
+  using (public.is_manager() and salon_id = public.current_salon_id())
+  with check (public.is_manager() and salon_id = public.current_salon_id()
+              and exists (select 1 from public.stylists s where s.id = stylist_id and s.salon_id = public.current_salon_id()));
+drop policy if exists p_staff_targets_own on public.staff_targets;
+create policy p_staff_targets_own on public.staff_targets for select
+  using (salon_id = public.current_salon_id() and stylist_id = public.my_stylist_id());
+grant select, insert, update, delete on public.staff_targets to authenticated;
+
+-- Progress for a month: managers see everyone, a stylist only themself.
+create or replace function public.targets_progress(p_month date)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id(); v_from date := date_trunc('month', p_month)::date;
+        v_to date := (date_trunc('month', p_month) + interval '1 month - 1 day')::date;
+begin
+  if not public.is_staff() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  return json_build_object('ok', true, 'month', v_from, 'rows', coalesce((
+    select json_agg(r order by r.name) from (
+      select s.id, s.name, coalesce(t.revenue_target, 0) as revenue_target, coalesce(t.visits_target, 0) as visits_target,
+             coalesce(t.bonus, 0) as bonus,
+             coalesce(sum(a.final_price - coalesce(a.transport_fee, 0)) filter (where a.id is not null), 0) as revenue,
+             count(a.id)::int as visits
+        from public.stylists s
+        left join public.staff_targets t on t.stylist_id = s.id and t.month = v_from
+        left join public.appointments a on a.salon_id = s.salon_id and a.staff_id = s.id and a.status = 'completed'
+                                       and a.date between v_from and v_to
+       where s.salon_id = v_salon and s.active and (public.is_manager() or s.id = public.my_stylist_id())
+       group by s.id, s.name, t.revenue_target, t.visits_target, t.bonus) r), '[]'::json));
+end;
+$fn$;
+grant execute on function public.targets_progress(date) to authenticated;
+
+-- ------------------------------------------------------ 13. plans ----------
+create table if not exists public.platform_plans (
+  id               text primary key check (id ~ '^[a-z0-9_-]{2,20}$'),
+  name             text not null check (length(trim(name)) between 1 and 40),
+  monthly_price    bigint not null check (monthly_price between 0 and 10000000000),
+  sms_quota        int not null default 0 check (sms_quota >= 0),
+  payment_fee_pct  numeric(4, 2) not null default 0 check (payment_fee_pct between 0 and 20),
+  active           boolean not null default true,
+  sort_order       int not null default 0
+);
+alter table public.platform_plans enable row level security;
+drop policy if exists p_platform_plans_read on public.platform_plans;
+create policy p_platform_plans_read on public.platform_plans for select using (active or public.is_platform_admin());
+drop policy if exists p_platform_plans_admin on public.platform_plans;
+create policy p_platform_plans_admin on public.platform_plans for all
+  using (public.is_platform_admin()) with check (public.is_platform_admin());
+grant select on public.platform_plans to authenticated;
+grant insert, update, delete on public.platform_plans to authenticated;
+
+create table if not exists public.platform_settings (
+  id                    boolean primary key default true check (id),
+  zarinpal_merchant_id  text not null default '' check (zarinpal_merchant_id = '' or zarinpal_merchant_id ~ '^[0-9a-fA-F-]{36}$'),
+  trial_days            int not null default 14 check (trial_days between 0 and 90)
+);
+insert into public.platform_settings (id) values (true) on conflict do nothing;
+alter table public.platform_settings enable row level security;
+drop policy if exists p_platform_settings_admin on public.platform_settings;
+create policy p_platform_settings_admin on public.platform_settings for all
+  using (public.is_platform_admin()) with check (public.is_platform_admin());
+grant select, update on public.platform_settings to authenticated;
+
+alter table public.salons add column if not exists plan_id text references public.platform_plans (id) on delete set null;
+alter table public.salons add column if not exists plan_expires_at date;
+
+create table if not exists public.plan_invoices (
+  id          uuid primary key default gen_random_uuid(),
+  salon_id    uuid not null references public.salons (id) on delete cascade,
+  plan_id     text not null references public.platform_plans (id),
+  months      int not null check (months in (1, 3, 6, 12)),
+  amount      bigint not null check (amount >= 1000),
+  status      text not null default 'awaiting_payment' check (status in ('awaiting_payment', 'paid', 'cancelled')),
+  ref         text not null default '',
+  created_at  timestamptz not null default now(),
+  paid_at     timestamptz
+);
+alter table public.plan_invoices enable row level security;
+drop policy if exists p_plan_invoices_read on public.plan_invoices;
+create policy p_plan_invoices_read on public.plan_invoices for select
+  using ((public.is_manager() and salon_id = public.current_salon_id()) or public.is_platform_admin());
+grant select on public.plan_invoices to authenticated;
+
+alter table public.payments add column if not exists plan_invoice_id uuid references public.plan_invoices (id) on delete set null;
+alter table public.payments drop constraint if exists payments_target_check;
+alter table public.payments add constraint payments_target_check check (
+  (appointment_id is not null)::int + (order_id is not null)::int + (gift_card_id is not null)::int
+  + (package_purchase_id is not null)::int + (event_request_id is not null)::int + (plan_invoice_id is not null)::int = 1) not valid;
+
+-- The salon's own view: plan, expiry, this month's SMS and online payments.
+create or replace function public.my_plan()
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id(); s public.salons; p public.platform_plans; v_volume bigint;
+begin
+  if not public.is_manager() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  select * into s from public.salons where id = v_salon;
+  select * into p from public.platform_plans where id = s.plan_id;
+  select coalesce(sum(amount_rial)::bigint / 10, 0) into v_volume from public.payments
+   where salon_id = v_salon and status = 'paid' and plan_invoice_id is null and paid_at >= (date_trunc('month', public.salon_today())::timestamp at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'));
+  return json_build_object('ok', true,
+    'plan_id', s.plan_id, 'plan_name', p.name, 'expires_at', s.plan_expires_at,
+    'expired', s.plan_expires_at is not null and s.plan_expires_at < public.salon_today(),
+    'sms_quota', p.sms_quota,
+    'sms_used', (select count(*) from public.sms_messages m where m.salon_id = v_salon and m.status in ('sent', 'delivered')
+                   and m.created_at >= (date_trunc('month', public.salon_today())::timestamp at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))),
+    'online_volume', v_volume, 'payment_fee_pct', coalesce(p.payment_fee_pct, 0),
+    'payment_fee', round(v_volume * coalesce(p.payment_fee_pct, 0) / 100.0),
+    'online', coalesce((select zarinpal_merchant_id from public.platform_settings), '') <> '',
+    'plans', coalesce((select json_agg(json_build_object('id', id, 'name', name, 'monthly_price', monthly_price,
+                                                         'sms_quota', sms_quota, 'payment_fee_pct', payment_fee_pct) order by sort_order, monthly_price)
+                         from public.platform_plans where active), '[]'::json));
+end;
+$fn$;
+grant execute on function public.my_plan() to authenticated;
+
+create or replace function public.create_plan_invoice(p_plan text, p_months int)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare p public.platform_plans; v_id uuid; v_amount bigint;
+begin
+  if not public.is_manager() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  if coalesce((select zarinpal_merchant_id from public.platform_settings), '') = '' then
+    return json_build_object('ok', false, 'error', 'پرداخت آنلاین اشتراک فعال نیست — با پشتیبانی تماس بگیرید');
+  end if;
+  select * into p from public.platform_plans where id = p_plan and active;
+  if p.id is null or p_months not in (1, 3, 6, 12) then return json_build_object('ok', false, 'error', 'پلن نامعتبر است'); end if;
+  -- 3/6/12 months: 5/10/20 percent off
+  v_amount := round(p.monthly_price * p_months * case p_months when 3 then 0.95 when 6 then 0.90 when 12 then 0.80 else 1 end);
+  if v_amount < 1000 then return json_build_object('ok', false, 'error', 'این پلن رایگان است'); end if;
+  insert into public.plan_invoices (salon_id, plan_id, months, amount) values (public.current_salon_id(), p.id, p_months, v_amount)
+  returning id into v_id;
+  return json_build_object('ok', true, 'id', v_id, 'amount', v_amount);
+end;
+$fn$;
+grant execute on function public.create_plan_invoice(text, int) to authenticated;
+
+create or replace function public.extend_salon_plan(p_salon uuid, p_plan text, p_months int)
+returns date
+language plpgsql security definer set search_path = public as $fn$
+declare v_until date;
+begin
+  update public.salons
+     set plan_id = p_plan,
+         plan_expires_at = (greatest(coalesce(plan_expires_at, public.salon_today()), public.salon_today()) + make_interval(months => p_months))::date
+   where id = p_salon
+  returning plan_expires_at into v_until;
+  return v_until;
+end;
+$fn$;
+revoke all on function public.extend_salon_plan(uuid, text, int) from public, anon, authenticated;
+
+create or replace function public.confirm_plan_payment(p_id uuid, p_ref text)
+returns void
+language plpgsql security definer set search_path = public as $fn$
+declare i public.plan_invoices;
+begin
+  select * into i from public.plan_invoices where id = p_id for update;
+  if i.id is null or i.status <> 'awaiting_payment' then return; end if;
+  update public.plan_invoices set status = 'paid', paid_at = now(), ref = coalesce(p_ref, '') where id = i.id;
+  perform public.extend_salon_plan(i.salon_id, i.plan_id, i.months);
+end;
+$fn$;
+revoke all on function public.confirm_plan_payment(uuid, text) from public, anon, authenticated;
+grant execute on function public.confirm_plan_payment(uuid, text) to service_role;
+
+-- Platform admin: set a plan by hand (trial, cash payment, gift).
+create or replace function public.admin_set_plan(p_salon uuid, p_plan text, p_expires date)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if not public.is_platform_admin() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  if p_plan is not null and not exists (select 1 from public.platform_plans where id = p_plan) then
+    return json_build_object('ok', false, 'error', 'پلن پیدا نشد');
+  end if;
+  update public.salons set plan_id = p_plan, plan_expires_at = p_expires where id = p_salon;
+  return json_build_object('ok', found);
+end;
+$fn$;
+revoke all on function public.admin_set_plan(uuid, text, date) from public, anon;
+grant execute on function public.admin_set_plan(uuid, text, date) to authenticated;
+
+-- Platform admin: one row per salon for a month — plan, subscription paid,
+-- online payment volume and the fee owed, SMS sent.
+create or replace function public.admin_billing_report(p_month date)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_from timestamptz := date_trunc('month', p_month)::timestamp at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran');
+        v_to timestamptz := (date_trunc('month', p_month) + interval '1 month')::timestamp at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran');
+begin
+  if not public.is_platform_admin() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  return json_build_object('ok', true, 'rows', coalesce((
+    select json_agg(r order by r.fee + r.subscription desc) from (
+      select s.id, s.name, s.slug, s.plan_id, p.name as plan_name, s.plan_expires_at,
+             coalesce((select sum(i.amount) from public.plan_invoices i where i.salon_id = s.id and i.status = 'paid'
+                        and i.paid_at >= v_from and i.paid_at < v_to), 0) as subscription,
+             coalesce((select sum(y.amount_rial)::bigint / 10 from public.payments y where y.salon_id = s.id and y.status = 'paid'
+                        and y.plan_invoice_id is null and y.paid_at >= v_from and y.paid_at < v_to), 0) as online_volume,
+             round(coalesce((select sum(y.amount_rial)::bigint / 10 from public.payments y where y.salon_id = s.id and y.status = 'paid'
+                        and y.plan_invoice_id is null and y.paid_at >= v_from and y.paid_at < v_to), 0)
+                   * coalesce(p.payment_fee_pct, 0) / 100.0) as fee,
+             (select count(*) from public.sms_messages m where m.salon_id = s.id and m.status in ('sent', 'delivered')
+               and m.created_at >= v_from and m.created_at < v_to) as sms_sent,
+             p.sms_quota
+        from public.salons s left join public.platform_plans p on p.id = s.plan_id
+       where s.active) r), '[]'::json));
+end;
+$fn$;
+revoke all on function public.admin_billing_report(date) from public, anon;
+grant execute on function public.admin_billing_report(date) to authenticated;
+
+-- ---------------------------------------- accounting: event income too -----
+create or replace function public.revenue_extras(p_from date, p_to date)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id();
+begin
+  if not public.is_manager() then
+    return json_build_object('ok', false, 'error', 'دسترسی ندارید');
+  end if;
+  return json_build_object(
+    'ok', true,
+    'shop_revenue', coalesce((select sum(total) from public.orders o
+                               where o.salon_id = v_salon and o.created_at::date between p_from and p_to
+                                 and o.status in ('pending', 'confirmed', 'ready', 'shipped', 'delivered')), 0),
+    'shop_orders', (select count(*) from public.orders o
+                     where o.salon_id = v_salon and o.created_at::date between p_from and p_to
+                       and o.status in ('pending', 'confirmed', 'ready', 'shipped', 'delivered')),
+    'packages_revenue', coalesce((select sum(price_paid) from public.package_purchases p
+                                   where p.salon_id = v_salon and p.status = 'active' and p.created_at::date between p_from and p_to), 0),
+    'packages_count', (select count(*) from public.package_purchases p
+                        where p.salon_id = v_salon and p.status = 'active' and p.created_at::date between p_from and p_to),
+    'gift_cards_revenue', coalesce((select sum(amount) from public.gift_cards g
+                                     where g.salon_id = v_salon and g.status = 'active' and g.created_at::date between p_from and p_to), 0),
+    'gift_cards_outstanding', coalesce((select sum(balance) from public.gift_cards g
+                                         where g.salon_id = v_salon and g.status = 'active' and g.expires_at >= public.salon_today()), 0),
+    'events_revenue', coalesce((select sum(amount) from public.event_payments e
+                                 where e.salon_id = v_salon and e.created_at::date between p_from and p_to), 0),
+    'top_products', coalesce((
+      select json_agg(t order by t.revenue desc) from (
+        select i.name, sum(i.qty)::int as qty, sum(i.qty * i.unit_price) as revenue
+          from public.order_items i join public.orders o on o.id = i.order_id
+         where o.salon_id = v_salon and o.created_at::date between p_from and p_to
+           and o.status in ('pending', 'confirmed', 'ready', 'shipped', 'delivered')
+         group by i.name order by 3 desc limit 8) t), '[]'::json),
+    'low_stock', coalesce((
+      select json_agg(json_build_object('id', p.id, 'name', p.name, 'stock', p.stock) order by p.stock)
+        from public.products p
+       where p.salon_id = v_salon and p.active and p.stock is not null and p.stock <= p.low_stock_at), '[]'::json));
+end;
+$fn$;
+grant execute on function public.revenue_extras(date, date) to authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.54_chair_rental.sql
+-- =============================================================================
+--  v2.54 — independent stylists: chair rental and revenue share
+--
+--  Each stylist can have a contract (latest effective_from wins):
+--    employee  — today's model: the salon's revenue, commission to the stylist
+--    rent      — fixed monthly rent, the rest is the stylist's
+--    share     — a percentage of every service goes to the salon
+--    hybrid    — lower rent + lower percentage
+--  and a collector:
+--    salon     — the salon takes the money (desk, online) and pays the
+--                stylist their part at settlement
+--    stylist   — the stylist takes it (own card reader); the salon only holds
+--                what came through it (online deposits, gift cards, packages)
+--  stylist_statement() gives the month's account in one place; a ledger keeps
+--  charges (supplies, …), credits and settlements. contract_income() lets
+--  accounting show the salon's real income next to the total turnover.
+--  Idempotent; safe to run again.
+-- =============================================================================
+
+create table if not exists public.stylist_contracts (
+  id                 uuid primary key default gen_random_uuid(),
+  salon_id           uuid not null default public.current_salon_id() references public.salons (id) on delete cascade,
+  stylist_id         text not null references public.stylists (id) on delete cascade,
+  kind               text not null check (kind in ('employee', 'rent', 'share', 'hybrid')),
+  rent_amount        bigint not null default 0 check (rent_amount between 0 and 10000000000),
+  service_share_pct  numeric(5, 2) not null default 0 check (service_share_pct between 0 and 100),
+  collector          text not null default 'salon' check (collector in ('salon', 'stylist')),
+  rent_due_day       int not null default 1 check (rent_due_day between 1 and 28),
+  effective_from     date not null default date_trunc('month', current_date)::date,
+  note               text not null default '' check (length(note) <= 300),
+  created_at         timestamptz not null default now(),
+  unique (stylist_id, effective_from)
+);
+create index if not exists stylist_contracts_idx on public.stylist_contracts (salon_id, stylist_id, effective_from desc);
+alter table public.stylist_contracts enable row level security;
+drop policy if exists p_contracts_mgr on public.stylist_contracts;
+create policy p_contracts_mgr on public.stylist_contracts for all
+  using (public.is_manager() and salon_id = public.current_salon_id())
+  with check (public.is_manager() and salon_id = public.current_salon_id()
+              and exists (select 1 from public.stylists s where s.id = stylist_id and s.salon_id = public.current_salon_id()));
+drop policy if exists p_contracts_own on public.stylist_contracts;
+create policy p_contracts_own on public.stylist_contracts for select
+  using (salon_id = public.current_salon_id() and stylist_id = public.my_stylist_id());
+grant select, insert, update, delete on public.stylist_contracts to authenticated;
+
+-- charge: the stylist owes the salon (supplies, damage, …)
+-- credit: the salon owes the stylist (a refund, a correction, …)
+-- paid_to_salon / paid_to_stylist: settlements
+create table if not exists public.stylist_ledger (
+  id          uuid primary key default gen_random_uuid(),
+  salon_id    uuid not null default public.current_salon_id() references public.salons (id) on delete cascade,
+  stylist_id  text not null references public.stylists (id) on delete cascade,
+  month       date not null check (extract(day from month) = 1),
+  kind        text not null check (kind in ('charge', 'credit', 'paid_to_salon', 'paid_to_stylist')),
+  amount      bigint not null check (amount > 0 and amount <= 10000000000),
+  label       text not null default '' check (length(label) <= 120),
+  created_by  uuid default auth.uid(),
+  created_at  timestamptz not null default now()
+);
+create index if not exists stylist_ledger_idx on public.stylist_ledger (salon_id, stylist_id, month);
+alter table public.stylist_ledger enable row level security;
+drop policy if exists p_ledger_mgr on public.stylist_ledger;
+create policy p_ledger_mgr on public.stylist_ledger for all
+  using (public.is_manager() and salon_id = public.current_salon_id())
+  with check (public.is_manager() and salon_id = public.current_salon_id()
+              and exists (select 1 from public.stylists s where s.id = stylist_id and s.salon_id = public.current_salon_id()));
+drop policy if exists p_ledger_own on public.stylist_ledger;
+create policy p_ledger_own on public.stylist_ledger for select
+  using (salon_id = public.current_salon_id() and stylist_id = public.my_stylist_id());
+grant select, insert, update, delete on public.stylist_ledger to authenticated;
+
+-- The contract in force on a day.
+create or replace function public.contract_on(p_stylist text, p_day date)
+returns public.stylist_contracts
+language sql stable security definer set search_path = public as $fn$
+  select * from public.stylist_contracts
+   where stylist_id = p_stylist and effective_from <= p_day
+   order by effective_from desc limit 1;
+$fn$;
+revoke all on function public.contract_on(text, date) from public, anon, authenticated;
+
+-- Per-booking money of one stylist in a date range:
+--   gross   — value of the work: what the client paid + gift card + the
+--             prepaid package's share of this session (pick-up fees excluded)
+--   online  — deposits paid online (always land with the salon)
+--   gift    — gift-card part (the salon sold the card)
+--   pkg     — package session value (the salon sold the package)
+create or replace function public.stylist_takings(p_salon uuid, p_stylist text, p_from date, p_to date)
+returns table (visits int, gross bigint, online bigint, gift bigint, pkg bigint)
+language sql stable security definer set search_path = public as $fn$
+  select count(*)::int,
+         coalesce(sum(coalesce(a.final_price, 0) - coalesce(a.transport_fee, 0) + coalesce(a.gift_card_amount, 0)
+                      + coalesce(round(pp.price_paid::numeric / nullif(pp.sessions_total, 0)), 0)), 0)::bigint,
+         coalesce(sum((select coalesce(sum(y.amount_rial), 0) / 10 from public.payments y
+                        where y.appointment_id = a.id and y.status = 'paid')), 0)::bigint,
+         coalesce(sum(coalesce(a.gift_card_amount, 0)), 0)::bigint,
+         coalesce(sum(coalesce(round(pp.price_paid::numeric / nullif(pp.sessions_total, 0)), 0)), 0)::bigint
+    from public.appointments a
+    left join public.package_purchases pp on pp.id = a.package_purchase_id
+   where a.salon_id = p_salon and a.staff_id = p_stylist and a.status = 'completed'
+     and a.date between p_from and p_to;
+$fn$;
+revoke all on function public.stylist_takings(uuid, text, date, date) from public, anon, authenticated;
+
+-- The month's account of one stylist. balance > 0: the salon owes the
+-- stylist; balance < 0: the stylist owes the salon.
+create or replace function public.stylist_statement(p_stylist text, p_month date)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare
+  v_salon uuid := public.current_salon_id();
+  v_from date := date_trunc('month', p_month)::date;
+  v_to date := (date_trunc('month', p_month) + interval '1 month - 1 day')::date;
+  c public.stylist_contracts; t record; v_name text;
+  v_share bigint; v_rent bigint; v_held bigint; v_charges bigint; v_credits bigint; v_to_salon bigint; v_to_stylist bigint; v_balance bigint;
+begin
+  if not public.is_staff() or not (public.is_manager() or p_stylist = public.my_stylist_id()) then
+    return json_build_object('ok', false, 'error', 'دسترسی ندارید');
+  end if;
+  select name into v_name from public.stylists where id = p_stylist and salon_id = v_salon;
+  if v_name is null then return json_build_object('ok', false, 'error', 'آرایشگر پیدا نشد'); end if;
+  c := public.contract_on(p_stylist, v_to);
+  if c.id is null or c.kind = 'employee' then
+    return json_build_object('ok', true, 'stylist_id', p_stylist, 'name', v_name, 'month', v_from, 'kind', coalesce(c.kind, 'employee'));
+  end if;
+  select * into t from public.stylist_takings(v_salon, p_stylist, v_from, v_to);
+  v_share := round(t.gross * c.service_share_pct / 100.0);
+  v_rent := case when c.kind in ('rent', 'hybrid') then c.rent_amount else 0 end;
+  -- what the salon is holding of this stylist's work
+  v_held := case when c.collector = 'salon' then t.gross else t.online + t.gift + t.pkg end;
+  select coalesce(sum(amount) filter (where kind = 'charge'), 0), coalesce(sum(amount) filter (where kind = 'credit'), 0),
+         coalesce(sum(amount) filter (where kind = 'paid_to_salon'), 0), coalesce(sum(amount) filter (where kind = 'paid_to_stylist'), 0)
+    into v_charges, v_credits, v_to_salon, v_to_stylist
+    from public.stylist_ledger where salon_id = v_salon and stylist_id = p_stylist and month = v_from;
+  v_balance := v_held - v_share - v_rent - v_charges + v_credits - v_to_stylist + v_to_salon;
+  return json_build_object('ok', true, 'stylist_id', p_stylist, 'name', v_name, 'month', v_from,
+    'kind', c.kind, 'collector', c.collector, 'service_share_pct', c.service_share_pct, 'rent_amount', c.rent_amount,
+    'visits', t.visits, 'gross', t.gross, 'online', t.online, 'gift', t.gift, 'pkg', t.pkg,
+    'held_by_salon', v_held, 'held_by_stylist', t.gross - v_held,
+    'salon_share', v_share, 'rent', v_rent, 'charges', v_charges, 'credits', v_credits,
+    'paid_to_salon', v_to_salon, 'paid_to_stylist', v_to_stylist,
+    'stylist_net', t.gross - v_share - v_rent - v_charges + v_credits,
+    'balance', v_balance,
+    'ledger', coalesce((select json_agg(json_build_object('id', id, 'kind', kind, 'amount', amount, 'label', label, 'created_at', created_at) order by created_at)
+                          from public.stylist_ledger where salon_id = v_salon and stylist_id = p_stylist and month = v_from), '[]'::json));
+end;
+$fn$;
+grant execute on function public.stylist_statement(text, date) to authenticated;
+
+-- Accounting: for independent stylists the salon's income is the share and
+-- the rent (rent spread over the days of the range), not the turnover.
+create or replace function public.contract_income(p_from date, p_to date)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id();
+begin
+  if not public.is_manager() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  return json_build_object('ok', true, 'rows', coalesce((
+    select json_agg(r) from (
+      select s.id, s.name, c.kind, c.collector, t.gross,
+             round(t.gross * c.service_share_pct / 100.0)::bigint as share,
+             case when c.kind in ('rent', 'hybrid')
+                  then round(c.rent_amount * ((p_to - p_from + 1) / 30.0))::bigint else 0 end as rent
+        from public.stylists s
+        cross join lateral (select * from public.contract_on(s.id, p_to)) c
+        cross join lateral (select * from public.stylist_takings(v_salon, s.id, p_from, p_to)) t
+       where s.salon_id = v_salon and c.id is not null and c.kind <> 'employee') r), '[]'::json));
+end;
+$fn$;
+grant execute on function public.contract_income(date, date) to authenticated;
+
+-- Rent reminder on the due day (daily cron).
+alter table public.sms_messages drop constraint if exists sms_messages_kind_check;
+alter table public.sms_messages add constraint sms_messages_kind_check check (kind in (
+  'confirmation', 'reminder', 'cancellation', 'reschedule', 'campaign', 'loyalty', 'custom',
+  'reconciliation_prompt', 'weekly_summary', 'predictive_rebooking', 'reschedule_proposed',
+  'feedback_request', 'feedback_followup', 'staff_new_booking', 'daily_digest', 'waitlist_offer',
+  'staff_change', 'quote_request', 'quote', 'order', 'order_staff',
+  'pet_update', 'pet_report', 'pet_reminder', 'pet_package', 'gift_card', 'checkin',
+  'slot_offer', 'event', 'rating_alert', 'plan', 'rent')) not valid;
+
+create or replace function public.rent_reminders()
+returns int
+language plpgsql security definer set search_path = public as $fn$
+declare r record; n int := 0; v_day date := public.salon_today();
+begin
+  for r in
+    select s.salon_id, s.id, s.phone, sa.name as salon_name, c.rent_amount
+      from public.stylists s
+      join public.salons sa on sa.id = s.salon_id and sa.active
+      cross join lateral (select * from public.contract_on(s.id, v_day)) c
+     where s.active and c.id is not null and c.kind in ('rent', 'hybrid') and c.rent_amount > 0
+       and c.rent_due_day = extract(day from v_day)::int and s.phone ~ '^09[0-9]{9}$'
+       and not exists (select 1 from public.sms_messages m where m.salon_id = s.salon_id and m.to_phone = s.phone
+                         and m.kind = 'rent' and m.created_at > now() - interval '20 days')
+  loop
+    insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+    values (r.salon_id, r.phone, 'یادآوری: اجارهٔ صندلی این ماه (' || public.fa_money(r.rent_amount) || ' تومان) امروز سررسید است — '
+            || r.salon_name || '. صورت‌حساب کامل در پنل شما.', 'rent', 'queued', now());
+    n := n + 1;
+  end loop;
+  return n;
+end;
+$fn$;
+revoke all on function public.rent_reminders() from public, anon, authenticated;
+grant execute on function public.rent_reminders() to service_role;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.55_independent_plus.sql
+-- =============================================================================
+--  v2.55 — independent stylists, part 2
+--
+--  1. Product sales per stylist: orders get a seller (by default the stylist
+--     who last served that client in the past 60 days; the manager can
+--     change it). Contracts get product_commission_pct, credited to the
+--     stylist in the month's statement.
+--  2. Own prices: when the contract allows it, a stylist sets their own price
+--     per service; the booking page shows it and apply_stylist_price() puts
+--     it on the fresh booking.
+--  3. Private clients: clients who only ever came to an independent stylist
+--     with private_clients on are left out of the salon's marketing SMS
+--     (campaigns, freed-slot offers).
+--  Idempotent; safe to run again.
+-- =============================================================================
+
+alter table public.stylist_contracts add column if not exists product_commission_pct numeric(5, 2) not null default 0;
+alter table public.stylist_contracts drop constraint if exists stylist_contracts_product_pct_check;
+alter table public.stylist_contracts add constraint stylist_contracts_product_pct_check check (product_commission_pct between 0 and 100);
+alter table public.stylist_contracts add column if not exists own_prices boolean not null default false;
+alter table public.stylist_contracts add column if not exists private_clients boolean not null default false;
+
+-- ------------------------------------------------------ 1. product sales ----
+alter table public.orders add column if not exists sold_by text references public.stylists (id) on delete set null;
+create index if not exists orders_sold_by_idx on public.orders (salon_id, sold_by, created_at);
+
+create or replace function public.default_order_seller()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if new.sold_by is null then
+    select a.staff_id into new.sold_by
+      from public.appointments a
+     where a.salon_id = new.salon_id and a.customer_phone = new.customer_phone and a.status = 'completed'
+       and a.staff_id is not null and a.date >= public.salon_today() - 60
+     order by a.date desc, a.start_min desc limit 1;
+  end if;
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_default_order_seller on public.orders;
+create trigger trg_default_order_seller before insert on public.orders
+  for each row execute function public.default_order_seller();
+
+create or replace function public.set_order_seller(p_order uuid, p_stylist text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if not public.is_manager() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  if p_stylist is not null and not exists (select 1 from public.stylists where id = p_stylist and salon_id = public.current_salon_id()) then
+    return json_build_object('ok', false, 'error', 'آرایشگر پیدا نشد');
+  end if;
+  update public.orders set sold_by = p_stylist where id = p_order and salon_id = public.current_salon_id();
+  return json_build_object('ok', found);
+end;
+$fn$;
+grant execute on function public.set_order_seller(uuid, text) to authenticated;
+
+-- The statement, now with product sales and the stylist's commission on them
+-- (the salon always holds shop money, so the commission is the stylist's credit).
+create or replace function public.stylist_statement(p_stylist text, p_month date)
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare
+  v_salon uuid := public.current_salon_id();
+  v_from date := date_trunc('month', p_month)::date;
+  v_to date := (date_trunc('month', p_month) + interval '1 month - 1 day')::date;
+  c public.stylist_contracts; t record; v_name text;
+  v_share bigint; v_rent bigint; v_held bigint; v_charges bigint; v_credits bigint; v_to_salon bigint; v_to_stylist bigint; v_balance bigint;
+  v_products bigint; v_product_comm bigint;
+begin
+  if not public.is_staff() or not (public.is_manager() or p_stylist = public.my_stylist_id()) then
+    return json_build_object('ok', false, 'error', 'دسترسی ندارید');
+  end if;
+  select name into v_name from public.stylists where id = p_stylist and salon_id = v_salon;
+  if v_name is null then return json_build_object('ok', false, 'error', 'آرایشگر پیدا نشد'); end if;
+  c := public.contract_on(p_stylist, v_to);
+  if c.id is null or c.kind = 'employee' then
+    return json_build_object('ok', true, 'stylist_id', p_stylist, 'name', v_name, 'month', v_from, 'kind', coalesce(c.kind, 'employee'));
+  end if;
+  select * into t from public.stylist_takings(v_salon, p_stylist, v_from, v_to);
+  v_share := round(t.gross * c.service_share_pct / 100.0);
+  v_rent := case when c.kind in ('rent', 'hybrid') then c.rent_amount else 0 end;
+  v_held := case when c.collector = 'salon' then t.gross else t.online + t.gift + t.pkg end;
+  select coalesce(sum(o.subtotal - o.coupon_discount), 0) into v_products
+    from public.orders o
+   where o.salon_id = v_salon and o.sold_by = p_stylist
+     and o.status in ('pending', 'confirmed', 'ready', 'shipped', 'delivered')
+     and (o.created_at at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))::date between v_from and v_to;
+  v_product_comm := round(v_products * c.product_commission_pct / 100.0);
+  select coalesce(sum(amount) filter (where kind = 'charge'), 0), coalesce(sum(amount) filter (where kind = 'credit'), 0),
+         coalesce(sum(amount) filter (where kind = 'paid_to_salon'), 0), coalesce(sum(amount) filter (where kind = 'paid_to_stylist'), 0)
+    into v_charges, v_credits, v_to_salon, v_to_stylist
+    from public.stylist_ledger where salon_id = v_salon and stylist_id = p_stylist and month = v_from;
+  v_balance := v_held - v_share - v_rent - v_charges + v_credits + v_product_comm - v_to_stylist + v_to_salon;
+  return json_build_object('ok', true, 'stylist_id', p_stylist, 'name', v_name, 'month', v_from,
+    'kind', c.kind, 'collector', c.collector, 'service_share_pct', c.service_share_pct, 'rent_amount', c.rent_amount,
+    'product_commission_pct', c.product_commission_pct,
+    'visits', t.visits, 'gross', t.gross, 'online', t.online, 'gift', t.gift, 'pkg', t.pkg,
+    'held_by_salon', v_held, 'held_by_stylist', t.gross - v_held,
+    'salon_share', v_share, 'rent', v_rent, 'charges', v_charges, 'credits', v_credits,
+    'product_sales', v_products, 'product_commission', v_product_comm,
+    'paid_to_salon', v_to_salon, 'paid_to_stylist', v_to_stylist,
+    'stylist_net', t.gross - v_share - v_rent - v_charges + v_credits + v_product_comm,
+    'balance', v_balance,
+    'ledger', coalesce((select json_agg(json_build_object('id', id, 'kind', kind, 'amount', amount, 'label', label, 'created_at', created_at) order by created_at)
+                          from public.stylist_ledger where salon_id = v_salon and stylist_id = p_stylist and month = v_from), '[]'::json));
+end;
+$fn$;
+grant execute on function public.stylist_statement(text, date) to authenticated;
+
+-- --------------------------------------------------------- 2. own prices ----
+create table if not exists public.stylist_prices (
+  salon_id    uuid not null default public.current_salon_id() references public.salons (id) on delete cascade,
+  stylist_id  text not null references public.stylists (id) on delete cascade,
+  service_id  text not null references public.services (id) on delete cascade,
+  price       bigint not null check (price between 1000 and 10000000000),
+  updated_at  timestamptz not null default now(),
+  primary key (stylist_id, service_id)
+);
+alter table public.stylist_prices enable row level security;
+-- yes/no only: may this stylist set their own prices today? (no contract details leak)
+create or replace function public.stylist_own_prices(p_stylist text)
+returns boolean
+language sql stable security definer set search_path = public as $fn$
+  select coalesce((public.contract_on(p_stylist, public.salon_today())).own_prices, false);
+$fn$;
+grant execute on function public.stylist_own_prices(text) to authenticated;
+revoke all on function public.contract_on(text, date) from public, anon, authenticated;
+
+-- managers always; a stylist only for themself and only when the contract allows it
+drop policy if exists p_stylist_prices_rw on public.stylist_prices;
+create policy p_stylist_prices_rw on public.stylist_prices for all
+  using (salon_id = public.current_salon_id() and public.is_staff()
+         and (public.is_manager() or (stylist_id = public.my_stylist_id() and public.stylist_own_prices(stylist_id))))
+  with check (salon_id = public.current_salon_id() and public.is_staff()
+         and exists (select 1 from public.services v where v.id = service_id and v.salon_id = public.current_salon_id())
+         and (public.is_manager() or (stylist_id = public.my_stylist_id() and public.stylist_own_prices(stylist_id))));
+grant select, insert, update, delete on public.stylist_prices to authenticated;
+
+create or replace function public.get_stylist_prices()
+returns json
+language sql stable security definer set search_path = public as $fn$
+  select coalesce(json_agg(json_build_object('stylist_id', p.stylist_id, 'service_id', p.service_id, 'price', p.price)), '[]'::json)
+    from public.stylist_prices p
+   where p.salon_id = public.current_salon_id()
+     and coalesce((public.contract_on(p.stylist_id, public.salon_today())).own_prices, false);
+$fn$;
+grant execute on function public.get_stylist_prices() to anon, authenticated;
+
+-- Right after a booking (like the discount code): the stylist's own price.
+create or replace function public.apply_stylist_price(p_appt text, p_phone text)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare a public.appointments; v_price bigint;
+begin
+  select * into a from public.appointments
+   where id = p_appt and salon_id = public.current_salon_id() and customer_phone = p_phone for update;
+  if a.id is null or a.created_at < now() - interval '30 minutes' or a.final_price is null or a.staff_id is null
+     or a.status in ('cancelled', 'no_show', 'completed') or a.coupon_code is not null or a.offpeak_discount is not null then
+    return json_build_object('ok', false);
+  end if;
+  select p.price into v_price from public.stylist_prices p
+   where p.stylist_id = a.staff_id and p.service_id = a.service_id
+     and coalesce((public.contract_on(p.stylist_id, public.salon_today())).own_prices, false);
+  if v_price is null or v_price = coalesce(a.original_price, a.final_price) then return json_build_object('ok', false); end if;
+  perform set_config('app.trusted_rpc', 'on', true);
+  update public.appointments
+     set final_price = greatest(0, final_price + (v_price - coalesce(original_price, final_price))),
+         original_price = v_price,
+         deposit_amount = case when deposit_amount is not null
+                               then least(deposit_amount, greatest(1000, final_price + (v_price - coalesce(original_price, final_price)))) end
+   where id = a.id;
+  perform set_config('app.trusted_rpc', '', true);
+  return json_build_object('ok', true, 'price', v_price,
+    'final_price', greatest(0, a.final_price + (v_price - coalesce(a.original_price, a.final_price))));
+end;
+$fn$;
+grant execute on function public.apply_stylist_price(text, text) to anon, authenticated;
+
+-- ---------------------------------------------------- 3. private clients ----
+create or replace function public.is_private_client(p_salon uuid, p_phone text)
+returns boolean
+language sql stable security definer set search_path = public as $fn$
+  select exists (
+           select 1 from public.appointments a
+            where a.salon_id = p_salon and a.customer_phone = p_phone and a.status = 'completed'
+              and coalesce((public.contract_on(a.staff_id, public.salon_today())).private_clients, false))
+     and not exists (
+           select 1 from public.appointments a
+            where a.salon_id = p_salon and a.customer_phone = p_phone and a.status = 'completed'
+              and not coalesce((public.contract_on(a.staff_id, public.salon_today())).private_clients, false));
+$fn$;
+revoke all on function public.is_private_client(uuid, text) from public, anon, authenticated;
+grant execute on function public.is_private_client(uuid, text) to service_role;
+
+create or replace function public.skip_private_marketing()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if new.kind in ('campaign', 'slot_offer') and public.is_private_client(new.salon_id, new.to_phone) then
+    return null; -- an independent stylist's own client: no salon marketing
+  end if;
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_skip_private_marketing on public.sms_messages;
+create trigger trg_skip_private_marketing before insert on public.sms_messages
+  for each row execute function public.skip_private_marketing();
+
+-- For the panel's campaign sender (it sends through the SMS Edge Function).
+create or replace function public.private_client_phones()
+returns json
+language sql stable security definer set search_path = public as $fn$
+  select coalesce(json_agg(distinct a.customer_phone), '[]'::json)
+    from public.appointments a
+   where public.is_manager() and a.salon_id = public.current_salon_id() and a.status = 'completed'
+     and public.is_private_client(a.salon_id, a.customer_phone);
+$fn$;
+grant execute on function public.private_client_phones() to authenticated;
+
+
+-- >>>>>>>>>> supabase/migrations/v2.58_subscription.sql
+-- v2.58: subscription enforcement — run after v2.57 (v2.55 is the last schema change before this).
+--
+-- The platform owner (platform admin) controls everything from /admin:
+--   * enforce_subscription — off by default, so upgrading never locks anyone out
+--   * grace_days           — days after expiry the salon still works (renewal window)
+--   * reminder_days        — days before expiry the owner gets a renewal SMS
+--   * discount_3/6/12      — percent off for 3/6/12-month purchases
+--   * trial_days           — (v2.53) given to every new salon
+--   * support_phone        — shown on the locked screen
+--
+-- States per salon:  active → (expiry) → grace → (expiry + grace_days) → locked
+-- A salon with no expiry date (plan_expires_at is null) is never locked.
+-- When locked:
+--   * staff lose data access (is_staff / is_manager return false) — except the
+--     subscription itself: my_plan, create_plan_invoice and the payment flow
+--   * no new appointments or shop orders (triggers)
+--   * no SMS goes out, except the renewal reminders (kind 'plan')
+-- Safe to run more than once.
+
+-- ------------------------------------------------------- 1. settings -------
+alter table public.platform_settings add column if not exists enforce_subscription boolean not null default false;
+alter table public.platform_settings add column if not exists grace_days int not null default 5;
+alter table public.platform_settings add column if not exists reminder_days int[] not null default '{14,7,3,1}';
+alter table public.platform_settings add column if not exists discount_3 numeric(4, 1) not null default 5;
+alter table public.platform_settings add column if not exists discount_6 numeric(4, 1) not null default 10;
+alter table public.platform_settings add column if not exists discount_12 numeric(4, 1) not null default 20;
+alter table public.platform_settings add column if not exists support_phone text not null default '';
+alter table public.platform_settings drop constraint if exists platform_settings_sub_check;
+alter table public.platform_settings add constraint platform_settings_sub_check check (
+  grace_days between 0 and 30
+  and cardinality(reminder_days) <= 8 and 1 <= all (reminder_days) and 60 >= all (reminder_days)
+  and discount_3 between 0 and 50 and discount_6 between 0 and 50 and discount_12 between 0 and 50
+  and (support_phone = '' or support_phone ~ '^0[0-9]{10}$'));
+
+-- ------------------------------------------------------- 2. state ----------
+create or replace function public.subscription_state(p_salon uuid)
+returns text
+language sql stable security definer set search_path = public as $fn$
+  select case
+           when not coalesce(ps.enforce_subscription, false) or s.plan_expires_at is null then 'active'
+           when public.salon_today() <= s.plan_expires_at then 'active'
+           when public.salon_today() <= s.plan_expires_at + ps.grace_days then 'grace'
+           else 'locked'
+         end
+    from public.salons s left join public.platform_settings ps on true
+   where s.id = p_salon;
+$fn$;
+revoke all on function public.subscription_state(uuid) from public, anon, authenticated;
+grant execute on function public.subscription_state(uuid) to service_role; -- send-sms Edge Function
+
+-- What the app needs to show (booking page, panel banner, lock screen).
+create or replace function public.subscription_status()
+returns json
+language sql stable security definer set search_path = public as $fn$
+  select json_build_object(
+           'ok', s.id is not null,
+           'state', coalesce(public.subscription_state(s.id), 'active'),
+           'expires_at', s.plan_expires_at,
+           'days_left', case when s.plan_expires_at is null then null else s.plan_expires_at - public.salon_today() end,
+           'grace_until', case when s.plan_expires_at is null then null else s.plan_expires_at + coalesce(ps.grace_days, 0) end,
+           'enforced', coalesce(ps.enforce_subscription, false),
+           'warn_days', coalesce((select max(d) from unnest(ps.reminder_days) d), 14),
+           'support_phone', coalesce(ps.support_phone, ''))
+    from public.salons s left join public.platform_settings ps on true
+   where s.id = public.current_salon_id();
+$fn$;
+grant execute on function public.subscription_status() to anon, authenticated;
+
+-- ------------------------------------------------ 3. lock data access ------
+-- The same helpers every RLS policy and staff RPC already uses.
+create or replace function public.is_staff() returns boolean
+language sql stable security definer set search_path = public as $fn$
+  select coalesce((select u.active and public.subscription_state(u.salon_id) <> 'locked'
+                     from public.users u where u.id = auth.uid()), false)
+     and public.mfa_ok();
+$fn$;
+
+create or replace function public.is_manager() returns boolean
+language sql stable security definer set search_path = public as $fn$
+  select case when auth.uid() is null then public.my_role() in ('owner', 'manager')
+              else coalesce(public.my_role() in ('owner', 'manager')
+                            and public.subscription_state(public.current_salon_id()) <> 'locked', false) end;
+$fn$;
+
+-- The salon's owner/manager may always reach the subscription itself.
+create or replace function public.is_billing_manager() returns boolean
+language sql stable security definer set search_path = public as $fn$
+  select coalesce(public.my_role() in ('owner', 'manager'), false);
+$fn$;
+grant execute on function public.is_billing_manager() to authenticated;
+
+-- ---------------------------------------- 4. block new work when locked ----
+create or replace function public.block_when_locked()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if public.subscription_state(new.salon_id) = 'locked' and not public.is_platform_admin() then
+    raise exception 'اشتراک این سالن به پایان رسیده است' using errcode = 'P0001';
+  end if;
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_block_locked_appointment on public.appointments;
+create trigger trg_block_locked_appointment before insert on public.appointments
+  for each row execute function public.block_when_locked();
+drop trigger if exists trg_block_locked_order on public.orders;
+create trigger trg_block_locked_order before insert on public.orders
+  for each row execute function public.block_when_locked();
+
+create or replace function public.skip_sms_when_locked()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+begin
+  if new.kind <> 'plan' and public.subscription_state(new.salon_id) = 'locked' then
+    return null; -- nothing goes out for a locked salon, except its renewal reminders
+  end if;
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_skip_sms_when_locked on public.sms_messages;
+create trigger trg_skip_sms_when_locked before insert on public.sms_messages
+  for each row execute function public.skip_sms_when_locked();
+
+-- --------------------------------------------- 5. trial for new salons -----
+create or replace function public.default_trial()
+returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare v_days int;
+begin
+  if new.plan_expires_at is null then
+    select trial_days into v_days from public.platform_settings;
+    if coalesce(v_days, 0) > 0 then new.plan_expires_at := public.salon_today() + v_days; end if;
+  end if;
+  return new;
+end;
+$fn$;
+drop trigger if exists trg_default_trial on public.salons;
+create trigger trg_default_trial before insert on public.salons
+  for each row execute function public.default_trial();
+
+-- -------------------------------------- 6. billing reachable when locked ---
+create or replace function public.my_plan()
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+declare v_salon uuid := public.current_salon_id(); s public.salons; p public.platform_plans; ps public.platform_settings; v_volume bigint;
+begin
+  if not public.is_billing_manager() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  select * into s from public.salons where id = v_salon;
+  select * into p from public.platform_plans where id = s.plan_id;
+  select * into ps from public.platform_settings;
+  select coalesce(sum(amount_rial)::bigint / 10, 0) into v_volume from public.payments
+   where salon_id = v_salon and status = 'paid' and plan_invoice_id is null and paid_at >= (date_trunc('month', public.salon_today())::timestamp at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'));
+  return json_build_object('ok', true,
+    'plan_id', s.plan_id, 'plan_name', p.name, 'expires_at', s.plan_expires_at,
+    'expired', s.plan_expires_at is not null and s.plan_expires_at < public.salon_today(),
+    'state', public.subscription_state(v_salon),
+    'days_left', case when s.plan_expires_at is null then null else s.plan_expires_at - public.salon_today() end,
+    'grace_until', case when s.plan_expires_at is null then null else s.plan_expires_at + coalesce(ps.grace_days, 0) end,
+    'discounts', json_build_object('3', coalesce(ps.discount_3, 5), '6', coalesce(ps.discount_6, 10), '12', coalesce(ps.discount_12, 20)),
+    'support_phone', coalesce(ps.support_phone, ''),
+    'sms_quota', p.sms_quota,
+    'sms_used', (select count(*) from public.sms_messages m where m.salon_id = v_salon and m.status in ('sent', 'delivered')
+                   and m.created_at >= (date_trunc('month', public.salon_today())::timestamp at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))),
+    'online_volume', v_volume, 'payment_fee_pct', coalesce(p.payment_fee_pct, 0),
+    'payment_fee', round(v_volume * coalesce(p.payment_fee_pct, 0) / 100.0),
+    'online', coalesce(ps.zarinpal_merchant_id, '') <> '',
+    'plans', coalesce((select json_agg(json_build_object('id', id, 'name', name, 'monthly_price', monthly_price,
+                                                         'sms_quota', sms_quota, 'payment_fee_pct', payment_fee_pct) order by sort_order, monthly_price)
+                         from public.platform_plans where active), '[]'::json));
+end;
+$fn$;
+grant execute on function public.my_plan() to authenticated;
+
+-- price for a purchase, with the owner's discounts
+create or replace function public.plan_price(p_plan text, p_months int)
+returns bigint
+language sql stable security definer set search_path = public as $fn$
+  select round(p.monthly_price * p_months * (1 - case p_months when 3 then ps.discount_3 when 6 then ps.discount_6
+                                                               when 12 then ps.discount_12 else 0 end / 100.0))::bigint
+    from public.platform_plans p left join public.platform_settings ps on true
+   where p.id = p_plan and p.active and p_months in (1, 3, 6, 12);
+$fn$;
+revoke all on function public.plan_price(text, int) from public, anon;
+grant execute on function public.plan_price(text, int) to authenticated;
+
+create or replace function public.create_plan_invoice(p_plan text, p_months int)
+returns json
+language plpgsql security definer set search_path = public as $fn$
+declare v_id uuid; v_amount bigint;
+begin
+  if not public.is_billing_manager() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  if coalesce((select zarinpal_merchant_id from public.platform_settings), '') = '' then
+    return json_build_object('ok', false, 'error', 'پرداخت آنلاین اشتراک فعال نیست — با پشتیبانی تماس بگیرید');
+  end if;
+  v_amount := public.plan_price(p_plan, p_months);
+  if v_amount is null then return json_build_object('ok', false, 'error', 'پلن نامعتبر است'); end if;
+  if v_amount < 1000 then return json_build_object('ok', false, 'error', 'این پلن رایگان است'); end if;
+  insert into public.plan_invoices (salon_id, plan_id, months, amount) values (public.current_salon_id(), p_plan, p_months, v_amount)
+  returning id into v_id;
+  return json_build_object('ok', true, 'id', v_id, 'amount', v_amount);
+end;
+$fn$;
+grant execute on function public.create_plan_invoice(text, int) to authenticated;
+
+-- Renewal counts from the old expiry while still in the grace window (no
+-- free days), and from today once locked.
+create or replace function public.extend_salon_plan(p_salon uuid, p_plan text, p_months int)
+returns date
+language plpgsql security definer set search_path = public as $fn$
+declare v_until date; v_grace int;
+begin
+  select coalesce(grace_days, 0) into v_grace from public.platform_settings;
+  update public.salons
+     set plan_id = p_plan,
+         plan_expires_at = (case when plan_expires_at is not null and plan_expires_at + coalesce(v_grace, 0) >= public.salon_today()
+                                 then plan_expires_at else public.salon_today() end
+                            + make_interval(months => p_months))::date
+   where id = p_salon
+  returning plan_expires_at into v_until;
+  return v_until;
+end;
+$fn$;
+revoke all on function public.extend_salon_plan(uuid, text, int) from public, anon, authenticated;
+
+-- --------------------------------------------- 7. renewal reminders ---------
+-- Daily (cron.sql). To the salon owner's phone, at most one a day:
+--   N days before expiry (each N in reminder_days), on expiry, on the last
+--   day of the grace window, and the day the salon is locked.
+create or replace function public.plan_reminders()
+returns int
+language plpgsql security definer set search_path = public as $fn$
+declare r record; n int := 0; v_today date := public.salon_today(); ps public.platform_settings; v_body text; d int;
+begin
+  select * into ps from public.platform_settings;
+  if ps.id is null or not ps.enforce_subscription then return 0; end if;
+  for r in
+    select s.id, s.name, s.owner_phone, s.plan_expires_at
+      from public.salons s
+     where s.active and s.plan_expires_at is not null and s.owner_phone ~ '^09[0-9]{9}$'
+       and not exists (select 1 from public.sms_messages m where m.salon_id = s.id and m.kind = 'plan'
+                         and (m.created_at at time zone coalesce(nullif(current_setting('app.timezone', true), ''), 'Asia/Tehran'))::date = v_today)
+  loop
+    d := r.plan_expires_at - v_today;
+    v_body := case
+      when d > 0 and d = any (ps.reminder_days) then
+        'اشتراک نرم‌افزار نوبت‌دهی «' || r.name || '» ' || public.fa_digits(d::text) || ' روز دیگر تمام می‌شود. برای تمدید: پنل ← تنظیمات سالن ← پروفایل و امنیت.'
+      when d = 0 then
+        'امروز آخرین روز اشتراک «' || r.name || '» است.'
+        || case when ps.grace_days > 0 then ' پس از آن ' || public.fa_digits(ps.grace_days::text) || ' روز مهلت تمدید دارید.' else ' لطفاً امروز تمدید کنید.' end
+      when ps.grace_days > 0 and d = -ps.grace_days then
+        'امروز آخرین روز مهلت تمدید «' || r.name || '» است. از فردا پنل، رزرو آنلاین و پیامک‌ها غیرفعال می‌شوند.'
+      when d = -ps.grace_days - 1 then
+        'اشتراک «' || r.name || '» به پایان رسید و سرویس غیرفعال شد. با تمدید از پنل، همه چیز همان لحظه فعال می‌شود.'
+      else null end;
+    if v_body is not null then
+      if ps.support_phone <> '' then v_body := v_body || ' پشتیبانی: ' || public.fa_digits(ps.support_phone); end if;
+      insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
+      values (r.id, r.owner_phone, v_body, 'plan', 'queued', now());
+      n := n + 1;
+    end if;
+  end loop;
+  return n;
+end;
+$fn$;
+revoke all on function public.plan_reminders() from public, anon, authenticated;
+grant execute on function public.plan_reminders() to service_role;
+
+-- ------------------------------------------- 8. admin: salon states --------
+create or replace function public.admin_subscription_overview()
+returns json
+language plpgsql stable security definer set search_path = public as $fn$
+begin
+  if not public.is_platform_admin() then return json_build_object('ok', false, 'error', 'دسترسی ندارید'); end if;
+  return json_build_object('ok', true, 'rows', coalesce((
+    select json_agg(json_build_object('id', s.id, 'name', s.name, 'slug', s.slug, 'plan_id', s.plan_id,
+                                      'expires_at', s.plan_expires_at, 'state', public.subscription_state(s.id),
+                                      'days_left', s.plan_expires_at - public.salon_today())
+                    order by s.plan_expires_at nulls last)
+      from public.salons s where s.active), '[]'::json));
+end;
+$fn$;
+revoke all on function public.admin_subscription_overview() from public, anon;
+grant execute on function public.admin_subscription_overview() to authenticated;
+

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Plus, Pencil, Gift, Ticket, AlertTriangle, ShieldCheck, Download, Database, Camera, ScanLine, Building2, Image as ImageIcon, X, TrendingUp, Users } from "lucide-react";
+import { Loader2, Plus, Pencil, Gift, Ticket, AlertTriangle, ShieldCheck, Download, Database, Camera, ScanLine, Building2, Image as ImageIcon, X, Users, Layers } from "lucide-react";
+import { PackagesSection } from "./PetCare";
 import { Modal, Switch } from "../components/ui";
 import { formatToman, toFa, digitsOnly, normalizeMobile, isoToJalaliLabel, formatClock } from "../lib/format";
 import {
-  fetchRevenueExtras, fetchCommissionReport, fetchCoupons, saveCoupon, fetchGiftCards, issueGiftCard, giftCardBalance,
+  fetchCommissionReport, fetchCoupons, saveCoupon, fetchGiftCards, issueGiftCard, giftCardBalance,
   fetchSupplies, saveSupply, supplyMove, fetchProfileSettings, saveProfileSettings, uploadGalleryPhoto, galleryUrl,
   mfaStatus, mfaEnroll, mfaVerify, mfaDisable, fetchBackups, backupNow, downloadBackup, fetchBranches, fetchBranchesSummary,
   switchBranch, checkIn,
@@ -30,49 +31,6 @@ const cardTitle = (Icon, text, color = "var(--color-accent-500)") => (
   </p>
 );
 
-/* ------------------------------------------ 1. revenue beyond bookings --- */
-export function RevenueExtrasCard({ days = 30 }) {
-  const [r, setR] = useState(null);
-  useEffect(() => {
-    const [from, to] = rangeDates(days);
-    fetchRevenueExtras(from, to).then(setR);
-  }, [days]);
-  if (!r) return <Spinner />;
-  if (!r.ok) return null;
-  const rows = [
-    ["فروشگاه", r.shop_revenue, `${toFa(r.shop_orders)} سفارش`],
-    ["بسته‌های پیش‌پرداخت", r.packages_revenue, `${toFa(r.packages_count)} بسته`],
-    ["کارت هدیه", r.gift_cards_revenue, `مانده قابل استفاده: ${formatToman(r.gift_cards_outstanding)}`],
-  ];
-  return (
-    <div className="card mb-4" style={{ padding: 14 }} data-card="revenue-extras">
-      {cardTitle(TrendingUp, `درآمدهای دیگر (${toFa(days)} روز اخیر)`, "var(--color-success)")}
-      {rows.map(([label, v, sub]) => (
-        <div key={label} className="flex justify-between gap-2" style={{ padding: "6px 0", borderTop: "1px dashed var(--color-border)", fontSize: 13 }}>
-          <span>{label} <span className="muted" style={{ fontSize: 11.5 }}>({sub})</span></span>
-          <b className="tabular">{formatToman(v || 0)}</b>
-        </div>
-      ))}
-      {r.top_products?.length > 0 && (
-        <>
-          <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>پرفروش‌ترین کالاها</p>
-          {r.top_products.map((p) => (
-            <div key={p.name} className="flex justify-between" style={{ fontSize: 12.5, padding: "3px 0" }}>
-              <span>{p.name} × {toFa(p.qty)}</span><span className="tabular muted">{formatToman(p.revenue)}</span>
-            </div>
-          ))}
-        </>
-      )}
-      {r.low_stock?.length > 0 && (
-        <p className="flex items-start gap-1.5" style={{ fontSize: 12.5, marginTop: 10, color: "var(--color-warning)", lineHeight: 1.8 }}>
-          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 4 }} />
-          موجودی رو به اتمام: {r.low_stock.map((p) => `${p.name} (${toFa(p.stock)})`).join("، ")}
-        </p>
-      )}
-      {r.demo && <p className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>در حالت دمو این گزارش خالی است.</p>}
-    </div>
-  );
-}
 
 /* --------------------------------------------------------- 4. commission --- */
 export function CommissionCard({ bookings, stylists }) {
@@ -110,12 +68,13 @@ export function CommissionCard({ bookings, stylists }) {
 }
 
 /* --------------------------------------------- 3. coupons + gift cards --- */
-export function MarketingTab({ isManager, notify }) {
+export function MarketingTab({ isManager, notify, services = [], showPackages = false }) {
   const [seg, setSeg] = useState(isManager ? "coupons" : "gifts");
   return (
     <div className="fade-in">
       <div className="flex gap-2 mb-3" role="tablist" aria-label="تخفیف و هدیه">
-        {[...(isManager ? [["coupons", "کد تخفیف", Ticket]] : []), ["gifts", "کارت هدیه", Gift]].map(([id, label, Icon]) => (
+        {[...(isManager ? [["coupons", "کد تخفیف", Ticket]] : []), ["gifts", "کارت هدیه", Gift],
+          ...(showPackages ? [["packages", "بسته‌ها", Layers]] : [])].map(([id, label, Icon]) => (
           <button key={id} role="tab" aria-selected={seg === id} className="tap flex-1 flex items-center justify-center gap-1" onClick={() => setSeg(id)}
             style={{ padding: "9px 6px", borderRadius: "var(--radius-md)", fontSize: 12.5, fontWeight: 700,
               background: seg === id ? "var(--color-accent-500)" : "var(--color-surface)", color: seg === id ? "white" : "var(--color-body)",
@@ -126,6 +85,8 @@ export function MarketingTab({ isManager, notify }) {
       </div>
       {seg === "coupons" && isManager && <CouponsSection notify={notify} />}
       {seg === "gifts" && <GiftCardsSection notify={notify} />}
+      {/* v2.52: prepaid packages for men's / women's salons (pet salons keep them under «حیوانات») */}
+      {seg === "packages" && showPackages && <PackagesSection services={services} notify={notify} isManager={isManager} />}
     </div>
   );
 }
@@ -409,7 +370,7 @@ export function ProfileSettingsCard({ notify }) {
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
-  useEffect(() => { fetchProfileSettings().then(setP); }, []);
+  useEffect(() => { fetchProfileSettings().then((d) => setP(d ? { ...d, hadReviewUrl: !!d.review_url } : d)); }, []);
   if (!p) return null;
   const set = (k) => (v) => setP((x) => ({ ...x, [k]: v }));
   async function addPhotos(files) {
@@ -444,6 +405,9 @@ export function ProfileSettingsCard({ notify }) {
       </div>
       <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 8 }}>لینک نقشه (نشان، بلد یا گوگل‌مپ)
         <input dir="ltr" value={p.map_url} maxLength={500} placeholder="https://nshn.ir/..." onChange={(e) => set("map_url")(e.target.value)} style={{ ...input, textAlign: "left" }} />
+      </label>
+      <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 8 }}>لینک ثبت نظر در گوگل‌مپ یا نشان (برای مشتری‌های ۵ ستاره)
+        <input dir="ltr" value={p.review_url || ""} maxLength={250} placeholder="https://g.page/r/.../review" onChange={(e) => set("review_url")(e.target.value)} style={{ ...input, textAlign: "left" }} />
       </label>
       <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>گالری ({toFa(p.gallery.length)} از ۲۴)</p>
       <div className="flex gap-2 flex-wrap" style={{ marginTop: 4 }}>
