@@ -4,6 +4,7 @@ import { gregorianToJalali, MONTHS_FA, toFa, formatToman, jalaliLabel, dateKey, 
 import { EXPENSE_CATEGORY_META, SECTION_META, makeSeedExpense } from "../app/shared";
 import { GenderBadge, Modal, StatCard } from "../components/ui";
 import { useOtherIncome } from "./ShopInsights";
+import { useContractIncome } from "./Contracts";
 
 /* ============================================================
    Accounting tab — real numbers computed from booking + expense data
@@ -117,8 +118,14 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
   const other = useOtherIncome(Number(range), bookings, canEditExpenses && !staffId);
   const otherIncome = other?.total || 0;
   const totalIncome = realizedRevenue + (other ? other.shopRevenue + other.packages + other.gifts + other.events : 0);
-  const netProfit = realizedRevenue + otherIncome - totalExpenses;
-  const profitMargin = totalIncome > 0 ? netProfit / totalIncome : null;
+  // v2.54: an independent stylist's turnover is not the salon's — only the
+  // share and the rent are
+  const contract = useContractIncome(Number(range), bookings, canEditExpenses && !staffId);
+  const independentGross = contract ? contract.gross : 0;
+  const contractIncome = contract ? contract.share + contract.rent : 0;
+  const netProfit = realizedRevenue - independentGross + contractIncome + otherIncome - totalExpenses;
+  const salonIncome = totalIncome - independentGross + contractIncome;
+  const profitMargin = salonIncome > 0 ? netProfit / salonIncome : null;
 
   const byExpenseCategory = useMemo(() => {
     const map = new Map();
@@ -225,6 +232,22 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
         <StatCard label="درآمد در انتظار" value={formatToman(expectedRevenue)} icon={Hourglass} color="var(--color-info)" />
         <StatCard label="تخفیف اعطاشده" value={formatToman(discountGiven)} icon={Percent} color="var(--color-accent-700)" />
       </div>
+
+      {contract && contract.rows > 0 && (
+        <div className="card mb-2" style={{ padding: 14 }} data-card="contract-income">
+          <p style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>آرایشگرهای مستقل (اجاره / درصدی)</p>
+          {[
+            ["گردش کار آن‌ها (مال خودشان)", contract.gross],
+            ["سهم سالن از کارشان", contract.share],
+            ["اجارهٔ صندلی (به نسبت روزهای بازه)", contract.rent],
+          ].map(([label, v]) => (
+            <div key={label} className="flex justify-between gap-2 tabular" style={{ fontSize: 13, padding: "5px 0", borderTop: "1px dashed var(--color-border)" }}>
+              <span>{label}</span><b>{formatToman(v)}</b>
+            </div>
+          ))}
+          <p className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.8 }}>در سود خالص به‌جای گردش کار این آرایشگرها فقط سهم سالن و اجاره حساب شده است.</p>
+        </div>
+      )}
 
       {other && (other.shopRevenue > 0 || other.packages > 0 || other.gifts > 0 || other.events > 0) && (
         <div className="card mb-2" style={{ padding: 14 }} data-card="income-sources">

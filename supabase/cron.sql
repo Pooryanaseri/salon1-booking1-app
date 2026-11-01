@@ -81,6 +81,13 @@ select cron.schedule(
   $$ select public.expire_unpaid_purchases(); $$
 );
 
+-- هر روز ساعت ۹:۱۳ به وقت تهران (۵:۴۳ UTC): یادآوری اجارهٔ صندلی در روز سررسید (v2.54).
+select cron.schedule(
+  'salon-rent-reminders',
+  '43 5 * * *',
+  $$ select public.rent_reminders(); $$
+);
+
 -- هر شب ساعت ۳:۲۳ به وقت تهران (۲۳:۵۳ UTC): پشتیبان همهٔ سالن‌ها؛ ۷ نسخهٔ آخر نگه داشته می‌شود (v2.51).
 select cron.schedule(
   'salon-nightly-backup',

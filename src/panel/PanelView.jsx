@@ -23,6 +23,7 @@ import { GroomStageBar, VisitReportModal, PetCareBadges } from "./PetCare";
 import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
 import { redeemGiftCard } from "../lib/business";
 import { GrowthTab, EventsTab, TargetsCard } from "./GrowthTools";
+import { ContractsCard, MyStatementCard } from "./Contracts";
 import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceModal } from "./ClientRecord";
 
 /* ============================================================
@@ -142,6 +143,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
         })}
       </div>
 
+      {subTab === "dashboard" && currentStylist && <MyStatementCard stylist={currentStylist} bookings={bookings} notify={notify} />}
       {subTab === "dashboard" && currentStylist && (
         <TargetsCard bookings={bookings} stylists={stylists} isManager={false} currentStylistId={currentStylistId} notify={notify} />
       )}
@@ -160,6 +162,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       )}
       {subTab === "growth" && !currentStylist && <GrowthTab services={services} bookings={bookings} notify={notify} />}
       {subTab === "events" && !petSalon && <EventsTab notify={notify} isManager={!currentStylist} />}
+      {subTab === "accounting" && !currentStylist && <ContractsCard stylists={stylists} bookings={bookings} notify={notify} />}
       {subTab === "accounting" && !currentStylist && <TargetsCard bookings={bookings} stylists={stylists} isManager notify={notify} />}
       {subTab === "accounting" && !currentStylist && <RevenueExtrasCard />}
       {subTab === "accounting" && !currentStylist && <CommissionCard bookings={bookings} stylists={stylists} />}
