@@ -386,6 +386,10 @@ export async function fetchPublicSlots() {
 
 const STYLIST_PUBLIC_COLUMNS = "id, salon_id, name, gender, active, reminder_hours_before, created_at";
 
+/** Why the last bootstrap() fell back (shown in the app's banner). */
+let lastBootstrapError = "";
+export function bootstrapError() { return lastBootstrapError; }
+
 export async function bootstrap() {
   if (!SUPABASE_ENABLED) return null;
 
@@ -407,11 +411,20 @@ export async function bootstrap() {
     // (the waitlist is staff-only since v2.41 — fetchStaffData loads it)
   ]);
 
-  const firstError = [svc, sty, appt, off, wh, appr, exp].find((r) => r.error)?.error;
-  if (firstError) {
-    fail("bootstrap", firstError);
+  // Only what the booking page cannot work without may stop the app; a
+  // problem with time-offs, approved dates or expenses is logged and shown
+  // as empty instead of dropping everything to sample data.
+  const core = [["services", svc], ["stylists", sty], ["appointments_public_slots", appt], ["working_hours", wh]];
+  const bad = core.find(([, r]) => r.error);
+  if (bad) {
+    fail(`bootstrap:${bad[0]}`, bad[1].error);
+    lastBootstrapError = `${bad[0]}: ${bad[1].error.message || bad[1].error}`;
     return null;
   }
+  for (const [name, r] of [["time_offs", off], ["approved_dates", appr], ["expenses", exp]]) {
+    if (r.error) { fail(`bootstrap:${name}`, r.error); r.data = []; }
+  }
+  lastBootstrapError = "";
 
   const allHours = wh.data || [];
   const salonHours = allHours.filter((r) => r.staff_id === null).map(whFromRow)
