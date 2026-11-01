@@ -130,6 +130,9 @@ const map = {
       coupon_code: r.coupon_code ?? null,               // v2.50
       coupon_discount: r.coupon_discount == null ? null : Number(r.coupon_discount),
       gift_card_amount: r.gift_card_amount == null ? null : Number(r.gift_card_amount),
+      offpeak_discount: r.offpeak_discount == null ? null : Number(r.offpeak_discount), // v2.53
+      upsell_offer_id: r.upsell_offer_id ?? null,       // v2.53
+      source: r.source ?? null,                         // v2.53 booking source (?src=)
       created_at: ms(r.created_at),
     }),
     toRow: (b) => {

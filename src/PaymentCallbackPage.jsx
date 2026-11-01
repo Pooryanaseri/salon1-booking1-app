@@ -24,7 +24,8 @@ export default function PaymentCallbackPage({ authority, status }) {
       if (!r?.ok) { setError(r?.error || ""); setState("invalid"); return; }
       setAppt(r.appointment || null);
       setOrder(r.order || null);
-      setPurchase(r.gift ? { kind: "gift", data: r.gift } : r.package ? { kind: "package", data: r.package } : null);
+      setPurchase(r.gift ? { kind: "gift", data: r.gift } : r.package ? { kind: "package", data: r.package }
+        : r.event ? { kind: "event", data: r.event } : r.plan ? { kind: "plan", data: r.plan } : null); // v2.53
       setState(r.paid ? (r.refund ? "refund" : "paid") : "failed");
     });
   }, [authority, status]);
@@ -78,11 +79,16 @@ export default function PaymentCallbackPage({ authority, status }) {
       <>
         <CheckCircle2 size={42} color="#3a8f5c" style={{ margin: "0 auto 10px" }} />
         <p style={{ fontWeight: 800, fontSize: 17 }}>
-          {purchase.kind === "gift" ? "پرداخت انجام شد — کارت هدیه ارسال شد 🎁" : "پرداخت انجام شد — بسته فعال شد"}
+          {purchase.kind === "gift" ? "پرداخت انجام شد — کارت هدیه ارسال شد 🎁"
+            : purchase.kind === "event" ? "بیعانه دریافت شد — تاریخ مراسم رزرو شد"
+            : purchase.kind === "plan" ? "پرداخت انجام شد — اشتراک تمدید شد"
+            : "پرداخت انجام شد — بسته فعال شد"}
         </p>
         <p style={{ color: "#6b5f57", fontSize: 13.5, marginTop: 8, lineHeight: 1.9 }}>
           {purchase.kind === "gift"
             ? `کد کارت هدیه برای ${purchase.data?.recipient_name || "گیرنده"} پیامک شد.`
+            : purchase.kind === "event" ? "تاییدیه برایتان پیامک شد. باقی مبلغ را طبق پیش‌فاکتور در سالن پرداخت می‌کنید."
+            : purchase.kind === "plan" ? "اشتراک سالن شما تمدید شد. به پنل برگردید."
             : `«${purchase.data?.package_name || ""}» به شمارهٔ شما ثبت شد؛ در هر نوبت یک جلسه از آن کم می‌شود.`}
         </p>
         {backHome}

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Building2, Plus, Search, LogOut, Loader2, CheckCircle2, AlertTriangle, Power, Pencil, Copy, ExternalLink, ShieldCheck, Sparkles, PawPrint, GitBranch } from "lucide-react";
+import { Building2, Plus, Search, LogOut, Loader2, CheckCircle2, AlertTriangle, Power, Pencil, Copy, ExternalLink, ShieldCheck, Sparkles, PawPrint, GitBranch, Wallet } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSession, signOut, signInPlatformAdmin, registerPlatformAdmin } from "./lib/auth";
 import { isPlatformAdmin, adminListSalons, adminCreateSalon, adminUpdateSalon } from "./lib/api";
 import { adminLinkBranch } from "./lib/business";
+import { adminFetchPlans, adminSavePlan, adminFetchPlatformSettings, adminSavePlatformSettings, adminSetPlan, adminBillingReport } from "./lib/growth";
 import { toFa, normalizeMobile, jalaliLabel, parseDateKey } from "./lib/format";
 
 /**
@@ -130,6 +131,7 @@ function AdminDashboard({ onLogout }) {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null);
   const [linking, setLinking] = useState(false);
+  const [billing, setBilling] = useState(false); // v2.53
   const [toast, setToast] = useState("");
 
   async function reload() {
@@ -176,6 +178,7 @@ function AdminDashboard({ onLogout }) {
         <div style={{ display: "flex", gap: 8 }}>
           <button style={S.btn} onClick={() => setCreating(true)}><Plus size={16} /> سالن جدید</button>
           <button style={S.ghost} onClick={() => setLinking(true)}><GitBranch size={15} /> اتصال شعبه</button>
+          <button style={S.ghost} onClick={() => setBilling(true)}><Wallet size={15} /> اشتراک و درآمد</button>
           <button style={S.ghost} onClick={onLogout} aria-label="خروج"><LogOut size={15} /></button>
         </div>
       </div>
@@ -219,6 +222,7 @@ function AdminDashboard({ onLogout }) {
 
       {creating && <CreateSalonDialog onClose={() => setCreating(false)} onCreated={() => { reload(); }} />}
       {editing && <EditSalonDialog salon={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); setToast("ذخیره شد"); reload(); }} />}
+      {billing && <BillingDialog salons={salons || []} onClose={() => setBilling(false)} onToast={setToast} />}
       {linking && <LinkBranchDialog salons={salons || []} onClose={() => setLinking(false)} onDone={(msg) => { setLinking(false); setToast(msg); }} />}
       {toast && (
         <div role="status" style={{ position: "fixed", bottom: 20, insetInlineStart: "50%", transform: "translateX(50%)", background: C.text, color: "#fff", padding: "10px 16px", borderRadius: 10, fontSize: 13, zIndex: 100 }}>{toast}</div>
@@ -311,6 +315,107 @@ function Dialog({ title, onClose, children }) {
         <p style={{ fontWeight: 800, fontSize: 16, marginBottom: 14 }}>{title}</p>
         {children}
       </div>
+    </div>
+  );
+}
+
+/* v2.53 — platform income: plans, the platform's Zarinpal merchant, a salon's
+   plan, and the monthly report (subscriptions + payment fees + SMS). */
+function BillingDialog({ salons, onClose, onToast }) {
+  const [plans, setPlans] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const [report, setReport] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [assign, setAssign] = useState({ salon: "", plan: "", expires: "" });
+  const [tick, setTick] = useState(0);
+  const month = new Date().toISOString().slice(0, 10);
+  useEffect(() => {
+    adminFetchPlans().then(setPlans);
+    adminFetchPlatformSettings().then((d) => setSettings(d || { zarinpal_merchant_id: "", trial_days: 14 }));
+    adminBillingReport(month).then(setReport);
+  }, [tick, month]);
+  const fa = (n) => toFa(Number(n || 0).toLocaleString("en-US"));
+  const totals = (report?.rows || []).reduce((t, r) => ({ sub: t.sub + Number(r.subscription || 0), fee: t.fee + Number(r.fee || 0) }), { sub: 0, fee: 0 });
+  return (
+    <Dialog title="اشتراک سالن‌ها و درآمد پلتفرم" onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <section>
+          <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>این ماه</p>
+          <p style={{ fontSize: 13 }}>اشتراک‌های پرداخت‌شده: <b>{fa(totals.sub)}</b> تومان · کارمزد پرداخت آنلاین سالن‌ها: <b>{fa(totals.fee)}</b> تومان</p>
+          <div style={{ maxHeight: 200, overflowY: "auto", marginTop: 6 }}>
+            {(report?.rows || []).map((r) => (
+              <div key={r.id} style={{ fontSize: 12, padding: "5px 0", borderTop: `1px dashed ${C.border}` }}>
+                <b>{r.name}</b> · {r.plan_name || "بدون پلن"}{r.plan_expires_at ? ` تا ${r.plan_expires_at}` : ""}
+                <div style={{ color: C.muted }}>پرداخت آنلاین {fa(r.online_volume)} · کارمزد {fa(r.fee)} · اشتراک {fa(r.subscription)} · پیامک {fa(r.sms_sent)}{r.sms_quota ? ` از ${fa(r.sms_quota)}` : ""}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section>
+          <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>پلن‌ها</p>
+          {(plans || []).map((p) => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, padding: "5px 0", borderTop: `1px dashed ${C.border}`, opacity: p.active ? 1 : 0.5 }}>
+              <span><b>{p.name}</b> ({p.id}) · {fa(p.monthly_price)} تومان/ماه · {fa(p.sms_quota)} پیامک · کارمزد {toFa(p.payment_fee_pct)}٪</span>
+              <button style={S.ghost} onClick={() => setEditing(p)}><Pencil size={12} /></button>
+            </div>
+          ))}
+          <button style={{ ...S.ghost, marginTop: 6 }} onClick={() => setEditing({ id: "", name: "", monthly_price: 0, sms_quota: 500, payment_fee_pct: 1, active: true, sort_order: (plans || []).length })}><Plus size={13} /> پلن جدید</button>
+          {editing && <PlanForm plan={editing} onDone={async (p) => {
+            const r = await adminSavePlan(p);
+            onToast(r.ok ? "پلن ذخیره شد" : r.error);
+            if (r.ok) { setEditing(null); setTick((t) => t + 1); }
+          }} />}
+        </section>
+        <section>
+          <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>پلن یک سالن (آزمایشی، نقدی، هدیه)</p>
+          <select value={assign.salon} onChange={(e) => setAssign((a) => ({ ...a, salon: e.target.value }))} style={S.input} aria-label="سالن">
+            <option value="">سالن…</option>
+            {salons.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          </select>
+          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <select value={assign.plan} onChange={(e) => setAssign((a) => ({ ...a, plan: e.target.value }))} style={S.input} aria-label="پلن">
+              <option value="">بدون پلن</option>
+              {(plans || []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <input type="date" dir="ltr" value={assign.expires} onChange={(e) => setAssign((a) => ({ ...a, expires: e.target.value }))} style={S.input} aria-label="تا تاریخ" />
+          </div>
+          <button style={{ ...S.btn, marginTop: 6 }} disabled={!assign.salon} onClick={async () => {
+            const r = await adminSetPlan(assign.salon, assign.plan, assign.expires);
+            onToast(r?.ok ? "پلن سالن ذخیره شد" : r?.error || "ناموفق بود"); setTick((t) => t + 1);
+          }}>ذخیره پلن سالن</button>
+        </section>
+        <section>
+          <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>درگاه پرداخت پلتفرم (برای خرید اشتراک)</p>
+          {settings && (
+            <>
+              <input dir="ltr" value={settings.zarinpal_merchant_id} placeholder="مرچنت‌کد زرین‌پال پلتفرم" onChange={(e) => setSettings((x) => ({ ...x, zarinpal_merchant_id: e.target.value.trim() }))} style={S.input} />
+              <button style={{ ...S.btn, marginTop: 6 }} onClick={async () => {
+                const r = await adminSavePlatformSettings(settings);
+                onToast(r.ok ? "ذخیره شد" : r.error);
+              }}>ذخیره</button>
+            </>
+          )}
+        </section>
+      </div>
+    </Dialog>
+  );
+}
+function PlanForm({ plan, onDone }) {
+  const [p, setP] = useState(plan);
+  const set = (k) => (e) => setP((x) => ({ ...x, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, padding: 10, background: C.bg, borderRadius: 10 }}>
+      <div style={{ display: "flex", gap: 6 }}>
+        <input dir="ltr" placeholder="شناسه (pro)" value={p.id} disabled={!!plan.id} onChange={set("id")} style={S.input} aria-label="شناسه پلن" />
+        <input placeholder="نام (حرفه‌ای)" value={p.name} onChange={set("name")} style={S.input} aria-label="نام پلن" />
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <label style={{ ...S.label, flex: 1 }}>قیمت ماهانه<input dir="ltr" inputMode="numeric" value={p.monthly_price} onChange={set("monthly_price")} style={S.input} /></label>
+        <label style={{ ...S.label, flex: 1 }}>سقف پیامک<input dir="ltr" inputMode="numeric" value={p.sms_quota} onChange={set("sms_quota")} style={S.input} /></label>
+        <label style={{ ...S.label, flex: 1 }}>کارمزد ٪<input dir="ltr" inputMode="decimal" value={p.payment_fee_pct} onChange={set("payment_fee_pct")} style={S.input} /></label>
+      </div>
+      <label style={{ fontSize: 12.5, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={p.active !== false} onChange={set("active")} /> قابل خرید</label>
+      <button style={S.btn} onClick={() => onDone(p)}>ذخیره پلن</button>
     </div>
   );
 }

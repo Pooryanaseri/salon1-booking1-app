@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Star, CheckCircle2 } from "lucide-react";
 import { submitFeedback, reportAppointmentNoShow } from "./lib/api";
 import { cancelScheduledReminders } from "./lib/sms";
+import { feedbackFollowup } from "./lib/growth";
 
 const TAGS = ["برخورد خوب", "کیفیت کار", "وقت‌شناسی", "محیط تمیز", "قیمت مناسب"];
 
@@ -12,6 +13,7 @@ export default function FeedbackPage({ bookingId }) {
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const [follow, setFollow] = useState(null); // v2.53: {review_url, salon_name} after a 5-star score
   const [noShowDone, setNoShowDone] = useState(false);
   const [error, setError] = useState("");
 
@@ -27,6 +29,7 @@ export default function FeedbackPage({ bookingId }) {
     setSubmitting(false);
     if (!res.ok) { setError(res.error); return; }
     cancelScheduledReminders(bookingId); // best-effort — don't block success on this
+    if (rating === 5) setFollow(await feedbackFollowup(bookingId));
     setDone(true);
   }
 
@@ -56,6 +59,15 @@ export default function FeedbackPage({ bookingId }) {
           <CheckCircle2 size={52} color="#4caf7d" style={{ margin: "0 auto 14px" }} />
           <h2 style={{ fontSize: 18, marginBottom: 6 }}>ممنون از نظرتون!</h2>
           <p style={{ fontSize: 13.5, color: "#777" }}>نظر شما به ما کمک می‌کنه خدمات بهتری ارائه بدیم.</p>
+          {follow?.review_url && (
+            <>
+              <p style={{ fontSize: 13.5, marginTop: 14, lineHeight: 1.9 }}>خوشحالیم که راضی بودید 🌟 اگر دوست دارید، همین نظر را در نقشه هم بنویسید تا دیگران هم {follow.salon_name || "ما"} را پیدا کنند.</p>
+              <a href={follow.review_url} target="_blank" rel="noreferrer"
+                style={{ display: "block", marginTop: 10, padding: 12, borderRadius: 12, background: "#f5b301", color: "#2b2420", fontWeight: 800, textDecoration: "none" }}>
+                ثبت نظر در نقشه (۳۰ ثانیه)
+              </a>
+            </>
+          )}
         </div>
       </div>
     );

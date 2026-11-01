@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList } from "lucide-react";
+import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, Brain, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, TrendingUp, Sparkles } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -22,6 +22,7 @@ import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, Com
 import { GroomStageBar, VisitReportModal, PetCareBadges } from "./PetCare";
 import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
 import { redeemGiftCard } from "../lib/business";
+import { GrowthTab, EventsTab, TargetsCard } from "./GrowthTools";
 import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceModal } from "./ClientRecord";
 
 /* ============================================================
@@ -69,6 +70,9 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     ...(petSalon ? [{ id: "quotes", label: quotesPending ? `استعلام قیمت (${toFa(quotesPending)})` : "استعلام قیمت", Icon: QuoteIcon, color: "var(--color-pet-500)" }] : []),
     ...(petSalon ? [{ id: "pets", label: "حیوانات", Icon: PawPrint, color: "var(--color-pet-500)" }] : []),
     { id: "marketing", label: "تخفیف و هدیه", Icon: Gift, color: "var(--color-female-500)" },
+    // v2.53 growth tools (manager) and event bookings (men's / women's salons)
+    ...(currentStylist ? [] : [{ id: "growth", label: "رشد فروش", Icon: TrendingUp, color: "var(--color-success)" }]),
+    ...(petSalon ? [] : [{ id: "events", label: "مراسم و عروس", Icon: Sparkles, color: "var(--color-female-500)" }]),
     { id: "shop", label: ordersPending ? `فروشگاه (${toFa(ordersPending)})` : "فروشگاه", Icon: ShoppingBag, color: "var(--color-tab-shop)" },
     ...(currentStylist ? [] : [{ id: "accounting", label: "حسابداری", Icon: Wallet, color: "var(--color-warning)" }]),
     ...(currentStylist ? [] : [{ id: "services", label: "خدمات", Icon: Settings, color: "var(--color-tab-services)" }]),
@@ -138,6 +142,9 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
         })}
       </div>
 
+      {subTab === "dashboard" && currentStylist && (
+        <TargetsCard bookings={bookings} stylists={stylists} isManager={false} currentStylistId={currentStylistId} notify={notify} />
+      )}
       {subTab === "dashboard" && (
         <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} pets={pets} setPets={setPets} notify={notify} automation={automation} />
       )}
@@ -151,6 +158,9 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       {subTab === "pets" && petSalon && (
         <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} isManager={!currentStylist} />
       )}
+      {subTab === "growth" && !currentStylist && <GrowthTab services={services} bookings={bookings} notify={notify} />}
+      {subTab === "events" && !petSalon && <EventsTab notify={notify} isManager={!currentStylist} />}
+      {subTab === "accounting" && !currentStylist && <TargetsCard bookings={bookings} stylists={stylists} isManager notify={notify} />}
       {subTab === "accounting" && !currentStylist && <RevenueExtrasCard />}
       {subTab === "accounting" && !currentStylist && <CommissionCard bookings={bookings} stylists={stylists} />}
       {subTab === "accounting" && !currentStylist && (

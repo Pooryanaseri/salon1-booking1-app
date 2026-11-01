@@ -413,7 +413,7 @@ export function ProfileSettingsCard({ notify }) {
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
-  useEffect(() => { fetchProfileSettings().then(setP); }, []);
+  useEffect(() => { fetchProfileSettings().then((d) => setP(d ? { ...d, hadReviewUrl: !!d.review_url } : d)); }, []);
   if (!p) return null;
   const set = (k) => (v) => setP((x) => ({ ...x, [k]: v }));
   async function addPhotos(files) {
@@ -448,6 +448,9 @@ export function ProfileSettingsCard({ notify }) {
       </div>
       <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 8 }}>لینک نقشه (نشان، بلد یا گوگل‌مپ)
         <input dir="ltr" value={p.map_url} maxLength={500} placeholder="https://nshn.ir/..." onChange={(e) => set("map_url")(e.target.value)} style={{ ...input, textAlign: "left" }} />
+      </label>
+      <label className="muted" style={{ fontSize: 12, display: "block", marginTop: 8 }}>لینک ثبت نظر در گوگل‌مپ یا نشان (برای مشتری‌های ۵ ستاره)
+        <input dir="ltr" value={p.review_url || ""} maxLength={250} placeholder="https://g.page/r/.../review" onChange={(e) => set("review_url")(e.target.value)} style={{ ...input, textAlign: "left" }} />
       </label>
       <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>گالری ({toFa(p.gallery.length)} از ۲۴)</p>
       <div className="flex gap-2 flex-wrap" style={{ marginTop: 4 }}>

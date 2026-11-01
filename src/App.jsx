@@ -17,6 +17,9 @@ import { ShopView } from "./shop/ShopView";
 import { fetchShop } from "./lib/shop";
 import { requestPetTransport } from "./lib/petcare";
 import { applyBookingCoupon } from "./lib/business";
+import { applyOffpeak, applyUpsell, setBookingSource, currentSource, captureSource } from "./lib/growth";
+
+captureSource(); // v2.53: ?src=instagram on the link the client came from
 
 /* ============================================================
    Main App
@@ -424,6 +427,24 @@ export default function App() {
       }
     }
 
+    // v2.53: quiet-hour discount (before the add-on and the code, so neither is discounted twice)
+    if (booking.final_price != null) {
+      const o = await applyOffpeak(booking.id, params.customerPhone, booking);
+      if (o?.ok) booking = { ...booking, offpeak_discount: Number(o.discount) || 0, final_price: o.final_price != null ? Number(o.final_price) : booking.final_price - (Number(o.discount) || 0) };
+    }
+    // v2.53: the add-on the client ticked on the booking page
+    if (params.upsellOffer) {
+      const u = await applyUpsell(booking.id, params.customerPhone, params.upsellOffer);
+      if (u?.ok) {
+        const amt = Number(u.amount) || 0;
+        booking = { ...booking, upsell_offer_id: params.upsellOffer.id, end_min: booking.end_min + (Number(u.extra_minutes) || 0),
+          extra_charges: [...(booking.extra_charges || []), { label: u.label, amount: amt }],
+          final_price: booking.final_price != null ? booking.final_price + amt : booking.final_price };
+      } else {
+        notify(u?.error || "افزودنی اضافه نشد — در سالن هماهنگ کنید");
+      }
+    }
+
     // v2.50: a discount code, applied by the server to the fresh booking
     if (params.couponCode && booking.final_price != null) {
       // the pick-up & drop-off fee is not discounted
@@ -437,6 +458,10 @@ export default function App() {
         notify(c?.error || "کد تخفیف اعمال نشد");
       }
     }
+
+    // v2.53: where this client came from (Instagram link, QR card, …)
+    const src = currentSource();
+    if (src) { setBookingSource(booking.id, params.customerPhone, src); booking = { ...booking, source: src }; }
 
     setBookings((prev) => [...prev, booking]);
 

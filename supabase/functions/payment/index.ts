@@ -5,6 +5,8 @@
 //    → { ok, url }   redirect the customer to Zarinpal
 //  POST { action: "request", order_id }            (v2.48 — shop orders)
 //  POST { action: "request", gift_card_id | package_purchase_id }  (v2.50)
+//  POST { action: "request", event_token }   (v2.53 — event deposit, paid to the salon)
+//  POST { action: "request", plan_invoice_id } (v2.53 — subscription, paid to the platform)
 //    → { ok, url }
 //  POST { action: "verify", authority, status }
 //    → { ok, paid, appointment: {...} } or { ok, paid, order: {...} } after
@@ -56,6 +58,11 @@ async function merchantFor(salonId: string): Promise<string> {
   return (data?.zarinpal_merchant_id ?? "").trim();
 }
 
+async function platformMerchant(): Promise<string> {
+  const { data } = await admin.from("platform_settings").select("zarinpal_merchant_id").maybeSingle();
+  return (data?.zarinpal_merchant_id ?? "").trim();
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
@@ -63,6 +70,51 @@ Deno.serve(async (req) => {
 
   let payload: any;
   try { payload = await req.json(); } catch { return json({ ok: false, error: "درخواست نامعتبر" }, 400); }
+
+  /* ------------------------------------------- request (event / plan) ---- */
+  // v2.53: an event deposit (the client holds the quote link's token) and a
+  // salon's subscription invoice (paid to the platform's own merchant).
+  if (payload.action === "request" && (payload.event_token || payload.plan_invoice_id)) {
+    let salonId: string, amountRial: number, merchant: string, col: string, id: string, description: string, mobile: string | undefined;
+    if (payload.event_token) {
+      const token = String(payload.event_token);
+      if (!/^[0-9a-f]{36}$/.test(token)) return json({ ok: false, error: "لینک نامعتبر است" }, 400);
+      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))))
+        .map((b) => b.toString(16).padStart(2, "0")).join("");
+      const { data: ev } = await admin.from("event_requests").select("*").eq("token_hash", hash).maybeSingle();
+      if (!ev || !["quoted", "accepted"].includes(ev.status) || !(ev.deposit_amount > 0)) {
+        return json({ ok: false, error: "این پیش‌فاکتور منتظر پرداخت نیست" }, 400);
+      }
+      const { data: paid } = await admin.from("event_payments").select("amount").eq("event_id", ev.id);
+      if ((paid ?? []).reduce((t: number, p: { amount: number }) => t + Number(p.amount), 0) >= ev.deposit_amount) {
+        return json({ ok: false, error: "بیعانه قبلاً پرداخت شده است" }, 400);
+      }
+      salonId = ev.salon_id; amountRial = Number(ev.deposit_amount) * 10; merchant = await merchantFor(ev.salon_id);
+      col = "event_request_id"; id = ev.id; description = "بیعانهٔ مراسم"; mobile = ev.customer_phone;
+    } else {
+      id = String(payload.plan_invoice_id);
+      const { data: inv } = await admin.from("plan_invoices").select("*").eq("id", id).maybeSingle();
+      if (!inv || inv.status !== "awaiting_payment" || Date.now() - new Date(inv.created_at).getTime() > 86_400_000) {
+        return json({ ok: false, error: "این صورتحساب منتظر پرداخت نیست" }, 400);
+      }
+      salonId = inv.salon_id; amountRial = Number(inv.amount) * 10; merchant = await platformMerchant();
+      col = "plan_invoice_id"; description = "اشتراک نرم‌افزار نوبت‌دهی";
+    }
+    const { count } = await admin.from("payments").select("id", { count: "exact", head: true }).eq(col, id);
+    if ((count ?? 0) >= 5) return json({ ok: false, error: "تعداد تلاش برای پرداخت زیاد بود" }, 429);
+    if (!merchant) return json({ ok: false, error: "درگاه پرداخت تنظیم نشده" }, 500);
+    const zp = await zarinpal("request", {
+      merchant_id: merchant, amount: amountRial, callback_url: `${SITE}/payment/callback`, description,
+      ...(mobile ? { metadata: { mobile } } : {}),
+    });
+    const authority = zp.data?.authority;
+    if (zp.data?.code !== 100 || !authority) {
+      console.error("[payment/request-event-plan] zarinpal refused:", JSON.stringify(zp.errors ?? zp));
+      return json({ ok: false, error: "اتصال به درگاه پرداخت ناموفق بود — دوباره امتحان کنید" }, 502);
+    }
+    await admin.from("payments").insert({ salon_id: salonId, [col]: id, amount_rial: amountRial, authority, status: "requested" });
+    return json({ ok: true, url: `${ZP}/StartPay/${authority}` });
+  }
 
   /* ---------------------------------------- request (gift card / package) --- */
   // v2.50: gift cards and prepaid packages bought online
@@ -177,6 +229,38 @@ Deno.serve(async (req) => {
     const authority = String(payload.authority ?? "");
     const { data: pay } = await admin.from("payments").select("*").eq("authority", authority).maybeSingle();
     if (!pay) return json({ ok: false, error: "پرداخت پیدا نشد" }, 404);
+
+    /* -------- event deposit / subscription (v2.53) -------- */
+    if (pay.event_request_id || pay.plan_invoice_id) {
+      const isEvent = !!pay.event_request_id;
+      const out = async () => {
+        if (isEvent) {
+          const { data } = await admin.from("event_requests").select("id, kind, event_date, customer_name, status").eq("id", pay.event_request_id).maybeSingle();
+          return { event: data };
+        }
+        const { data } = await admin.from("plan_invoices").select("id, plan_id, months, amount, status").eq("id", pay.plan_invoice_id).maybeSingle();
+        return { plan: data };
+      };
+      if (pay.status === "paid") return json({ ok: true, paid: true, ...(await out()) });
+      if (payload.status !== "OK") {
+        if (pay.status === "requested") await admin.from("payments").update({ status: "failed" }).eq("id", pay.id);
+        return json({ ok: true, paid: false, ...(await out()) });
+      }
+      const merchant = isEvent ? await merchantFor(pay.salon_id) : await platformMerchant();
+      const zp = await zarinpal("verify", { merchant_id: merchant, amount: pay.amount_rial, authority });
+      const code = zp.data?.code;
+      if (code !== 100 && code !== 101) {
+        await admin.from("payments").update({ status: "failed" }).eq("id", pay.id);
+        return json({ ok: true, paid: false, ...(await out()) });
+      }
+      const refId = String(zp.data?.ref_id ?? "");
+      await admin.from("payments").update({ status: "paid", ref_id: refId, card_pan: zp.data?.card_pan ?? null, paid_at: new Date().toISOString() }).eq("id", pay.id);
+      const { error: cErr } = isEvent
+        ? await admin.rpc("confirm_event_payment", { p_id: pay.event_request_id, p_amount: Math.round(pay.amount_rial / 10), p_ref: refId })
+        : await admin.rpc("confirm_plan_payment", { p_id: pay.plan_invoice_id, p_ref: refId });
+      if (cErr) console.error("[payment/verify-event-plan] confirm failed:", cErr.message);
+      return json({ ok: true, paid: true, ...(await out()) });
+    }
 
     /* -------- gift card / package -------- */
     if (pay.gift_card_id || pay.package_purchase_id) {

@@ -4,6 +4,7 @@ import { Clock, Check, X, Calendar as CalendarIcon, MessageSquareText, Lock, Cal
 import { isPetSalon } from "../lib/tenant";
 import { PetCareSettingsCard } from "./PetCare";
 import { ProfileSettingsCard, SecurityCard } from "./BusinessTools";
+import { PlanCard } from "./GrowthTools";
 import { fetchClosures, announceClosure, revokeClosure, updateAutomationSettings, DEFAULT_AUTOMATION, fetchClientErrors, fetchPaymentSettings, savePaymentSettings } from "../lib/api";
 import { jalaliDayNum, WEEKDAYS_FA_SHORT, SCHEMA_DAY_LABELS, toFa, jalaliLabel, formatClock, hhmmToMin, dateKey, parseDateKey, digitsOnly } from "../lib/format";
 import { PanelSectionHeader, Switch } from "../components/ui";
@@ -547,6 +548,7 @@ export function ScheduleTab({ workingHours, setWorkingHours, staffWorkingHours, 
 
       {!currentStylistId && <AutomationCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
       {!currentStylistId && SUPABASE_ENABLED && <DepositCard automation={automation} onAutomationChange={onAutomationChange} notify={notify} />}
+      {!currentStylistId && <PlanCard notify={notify} />}
       {!currentStylistId && <ProfileSettingsCard notify={notify} />}
       <SecurityCard notify={notify} isManager={!currentStylistId} />
       {!currentStylistId && SUPABASE_ENABLED && <AppHealthCard />}

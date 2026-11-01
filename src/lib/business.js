@@ -61,8 +61,11 @@ export async function saveProfileSettings(p) {
     about: (p.about || "").trim().slice(0, 1500), address: (p.address || "").trim().slice(0, 300), phone: (p.phone || "").trim().slice(0, 20),
     instagram: (p.instagram || "").trim().replace(/^@/, "").slice(0, 30), map_url: (p.map_url || "").trim(),
     gallery: (p.gallery || []).slice(0, 24), show_reviews: p.show_reviews !== false,
+    // v2.53: where 5-star clients are sent (sent only when set, for older databases)
+    ...(p.review_url != null && (p.review_url || p.hadReviewUrl) ? { review_url: (p.review_url || "").trim() } : {}),
   };
   if (row.map_url && !/^https:\/\//.test(row.map_url)) return { ok: false, error: "لینک نقشه باید با https شروع شود" };
+  if (row.review_url && !/^https:\/\/\S{4,250}$/.test(row.review_url)) return { ok: false, error: "لینک ثبت نظر باید با https شروع شود" };
   if (row.instagram && !/^[A-Za-z0-9._]+$/.test(row.instagram)) return { ok: false, error: "نام کاربری اینستاگرام نامعتبر است" };
   if (!SUPABASE_ENABLED) { Object.assign(demo.profile, row); return { ok: true }; }
   const { error } = await supabase.from("salon_profiles").upsert({ salon_id: getCurrentSalonId(), ...row, updated_at: new Date().toISOString() }, { onConflict: "salon_id" });
