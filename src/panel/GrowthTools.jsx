@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, Plus, Pencil, Trash2, Zap, Layers, Link2, Settings, Sparkles, Target, CreditCard, Copy, AlertTriangle, Download } from "lucide-react";
+import { Loader2, Plus, Pencil, Trash2, Zap, Layers, Link2, Sparkles, Target, CreditCard, Copy, AlertTriangle, Download } from "lucide-react";
 import QRCode from "qrcode";
 import { Modal, Switch } from "../components/ui";
 import { formatToman, toFa, digitsOnly, formatClock, isoToJalaliLabel } from "../lib/format";
@@ -43,12 +43,11 @@ export function GrowthTab({ services, bookings, notify }) {
   return (
     <div className="fade-in">
       <Segments value={seg} onChange={setSeg} items={[
-        ["offpeak", "ساعت طلایی", Zap], ["upsell", "پیشنهاد افزودنی", Layers], ["sources", "لینک‌ها و منبع مشتری", Link2], ["auto", "خودکارها", Settings],
+        ["offpeak", "ساعت طلایی", Zap], ["upsell", "پیشنهاد افزودنی", Layers], ["sources", "لینک‌ها و منبع مشتری", Link2],
       ]} />
       {seg === "offpeak" && <OffpeakSection bookings={bookings} notify={notify} />}
       {seg === "upsell" && <UpsellSection services={services} notify={notify} />}
       {seg === "sources" && <SourcesSection bookings={bookings} notify={notify} />}
-      {seg === "auto" && <AutomationSection notify={notify} />}
     </div>
   );
 }
@@ -265,7 +264,7 @@ function SourcesSection({ bookings, notify }) {
 }
 
 /* ------------------------------------------------------------ automation --- */
-function AutomationSection({ notify }) {
+export function GrowthAutomations({ notify }) {
   const [s, setS] = useState(null);
   useEffect(() => { fetchGrowthSettings().then((d) => setS(d || { unavailable: true })); }, []);
   if (!s) return <Spinner />;
@@ -279,8 +278,8 @@ function AutomationSection({ notify }) {
     <div className="flex flex-col gap-3">
       <div className="card" style={{ padding: 14 }}>
         <div className="flex items-center justify-between gap-2">
-          <span style={{ fontSize: 14, fontWeight: 800 }}>پر کردن نوبت لغوشده</span>
-          <Switch checked={!!s.slot_offer_lapsed} onChange={(v) => save({ slot_offer_lapsed: v })} label="پر کردن نوبت لغوشده" />
+          <span style={{ fontSize: 14, fontWeight: 800 }}>نوبت لغوشده: پیشنهاد به مشتری‌های قدیمی</span>
+          <Switch checked={!!s.slot_offer_lapsed} onChange={(v) => save({ slot_offer_lapsed: v })} label="پیشنهاد نوبت لغوشده به مشتری‌های قدیمی" />
         </div>
         <p className="muted" style={{ fontSize: 12.5, lineHeight: 1.9, marginTop: 6 }}>
           وقتی نوبتی برای امروز یا فردا لغو می‌شود، علاوه بر لیست انتظار، به ۵ مشتری ثابتی که مدتی نیامده‌اند پیامک «یک نوبت خالی شد» می‌رود (هر نفر حداکثر هر ۱۴ روز یک بار). اولین نفری که رزرو کند، نوبت مال اوست.

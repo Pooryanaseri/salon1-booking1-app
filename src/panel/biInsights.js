@@ -123,7 +123,7 @@ export function buildBIInsights(c) {
         confirm: "پیامک یادآوری ۳ ساعت قبل از هر نوبت (برای نوبت‌های آینده هم) ارسال می‌شود." };
     } else if (!(automation.deposit_percent > 0)) {
       reduction = NO_SHOW_REDUCTION.deposit; measure = "بیعانهٔ آنلاین";
-      action = { kind: "goto", tab: "schedule", label: "تنظیم بیعانهٔ آنلاین" };
+      action = { kind: "goto", tab: "automation", label: "تنظیم بیعانهٔ آنلاین" };
     }
     out.push({
       id: "no-show", category: "revenue", tone: "warn",

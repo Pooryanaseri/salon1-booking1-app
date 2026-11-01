@@ -42,7 +42,7 @@ describe("buildBIInsights v2", () => {
     expect(f.action).toMatchObject({ kind: "reminder", hours: 3 });
 
     f = find(buildBIInsights({ ...c, automation: { ...ON, deposit_percent: 0 } }), "no-show");
-    expect(f.action).toMatchObject({ kind: "goto", tab: "schedule" });
+    expect(f.action).toMatchObject({ kind: "goto", tab: "automation" });
 
     f = find(buildBIInsights(c), "no-show");
     expect(f.action).toBeUndefined();

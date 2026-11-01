@@ -258,7 +258,7 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
             ["خدمات (نوبت‌های انجام‌شده)", realizedRevenue],
             ["فروشگاه", other.shopRevenue, other.shopCogs > 0 ? `قیمت خرید کالاها: ${formatToman(other.shopCogs)} — سود ناخالص ${formatToman(other.shopGross)}` : null],
             ["فروش بسته‌های پیش‌پرداخت", other.packages],
-            ["فروش کارت هدیه", other.gifts],
+            ["فروش کارت هدیه", other.gifts, other.giftOutstanding > 0 ? `مانده قابل استفادهٔ کارت‌ها: ${formatToman(other.giftOutstanding)}` : null],
             ["مراسم (بیعانه و اقساط)", other.events],
           ].filter(([, v], i) => i === 0 || v > 0).map(([label, v, sub]) => (
             <div key={label} style={{ padding: "6px 0", borderTop: "1px dashed var(--color-border)" }}>
@@ -271,6 +271,11 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
           <div className="flex justify-between gap-2" style={{ fontSize: 13.5, padding: "8px 0 0", borderTop: "1px solid var(--color-border)", fontWeight: 800 }}>
             <span>جمع درآمد</span><span className="tabular">{formatToman(totalIncome)}</span>
           </div>
+          {other.lowStock.length > 0 && (
+            <p style={{ fontSize: 12.5, marginTop: 8, color: "var(--color-warning)", lineHeight: 1.8 }}>
+              موجودی رو به اتمام: {other.lowStock.map((p) => `${p.name} (${toFa(p.stock)})`).join("، ")}
+            </p>
+          )}
           <p className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.8 }}>
             در سود خالص، از فروشگاه فقط سود ناخالص (فروش منهای قیمت خرید) حساب می‌شود؛ اگر قیمت خرید کالاها را وارد کرده‌اید، خرید کالای فروشگاه را جداگانه در هزینه‌ها ثبت نکنید.
           </p>

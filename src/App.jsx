@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { Sparkles, PawPrint, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck, ShoppingBag } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName, isPetSalon } from "./lib/tenant";
@@ -9,16 +9,18 @@ import { jalaliLabel, formatClock, dateKey, parseDateKey } from "./lib/format";
 import { TOKENS_CSS } from "./styles/tokens";
 import { BookingFlow } from "./booking/BookingFlow";
 import { FALLBACK_SMS_TEMPLATES, GENDER_TYPE_LABEL, KNOWN_CUSTOMER, SALON_GENDER_TYPE, SEED_PET_SERVICES, SEED_PET_STYLISTS, SEED_SERVICES, SEED_STYLISTS, SEED_WORKING_HOURS, STAFF_PHONE, makeSeedBooking, makeSeedExpense, persistApproved, persistSalonHours, persistServices, persistStaffHours, persistTimeOff, usePersistedState } from "./app/shared";
-import { LoginScreen } from "./components/LoginScreen";
-import { PanelView } from "./panel/PanelView";
 import { Toast } from "./components/ui";
-import { TrackView } from "./track/TrackView";
-import { ShopView } from "./shop/ShopView";
 import { fetchShop } from "./lib/shop";
 import { requestPetTransport } from "./lib/petcare";
 import { applyBookingCoupon } from "./lib/business";
 import { applyOffpeak, applyUpsell, setBookingSource, currentSource, captureSource } from "./lib/growth";
 import { applyStylistPrice, fetchStylistPrices } from "./lib/contracts";
+
+// Loaded on demand: a customer booking a slot never downloads the panel.
+const LoginScreen = lazy(() => import("./components/LoginScreen").then((m) => ({ default: m.LoginScreen })));
+const PanelView = lazy(() => import("./panel/PanelView").then((m) => ({ default: m.PanelView })));
+const TrackView = lazy(() => import("./track/TrackView").then((m) => ({ default: m.TrackView })));
+const ShopView = lazy(() => import("./shop/ShopView").then((m) => ({ default: m.ShopView })));
 
 captureSource(); // v2.53: ?src=instagram on the link the client came from
 
@@ -677,6 +679,7 @@ export default function App() {
         {dataReady && tab === "book" && (
           <BookingFlow services={services} stylists={stylists} bookings={bookings} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} addBooking={addBooking} waitlist={waitlist} addWaitlistEntry={addWaitlistEntry} notify={notify} onSectionChange={setActiveSection} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} automation={automation} depositTerms={depositTerms} />
         )}
+        <Suspense fallback={<div className="flex justify-center" style={{ padding: 40 }}><Loader2 size={18} className="salon-spin" color="var(--color-accent-500)" /></div>}>
         {dataReady && tab === "shop" && (
           <ShopView notify={notify} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} />
         )}
@@ -739,6 +742,7 @@ export default function App() {
             onLogout={handleLogout}
           />
         )}
+        </Suspense>
       </main>
 
       <Toast message={toast} onDone={() => setToast("")} />
