@@ -1,7 +1,7 @@
 // Fonts ship with the app (no third-party CDN, which is often unreachable
-// from Iran): Vazirmatn for text, Noto Kufi Arabic for headings.
+// from Iran): Vazirmatn for text, Estedad for headings and numbers.
 import "@fontsource-variable/vazirmatn";
-import "@fontsource-variable/noto-kufi-arabic";
+import "@fontsource-variable/estedad";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";

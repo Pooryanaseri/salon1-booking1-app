@@ -12,7 +12,7 @@ import { formatToman, toFa, normalizeMobile, digitsOnly, isoToJalaliLabel } from
    ============================================================ */
 const C = { bg: "#f6f2ec", card: "#fff", text: "#2b2420", muted: "#7a6a5e", brand: "#c2703a", line: "#eadfd4" };
 const FONT = "'Vazirmatn Variable', Vazirmatn, system-ui, sans-serif";
-const DISPLAY = "'Noto Kufi Arabic Variable', 'Vazirmatn Variable', system-ui, sans-serif";
+const DISPLAY = "'Estedad Variable', 'Vazirmatn Variable', system-ui, sans-serif";
 const wrap = { minHeight: "100vh", background: C.bg, color: C.text, fontFamily: FONT, padding: "20px 16px 48px" };
 const card = { maxWidth: 520, margin: "0 auto 14px", background: C.card, borderRadius: 18, padding: 18, boxShadow: "0 6px 24px -14px rgba(60,40,20,.35)" };
 const btn = { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "12px 14px", borderRadius: 12, background: `linear-gradient(135deg, #e9a24b, ${C.brand} 55%, #b8462f)`, color: "white", fontWeight: 800, textDecoration: "none", border: 0, fontFamily: FONT, fontSize: 14.5, cursor: "pointer", width: "100%", boxSizing: "border-box" };

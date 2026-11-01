@@ -5,20 +5,22 @@
    ============================================================ */
 export const TOKENS_CSS = `
 .salon-app {
-  --color-bg: oklch(96% 0.008 70);
+  /* v2.57 "rose-gold" palette: pearl background, rose accent, berry depth */
+  --color-bg: oklch(97.4% 0.007 30);
   --color-surface: oklch(100% 0 0);
-  --color-surface-raised: oklch(95% 0.010 65);
-  --color-border: oklch(88% 0.012 65);
-  --color-muted: oklch(60% 0.014 60);
-  --color-body: oklch(26% 0.016 60);
-  --color-heading: oklch(15% 0.014 55);
+  --color-surface-raised: oklch(96% 0.009 25);
+  --color-border: oklch(90% 0.012 20);
+  --color-muted: oklch(57% 0.016 15);
+  --color-body: oklch(28% 0.018 10);
+  --color-heading: oklch(18% 0.02 355);
 
-  --color-accent-50: oklch(97% 0.035 75);
-  --color-accent-100: oklch(93% 0.07 75);
-  --color-accent-300: oklch(82% 0.14 72);
-  --color-accent-500: oklch(69% 0.20 62);
-  --color-accent-700: oklch(50% 0.18 48);
-  --color-accent-900: oklch(30% 0.12 42);
+  --color-accent-50: oklch(97.5% 0.016 25);
+  --color-accent-100: oklch(94% 0.035 20);
+  --color-accent-300: oklch(81% 0.09 20);
+  --color-accent-500: oklch(63% 0.17 12);
+  --color-accent-700: oklch(48% 0.16 5);
+  --color-accent-900: oklch(30% 0.10 355);
+  --color-gold: oklch(76% 0.11 70);
 
   --color-success: oklch(62% 0.17 150);
   --color-warning: oklch(74% 0.18 78);
@@ -40,8 +42,8 @@ export const TOKENS_CSS = `
 
   /* Brand + status gradients — the "reporting" surfaces (hero cards, KPI tiles,
      chart fills) lean on these instead of flat fills for a richer, more premium look. */
-  --grad-brand: linear-gradient(135deg, oklch(72% 0.18 75) 0%, oklch(62% 0.21 40) 55%, oklch(56% 0.20 22) 100%);
-  --grad-brand-soft: linear-gradient(135deg, oklch(95% 0.05 75), oklch(92% 0.05 45));
+  --grad-brand: linear-gradient(135deg, oklch(75% 0.11 45) 0%, oklch(63% 0.17 12) 48%, oklch(47% 0.16 350) 100%);
+  --grad-brand-soft: linear-gradient(135deg, oklch(96% 0.03 40), oklch(93% 0.04 10));
   --grad-success: linear-gradient(135deg, oklch(68% 0.16 155), oklch(56% 0.15 168));
   --grad-info: linear-gradient(135deg, oklch(66% 0.15 245), oklch(54% 0.19 268));
   --grad-danger: linear-gradient(135deg, oklch(64% 0.21 25), oklch(50% 0.22 8));
@@ -53,18 +55,18 @@ export const TOKENS_CSS = `
      instead of one flat accent + gray-for-everything-else scheme. */
   --color-tab-book: var(--color-accent-500);
   --color-tab-dash: oklch(58% 0.15 200);
-  --color-tab-panel: oklch(52% 0.19 300);
+  --color-tab-panel: oklch(50% 0.16 320);
   --grad-tab-book: var(--grad-brand);
   --grad-tab-dash: linear-gradient(135deg, oklch(66% 0.13 195), oklch(52% 0.15 215));
-  --grad-tab-panel: linear-gradient(135deg, oklch(60% 0.17 295), oklch(46% 0.20 310));
+  --grad-tab-panel: linear-gradient(135deg, oklch(58% 0.14 310), oklch(42% 0.15 330));
   --color-tab-shop: oklch(56% 0.15 150);
   --grad-tab-shop: linear-gradient(135deg, oklch(64% 0.14 145), oklch(50% 0.15 160));
   --color-tab-services: oklch(58% 0.18 20);
 
-  --shadow-sm: 0 1px 2px oklch(20% 0.02 60 / 0.05), 0 6px 18px -12px oklch(30% 0.05 50 / 0.22);
-  --shadow-md: 0 6px 16px -4px oklch(20% 0.02 60 / 0.14), 0 2px 6px -2px oklch(20% 0.02 60 / 0.08);
-  --shadow-lg: 0 16px 32px -8px oklch(20% 0.02 60 / 0.20), 0 4px 12px -4px oklch(20% 0.02 60 / 0.10);
-  --shadow-glow-accent: 0 8px 24px -6px oklch(69% 0.20 62 / 0.45);
+  --shadow-sm: 0 1px 2px oklch(25% 0.03 10 / 0.04), 0 10px 24px -16px oklch(35% 0.08 10 / 0.28);
+  --shadow-md: 0 8px 20px -6px oklch(25% 0.04 10 / 0.16), 0 2px 6px -2px oklch(25% 0.03 10 / 0.07);
+  --shadow-lg: 0 20px 40px -12px oklch(25% 0.05 10 / 0.24), 0 4px 12px -4px oklch(25% 0.03 10 / 0.10);
+  --shadow-glow-accent: 0 10px 26px -8px oklch(58% 0.17 10 / 0.55);
   --shadow-glow-success: 0 8px 24px -6px oklch(62% 0.17 150 / 0.4);
   --shadow-glow-danger: 0 8px 24px -6px oklch(56% 0.22 22 / 0.4);
   --shadow-glow-info: 0 8px 24px -6px oklch(60% 0.17 250 / 0.4);
@@ -73,10 +75,10 @@ export const TOKENS_CSS = `
   --space-4: 16px; --space-6: 24px; --space-8: 32px;
   --space-10: 40px; --space-12: 48px; --space-16: 64px;
 
-  --radius-sm: 8px; --radius-md: 12px; --radius-lg: 18px; --radius-xl: 24px; --radius-full: 9999px;
+  --radius-sm: 8px; --radius-md: 13px; --radius-lg: 20px; --radius-xl: 26px; --radius-full: 9999px;
 
   --font-sans: 'Vazirmatn Variable', 'Vazirmatn', system-ui, sans-serif;
-  --font-display: 'Noto Kufi Arabic Variable', 'Vazirmatn Variable', 'Vazirmatn', system-ui, sans-serif;
+  --font-display: 'Estedad Variable', 'Vazirmatn Variable', 'Vazirmatn', system-ui, sans-serif;
   --text-xs: 0.75rem; --text-sm: 0.875rem; --text-base: 1rem;
   --text-lg: 1.125rem; --text-xl: 1.25rem; --text-2xl: 1.5rem; --text-3xl: 1.875rem;
   --leading-tight: 1.35; --leading-normal: 1.6; --leading-relaxed: 1.75;
@@ -84,8 +86,8 @@ export const TOKENS_CSS = `
   --duration-fast: 120ms; --duration-base: 200ms; --ease-standard: cubic-bezier(.4,0,.2,1);
 
   /* soft warm glows behind everything, so pages never look flat */
-  --bg-glow-1: color-mix(in oklch, var(--color-accent-300) 26%, transparent);
-  --bg-glow-2: color-mix(in oklch, var(--color-tab-panel) 9%, transparent);
+  --bg-glow-1: color-mix(in oklch, var(--color-accent-300) 30%, transparent);
+  --bg-glow-2: color-mix(in oklch, var(--color-gold) 16%, transparent);
   background:
     radial-gradient(1100px 520px at 110% -8%, var(--bg-glow-1), transparent 62%),
     radial-gradient(800px 480px at -20% 18%, var(--bg-glow-2), transparent 60%),
@@ -102,25 +104,26 @@ export const TOKENS_CSS = `
   min-height: 100%;
 }
 .salon-app[data-theme="dark"] {
-  --color-bg: oklch(13% 0.014 55);
-  --color-surface: oklch(17% 0.016 55);
-  --color-surface-raised: oklch(21% 0.018 55);
-  --color-border: oklch(29% 0.018 55);
-  --color-muted: oklch(56% 0.014 55);
-  --color-body: oklch(88% 0.012 60);
-  --color-heading: oklch(96% 0.008 60);
-  --color-accent-500: oklch(73% 0.18 68);
+  --color-bg: oklch(14% 0.014 350);
+  --color-surface: oklch(18.5% 0.016 350);
+  --color-surface-raised: oklch(22.5% 0.018 350);
+  --color-border: oklch(30% 0.02 350);
+  --color-muted: oklch(62% 0.016 10);
+  --color-body: oklch(89% 0.012 20);
+  --color-heading: oklch(97% 0.008 20);
+  --color-accent-500: oklch(72% 0.14 15);
+  --color-accent-700: oklch(80% 0.11 18);
   /* Light tints used as backgrounds (e.g. the status banner) — without dark
      versions they stayed near-white under light text and were unreadable. */
-  --color-accent-50: oklch(22% 0.04 65);
-  --color-accent-100: oklch(30% 0.06 65);
+  --color-accent-50: oklch(23% 0.035 10);
+  --color-accent-100: oklch(30% 0.05 10);
   --color-female-100: oklch(27% 0.05 10);
   --color-male-100: oklch(25% 0.035 225);
   --color-dog-100: oklch(28% 0.05 65);
   --color-cat-100: oklch(27% 0.05 300);
   --color-pet-100: oklch(27% 0.045 160);
   --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.3), 0 8px 20px -14px oklch(0% 0 0 / 0.6);
-  --bg-glow-1: color-mix(in oklch, var(--color-accent-500) 13%, transparent);
+  --bg-glow-1: color-mix(in oklch, var(--color-accent-500) 12%, transparent);
   --bg-glow-2: color-mix(in oklch, var(--color-tab-panel) 12%, transparent);
   --shadow-md: 0 6px 16px -4px oklch(0% 0 0 / 0.45);
   --shadow-lg: 0 16px 32px -8px oklch(0% 0 0 / 0.55);
@@ -146,7 +149,7 @@ export const TOKENS_CSS = `
 .salon-app ::selection { background: color-mix(in oklch, var(--color-accent-500) 30%, transparent); }
 .salon-app .card {
   background: var(--color-surface);
-  border: 1px solid color-mix(in oklch, var(--color-border) 75%, transparent);
+  border: 1px solid color-mix(in oklch, var(--color-border) 65%, transparent);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-standard);
@@ -186,11 +189,14 @@ export const TOKENS_CSS = `
   color: var(--color-body);
   border-radius: var(--radius-md);
 }
-.salon-app .ghost-btn:hover { border-color: var(--color-accent-500); }
+.salon-app .ghost-btn:hover { border-color: var(--color-accent-500); color: var(--color-accent-700); }
 .salon-app h1 { color: var(--color-heading); font-weight: 800; letter-spacing: 0; }
 .salon-app h2 { color: var(--color-heading); font-weight: 700; letter-spacing: 0; line-height: 1.5; }
-/* headings and brand text get the display face; body text stays Vazirmatn */
-.salon-app h1, .salon-app h2, .salon-app .font-display { font-family: var(--font-display); }
+/* headings, card titles and big numbers get the display face (Estedad);
+   body text stays Vazirmatn. Inline-styled titles use font-weight 800. */
+.salon-app h1, .salon-app h2, .salon-app h3, .salon-app .font-display,
+.salon-app [style*="font-weight: 800"], .salon-app .accent-btn { font-family: var(--font-display); }
+.salon-app h1, .salon-app h2 { letter-spacing: -0.01em; }
 .salon-app h3 { color: var(--color-heading); font-weight: 700; }
 .salon-app h4 { color: var(--color-heading); font-weight: 600; }
 .salon-app .muted { color: var(--color-muted); }
@@ -278,6 +284,9 @@ export const TOKENS_CSS = `
   box-shadow: 0 6px 16px -6px color-mix(in oklch, var(--tab-color) 70%, transparent), inset 0 1px 0 oklch(100% 0 0 / 0.25);
 }
 .salon-app .main-tab:not([aria-selected="true"]):hover { background: color-mix(in oklch, var(--tab-color) 10%, transparent); }
+/* inactive tabs: quiet text, the hue lives only in the icon */
+.salon-app .main-tab:not([aria-selected="true"]) { color: var(--color-body); font-weight: 600; }
+.salon-app .main-tab:not([aria-selected="true"]) svg { color: var(--tab-color); }
 /* booking welcome card */
 .salon-app .hero {
   position: relative; overflow: hidden; color: white; border-radius: var(--radius-xl);
@@ -287,6 +296,10 @@ export const TOKENS_CSS = `
   content: ""; position: absolute; inset: 0; pointer-events: none;
   background: radial-gradient(90% 80% at 0% 0%, oklch(100% 0 0 / 0.22), transparent 60%),
               radial-gradient(60% 70% at 100% 100%, oklch(0% 0 0 / 0.16), transparent 70%);
+}
+.salon-app .hero::after {
+  content: ""; position: absolute; width: 220px; height: 220px; inset-inline-start: -70px; bottom: -110px; pointer-events: none;
+  border-radius: 50%; border: 26px solid oklch(100% 0 0 / 0.08); box-shadow: 0 0 0 30px oklch(100% 0 0 / 0.04);
 }
 .salon-app .hero > * { position: relative; }
 .salon-app .hero-chip {

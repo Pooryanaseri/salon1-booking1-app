@@ -103,7 +103,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     <div className="fade-in">
       <div
         className="flex items-center justify-between mb-3"
-        style={{ padding: "12px 14px", borderRadius: "var(--radius-lg)", background: "var(--grad-tab-panel)" }}
+        style={{ padding: "8px 8px 8px 14px", borderRadius: "var(--radius-lg)", background: "var(--grad-tab-panel)", boxShadow: "0 10px 24px -14px color-mix(in oklch, var(--color-tab-panel) 80%, transparent)" }}
       >
         <p className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 800, color: "white" }}>
           <ShieldCheck size={16} />
@@ -134,14 +134,14 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
               className="tap flex flex-col items-center justify-center gap-1"
               style={{
                 position: "relative", padding: "10px 2px", borderRadius: "var(--radius-md)", fontSize: 10.5, fontWeight: active ? 800 : 700, textAlign: "center",
-                background: active ? g.color : `color-mix(in oklch, ${g.color} 11%, var(--color-surface))`,
-                color: active ? "white" : g.color,
-                border: active ? "none" : `1px solid color-mix(in oklch, ${g.color} 22%, transparent)`,
-                boxShadow: active ? `0 3px 10px -3px color-mix(in oklch, ${g.color} 55%, transparent)` : "none",
+                background: active ? "var(--grad-brand)" : "var(--color-surface)",
+                color: active ? "white" : "var(--color-body)",
+                border: active ? "1px solid transparent" : "1px solid color-mix(in oklch, var(--color-border) 70%, transparent)",
+                boxShadow: active ? "var(--shadow-glow-accent)" : "var(--shadow-sm)",
                 lineHeight: 1.3,
               }}
             >
-              <g.Icon size={18} />
+              <g.Icon size={18} color={active ? "white" : g.color} />
               {g.label}
               {badge > 0 && (
                 <span className="tabular" aria-label={`${toFa(badge)} مورد جدید`} style={{ position: "absolute", top: 4, left: 4, minWidth: 17, height: 17, borderRadius: 9, background: "var(--color-danger)", color: "white", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{toFa(badge)}</span>
@@ -163,9 +163,9 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
                 className="tap flex items-center gap-1"
                 style={{
                   padding: "7px 12px", borderRadius: "var(--radius-full)", fontSize: 12, fontWeight: active ? 800 : 600,
-                  background: active ? `color-mix(in oklch, ${activeGroup.color} 16%, var(--color-surface))` : "var(--color-surface)",
-                  color: active ? activeGroup.color : "var(--color-body)",
-                  border: `1px solid ${active ? `color-mix(in oklch, ${activeGroup.color} 45%, transparent)` : "var(--color-border)"}`,
+                  background: active ? "color-mix(in oklch, var(--color-accent-500) 13%, var(--color-surface))" : "var(--color-surface)",
+                  color: active ? "var(--color-accent-700)" : "var(--color-body)",
+                  border: `1px solid ${active ? "color-mix(in oklch, var(--color-accent-500) 45%, transparent)" : "var(--color-border)"}`,
                 }}
               >
                 <t.Icon size={13} />

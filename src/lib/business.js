@@ -349,7 +349,7 @@ export async function watermark(file, text) {
     g.drawImage(bmp, 0, 0, c.width, c.height);
     bmp.close?.();
     const size = Math.max(16, Math.round(c.width / 26));
-    g.font = `800 ${size}px "Noto Kufi Arabic Variable", "Vazirmatn Variable", sans-serif`;
+    g.font = `800 ${size}px "Estedad Variable", "Vazirmatn Variable", sans-serif`;
     g.direction = "rtl"; g.textAlign = "right"; g.textBaseline = "bottom";
     const pad = Math.round(size * 0.7);
     const w = g.measureText(text).width;

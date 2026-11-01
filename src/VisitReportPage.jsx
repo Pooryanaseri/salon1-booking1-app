@@ -25,7 +25,7 @@ export default function VisitReportPage({ token }) {
   const pet = "#2f8f6b";
   const wrap = { minHeight: "100vh", padding: "24px 16px 40px", background: "#f6f2ec", fontFamily: "'Vazirmatn Variable', Vazirmatn, system-ui, sans-serif", color: "#2b2420" };
   const card = { maxWidth: 460, margin: "0 auto 14px", background: "white", borderRadius: 18, padding: 18, boxShadow: "0 6px 24px -14px rgba(60,40,20,.35)" };
-  const display = { fontFamily: "'Noto Kufi Arabic Variable', 'Vazirmatn Variable', system-ui, sans-serif" };
+  const display = { fontFamily: "'Estedad Variable', 'Vazirmatn Variable', system-ui, sans-serif" };
 
   if (state === "loading") {
     return <div dir="rtl" style={{ ...wrap, display: "flex", alignItems: "center", justifyContent: "center" }}><Loader2 size={26} color={brand} style={{ animation: "spin .9s linear infinite" }} /><style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style></div>;

@@ -661,11 +661,12 @@ export default function App() {
         {/* Backend status — only shown when something is off, never in the happy path */}
         {backendNote && (
           <div
-            className="card fade-in flex items-center gap-2 mb-3"
-            style={{ padding: "9px 12px", borderColor: "var(--color-warning)", background: "var(--color-accent-50)" }}
+            className="fade-in flex items-center gap-1.5 mb-3"
+            role="status"
+            style={{ padding: "5px 12px", borderRadius: "var(--radius-full)", width: "fit-content", maxWidth: "100%", marginInline: "auto", background: "color-mix(in oklch, var(--color-warning) 12%, var(--color-surface))", border: "1px solid color-mix(in oklch, var(--color-warning) 35%, transparent)" }}
           >
-            <AlertTriangle size={14} color="var(--color-warning)" style={{ flexShrink: 0 }} />
-            <p style={{ fontSize: 11.5, color: "var(--color-body)" }}>{backendNote}</p>
+            <AlertTriangle size={12} color="var(--color-warning)" style={{ flexShrink: 0 }} />
+            <p style={{ fontSize: 11, color: "var(--color-body)" }}>{backendNote}</p>
           </div>
         )}
 
