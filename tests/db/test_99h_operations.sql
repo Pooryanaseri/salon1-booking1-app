@@ -17,6 +17,7 @@ reset role;
 select id as o1 from public.salons where slug = 'tst-ops' \gset
 select id as o2 from public.salons where slug = 'tst-ops2' \gset
 delete from public.users where id in ('aaaaaaaa-0000-0000-0000-0000000000e1', 'aaaaaaaa-0000-0000-0000-0000000000e2');
+delete from public.working_hours where salon_id = :'o1' and staff_id is null;  -- v2.60 seeds defaults
 insert into public.working_hours (id, salon_id, staff_id, day_of_week, start_time, end_time, is_closed)
 select 'tst-owh-' || d, :'o1', null, d, '09:00', '20:00', false from generate_series(0, 6) d;
 insert into public.stylists (id, salon_id, name, gender, phone, active) values ('tst-ops-g', :'o1', 'گرومر', 'pet', '09120005552', true);

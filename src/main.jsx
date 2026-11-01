@@ -49,8 +49,11 @@ function TenantGate({ children }) {
     return (
       <div dir="rtl" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", fontFamily: "system-ui, sans-serif", textAlign: "center", padding: 24 }}>
         <div>
-          <p style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>سالنی با این آدرس پیدا نشد</p>
-          <p style={{ fontSize: 13, color: "#888" }}>{state.error}</p>
+          <p style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{state.error || "سالنی با این آدرس پیدا نشد"}</p>
+          {slugFromLocation() && <p style={{ fontSize: 13, color: "#888", direction: "ltr" }}>/{slugFromLocation()}</p>}
+          <p style={{ fontSize: 13, color: "#888", marginTop: 8, lineHeight: 1.9 }}>
+            آدرس را بررسی کنید. مدیر سامانه سالن‌های جدید را از صفحهٔ <a href="/admin" style={{ color: "#b4532a" }}>/admin</a> ← «سالن جدید» می‌سازد.
+          </p>
         </div>
       </div>
     );

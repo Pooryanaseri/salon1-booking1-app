@@ -14,6 +14,7 @@ select public.admin_create_salon('tst-care', 'پت کر تست', '09120007771', 
 reset role;
 select id as cs from public.salons where slug = 'tst-care' \gset
 delete from public.users where id in ('aaaaaaaa-0000-0000-0000-0000000000c1', 'aaaaaaaa-0000-0000-0000-0000000000c2');
+delete from public.working_hours where salon_id = :'cs' and staff_id is null;  -- v2.60 seeds defaults
 insert into public.working_hours (id, salon_id, staff_id, day_of_week, start_time, end_time, is_closed)
 select 'tst-cwh-' || d, :'cs', null, d, '09:00', '20:00', false from generate_series(0, 6) d;
 insert into public.stylists (id, salon_id, name, gender, phone, active) values

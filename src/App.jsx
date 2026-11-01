@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { Sparkles, PawPrint, Sun, Moon, Loader2, AlertTriangle, CalendarPlus, LayoutDashboard, ShieldCheck, ShoppingBag } from "lucide-react";
 import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSalonName, isPetSalon } from "./lib/tenant";
-import { bootstrap, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, fetchDepositTerms, joinWaitlist, DEFAULT_AUTOMATION } from "./lib/api";
+import { bootstrap, bootstrapError, subscribeAppointments, fetchStaffData, createPublicBooking, fetchPublicSlots, subscribeSlotChanges, broadcastSlotChange, insertOne, updateOne, deleteOne, fetchSmsTemplates, fetchAutomationSettings, fetchDepositTerms, joinWaitlist, DEFAULT_AUTOMATION } from "./lib/api";
 import { signOut as authSignOut, restoreSession } from "./lib/auth";
 import { sendSms, scheduleReminder, renderTemplate } from "./lib/sms";
 import { jalaliLabel, formatClock, dateKey, parseDateKey } from "./lib/format";
@@ -232,7 +232,8 @@ export default function App() {
       if (cancelled) return;
 
       if (!data) {
-        setBackendNote("اتصال به دیتابیس برقرار نشد — نمایش داده‌های نمونه");
+        const why = bootstrapError();
+        setBackendNote(`اتصال به دیتابیس برقرار نشد — نمایش داده‌های نمونه${why ? ` (${why})` : ""}`);
         armAll();
         setDataReady(true);
         return;

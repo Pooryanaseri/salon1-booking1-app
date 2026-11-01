@@ -21,6 +21,7 @@ select tst.ok(not exists (select 1 from public.services s join public.salons x o
 select tst.ok(public.salon_sections(:'pet_salon') = array['dog', 'cat'], 'pet sections');
 
 -- hours, a groomer serving both, open days
+delete from public.working_hours where salon_id = :'pet_salon' and staff_id is null;  -- v2.60 seeds defaults
 insert into public.working_hours (id, salon_id, staff_id, day_of_week, start_time, end_time, is_closed)
 select 'tst-pwh-' || d, :'pet_salon', null, d, '09:00', '20:00', false from generate_series(0, 6) d;
 insert into public.stylists (id, salon_id, name, gender, phone, active)
