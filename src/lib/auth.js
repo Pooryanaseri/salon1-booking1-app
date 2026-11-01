@@ -299,7 +299,18 @@ function translateAuthError(msg = "") {
     return "این شماره قبلاً ثبت شده — وارد شوید";
   if (m.includes("password")) return "رمز عبور باید حداقل ۶ کاراکتر باشد";
   if (m.includes("rate limit")) return "تعداد تلاش‌ها زیاد بود — کمی بعد دوباره امتحان کنید";
-  return "ثبت‌نام ناموفق بود — دوباره تلاش کنید";
+  // Supabase project settings — the message says exactly what to switch
+  if (m.includes("signups not allowed") || m.includes("signup is disabled") || m.includes("signups are disabled"))
+    return "ثبت‌نام در Supabase بسته است — در Authentication → Sign In / Providers گزینهٔ «Allow new users to sign up» را روشن کنید";
+  if (m.includes("email") && m.includes("disabled"))
+    return "ورود با ایمیل در Supabase خاموش است — در Authentication → Sign In / Providers → Email آن را روشن کنید";
+  if (m.includes("confirmation") || m.includes("sending") || m.includes("smtp"))
+    return "Supabase می‌خواهد ایمیل تایید بفرستد — در Authentication → Sign In / Providers → Email گزینهٔ «Confirm email» را خاموش کنید";
+  if (m.includes("invalid") && m.includes("email"))
+    return "Supabase آدرس ساختگی ‎@salon.local‎ را نپذیرفت — «Confirm email» را خاموش کنید و دوباره امتحان کنید";
+  if (m.includes("fetch") || m.includes("network"))
+    return "اتصال به Supabase برقرار نشد — آدرس و کلید Supabase در تنظیمات Vercel را بررسی کنید";
+  return `ثبت‌نام ناموفق بود — ${msg || "دوباره تلاش کنید"}`;
 }
 
 /* ------------------------------------------------ v2.41: platform admin -- */
@@ -308,7 +319,7 @@ function translateAuthError(msg = "") {
 export async function signInPlatformAdmin(phone, password) {
   if (!SUPABASE_ENABLED) return { ok: false, error: "دمو — دیتابیس متصل نیست" };
   const { error } = await supabase.auth.signInWithPassword({ email: phoneToEmail(phone), password });
-  if (error) return { ok: false, error: "شماره یا رمز عبور اشتباه است" };
+  if (error) return { ok: false, error: translateSignInError(error.message) };
   const { data: isAdmin } = await supabase.rpc("is_platform_admin");
   if (isAdmin !== true) {
     await supabase.auth.signOut();
