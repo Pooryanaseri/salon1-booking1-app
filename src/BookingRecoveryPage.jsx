@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Loader2, Calendar } from "lucide-react";
 import { resolveRebookingToken, fetchRebookingSlots, createBookingFromRebookingToken } from "./lib/api";
+import { gregorianToJalali, MONTHS_FA } from "./lib/format";
 
 const FA_DIGITS = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
 const toFa = (n) => String(n).replace(/[0-9]/g, (d) => FA_DIGITS[+d]);
@@ -152,8 +153,10 @@ export default function BookingRecoveryPage({ token }) {
           <Calendar size={14} /> یک روز انتخاب کنید
         </p>
         <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
-          {nextDays(14).map((d) => {
+          {nextDays(14).filter((d) => !offer?.quote_expires_at || dateKey(d) <= dateKey(new Date(offer.quote_expires_at))).map((d, i) => {
             const key = dateKey(d);
+            // Jalali day, with the month name on the first day and on the 1st of a month
+            const { jm, jd } = gregorianToJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
             const active = selectedDate && dateKey(selectedDate) === key;
             return (
               <button
@@ -166,7 +169,8 @@ export default function BookingRecoveryPage({ token }) {
                 }}
               >
                 <div style={{ fontSize: 10, opacity: 0.8 }}>{WEEKDAYS_FA[d.getDay()]}</div>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>{toFa(d.getDate())}</div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{toFa(jd)}</div>
+                {(i === 0 || jd === 1) && <div style={{ fontSize: 9.5, opacity: 0.8 }}>{MONTHS_FA[jm - 1]}</div>}
               </button>
             );
           })}

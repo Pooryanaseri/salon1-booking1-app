@@ -13,6 +13,7 @@ reset role;
 select id as qs from public.salons where slug = 'tst-quotes' \gset
 delete from public.users where id = 'aaaaaaaa-0000-0000-0000-0000000000a9';
 insert into public.users (id, salon_id, phone, full_name, role) values ('aaaaaaaa-0000-0000-0000-0000000000a9', :'qs', '09120009999', 'مدیر گرومینگ', 'manager');
+delete from public.working_hours where salon_id = :'qs' and staff_id is null;  -- v2.60 seeds defaults
 insert into public.working_hours (id, salon_id, staff_id, day_of_week, start_time, end_time, is_closed)
 select 'tst-qwh-' || d, :'qs', null, d, '09:00', '20:00', false from generate_series(0, 6) d;
 insert into public.stylists (id, salon_id, name, gender, phone, active) values ('tst-groomer-q', :'qs', 'گرومر', 'pet', '09120005551', true);
