@@ -177,6 +177,13 @@ Deno.serve(async (req) => {
   if (auth.role !== "system" && !isManager(auth) && auth.role !== "stylist") {
     return json({ ok: false, error: "دسترسی ارسال پیامک ندارید" }, 403);
   }
+  // v2.58: a salon whose subscription has ended (past the renewal window) sends nothing.
+  if (auth.role !== "system" && auth.salonId) {
+    const { data: state, error: stErr } = await admin.rpc("subscription_state", { p_salon: auth.salonId });
+    if (!stErr && state === "locked") {
+      return json({ ok: false, error: "اشتراک سالن به پایان رسیده — برای ارسال پیامک تمدید کنید" }, 402);
+    }
+  }
   /** Stylist-sent rows must be booking notices about the stylist's own appointments. */
   async function stylistMayUse(rows: { appointment_id?: string | null; kind?: string }[]): Promise<boolean> {
     if (auth.role !== "stylist") return true;

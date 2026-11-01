@@ -350,8 +350,54 @@ export function targetStatus(r) {
 
 /* ------------------------------------------------------- 13. plans ---- */
 export async function fetchMyPlan() {
-  if (!SUPABASE_ENABLED) return { ok: true, demo: true, plan_id: "pro", plan_name: "حرفه‌ای (نمونه)", expires_at: null, sms_quota: 2000, sms_used: 0, online_volume: 0, payment_fee_pct: 1, payment_fee: 0, online: false, plans: [] };
+  if (!SUPABASE_ENABLED) {
+    const st = demoSubscription();
+    return { ok: true, demo: true, plan_id: "pro", plan_name: "حرفه‌ای (نمونه)", expires_at: st.expires_at, state: st.state, days_left: st.days_left, grace_until: st.grace_until,
+      discounts: { 3: 5, 6: 10, 12: 20 }, support_phone: "", sms_quota: 2000, sms_used: 0, online_volume: 0, payment_fee_pct: 1, payment_fee: 0, online: false,
+      plans: [{ id: "pro", name: "حرفه‌ای (نمونه)", monthly_price: 490000, sms_quota: 2000 }] };
+  }
   return rpc("my_plan", {});
+}
+
+/* v2.58: subscription state — active / grace / locked (server-enforced). */
+const DEMO_SUB_KEY = "salon-demo-sub";
+/** Demo only: `?sub=soon|grace|locked` previews each state. */
+function demoSubscription() {
+  let mode = "";
+  try {
+    const q = new URLSearchParams(window.location.search).get("sub");
+    if (q) sessionStorage.setItem(DEMO_SUB_KEY, q);
+    mode = sessionStorage.getItem(DEMO_SUB_KEY) || "";
+  } catch { /* no storage */ }
+  const iso = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
+  const make = (days, state) => ({ ok: true, demo: true, enforced: true, state, days_left: days, expires_at: iso(days), grace_until: iso(days + 5), warn_days: 14, support_phone: "02100000000" });
+  if (mode === "soon") return make(6, "active");
+  if (mode === "grace") return make(-2, "grace");
+  if (mode === "locked") return make(-9, "locked");
+  return { ok: true, demo: true, enforced: false, state: "active", days_left: null, expires_at: null, grace_until: null, warn_days: 14, support_phone: "" };
+}
+export async function fetchSubscriptionStatus() {
+  if (!SUPABASE_ENABLED) return demoSubscription();
+  const { data, error } = await supabase.rpc("subscription_status");
+  if (error) { if (!missing(error, "subscription_status")) log("subscription_status", error); return { ok: false, state: "active" }; }
+  return data || { ok: false, state: "active" };
+}
+/** Pure: the reminder banner for the panel (null when nothing to say). */
+export function subscriptionNotice(st) {
+  if (!st || !st.enforced || st.days_left == null) return null;
+  if (st.state === "locked") return { tone: "danger", text: "اشتراک به پایان رسیده و سرویس غیرفعال است" };
+  if (st.state === "grace") {
+    const left = Math.max(0, Math.round((new Date(st.grace_until) - new Date(new Date().toISOString().slice(0, 10))) / 86400000));
+    return { tone: "danger", text: left > 0 ? `اشتراک تمام شده — ${toFaNum(left)} روز تا غیرفعال شدن فرصت تمدید دارید` : "امروز آخرین روز مهلت تمدید است" };
+  }
+  if (st.days_left === 0) return { tone: "warning", text: "امروز آخرین روز اشتراک است" };
+  if (st.days_left > 0 && st.days_left <= (st.warn_days || 14)) return { tone: "warning", text: `${toFaNum(st.days_left)} روز تا پایان اشتراک` };
+  return null;
+}
+const toFaNum = (n) => String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+export async function adminSubscriptionOverview() {
+  if (!SUPABASE_ENABLED) return DEMO_OFF;
+  return rpc("admin_subscription_overview", {});
 }
 export async function buyPlan(planId, months) {
   if (!SUPABASE_ENABLED) return DEMO_OFF;
@@ -385,7 +431,16 @@ export async function adminSavePlatformSettings(s) {
   if (!SUPABASE_ENABLED) return DEMO_OFF;
   const merchant = (s.zarinpal_merchant_id || "").trim();
   if (merchant && !/^[0-9a-fA-F-]{36}$/.test(merchant)) return { ok: false, error: "مرچنت‌کد زرین‌پال ۳۶ کاراکتر است" };
-  const { error } = await supabase.from("platform_settings").update({ zarinpal_merchant_id: merchant, trial_days: Number(s.trial_days) || 0 }).eq("id", true);
+  const days = String(s.reminder_days ?? "").split(/[,،\s]+/).map((x) => Number(String(x).replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)))).filter((x) => x > 0);
+  if (days.some((d) => d > 60) || days.length > 8) return { ok: false, error: "روزهای یادآوری: حداکثر ۸ عدد بین ۱ تا ۶۰" };
+  const phone = String(s.support_phone || "").trim();
+  if (phone && !/^0[0-9]{10}$/.test(phone)) return { ok: false, error: "شمارهٔ پشتیبانی ۱۱ رقم و با ۰ شروع شود" };
+  const pct = (v, d) => Math.min(50, Math.max(0, Number(v ?? d) || 0));
+  const row = { zarinpal_merchant_id: merchant, trial_days: Math.min(90, Math.max(0, Number(s.trial_days) || 0)),
+    enforce_subscription: !!s.enforce_subscription, grace_days: Math.min(30, Math.max(0, Number(s.grace_days) || 0)),
+    reminder_days: [...new Set(days)].sort((a, b) => b - a), discount_3: pct(s.discount_3, 5), discount_6: pct(s.discount_6, 10), discount_12: pct(s.discount_12, 20),
+    support_phone: phone };
+  const { error } = await supabase.from("platform_settings").update(row).eq("id", true);
   if (error) { log("platform_settings.save", error); return { ok: false, error: "ذخیره ناموفق بود" }; }
   return { ok: true };
 }

@@ -4,6 +4,7 @@ import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
 import { RevenueForecastCard } from "./RevenueForecast";
+import { SubscriptionBanner, SubscriptionLock } from "./Subscription";
 import { AccountingTab } from "./AccountingTab";
 import { BITab } from "./BITab";
 import { Badge, DayTimeline, GenderBadge, MenuItem, Modal, PanelSectionHeader, Row, StatCard, Switch } from "../components/ui";
@@ -29,7 +30,7 @@ import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceM
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
    ============================================================ */
-export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange, onReminderHoursSaved, onShopEnabledChange }) {
+export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange, onReminderHoursSaved, onShopEnabledChange, subscription }) {
   // The last section is remembered per person, so the panel reopens where they left off.
   const navKey = `salon-panel-tab:${currentStylistId || "manager"}`;
   const [subTab, setSubTabRaw] = useState(() => { try { return localStorage.getItem(navKey) || "dashboard"; } catch { return "dashboard"; } });
@@ -118,6 +119,10 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
         </button>
       </div>
 
+      {subscription?.state === "locked" ? (
+        <SubscriptionLock status={subscription} isManager={!currentStylist} notify={notify} />
+      ) : (<>
+      {!currentStylist && <SubscriptionBanner status={subscription} onRenew={() => setSubTab("settings")} />}
       {!currentStylist && <BranchBar notify={notify} />}
 
       {/* Two levels: a few big areas, then the sections of the open area. */}
@@ -288,6 +293,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           notify={notify}
         />
       )}
+      </>)}
     </div>
   );
 }

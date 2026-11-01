@@ -517,6 +517,8 @@ export function PlanCard({ notify }) {
     notify(r?.error || "اتصال به درگاه پرداخت ناموفق بود");
   }
   const quotaPct = p.sms_quota > 0 ? Math.min(1, p.sms_used / p.sms_quota) : 0;
+  // discounts are set by the platform owner (v2.58); older servers: the v2.53 defaults
+  const disc = (m) => Number((p.discounts || { 3: 5, 6: 10, 12: 20 })[m] || 0);
   return (
     <div className="card mb-4" style={{ padding: 14 }} data-card="plan">
       <p className="flex items-center gap-1.5 mb-2" style={{ fontSize: 15, fontWeight: 800 }}><Sparkles size={15} color="var(--color-accent-500)" /> اشتراک نرم‌افزار</p>
@@ -524,7 +526,10 @@ export function PlanCard({ notify }) {
         پلن: <b>{p.plan_name || "بدون پلن"}</b>
         {p.expires_at && <span className="muted tabular"> · تا {isoToJalaliLabel(String(p.expires_at).slice(0, 10))}</span>}
       </p>
-      {p.expired && <p className="flex items-center gap-1" style={{ fontSize: 12.5, color: "var(--color-danger)", marginTop: 4 }}><AlertTriangle size={13} /> اشتراک تمام شده — تمدید کنید</p>}
+      {p.state === "locked" && <p className="flex items-center gap-1" style={{ fontSize: 12.5, color: "var(--color-danger)", marginTop: 4 }}><AlertTriangle size={13} /> اشتراک تمام شده و سرویس غیرفعال است — با تمدید همان لحظه فعال می‌شود</p>}
+      {p.state === "grace" && <p className="flex items-center gap-1" style={{ fontSize: 12.5, color: "var(--color-danger)", marginTop: 4 }}><AlertTriangle size={13} /> اشتراک تمام شده — تا {isoToJalaliLabel(String(p.grace_until).slice(0, 10))} فرصت تمدید دارید</p>}
+      {p.state !== "locked" && p.state !== "grace" && p.expired && <p className="flex items-center gap-1" style={{ fontSize: 12.5, color: "var(--color-danger)", marginTop: 4 }}><AlertTriangle size={13} /> اشتراک تمام شده — تمدید کنید</p>}
+      {p.state === "active" && p.days_left != null && p.days_left >= 0 && p.days_left <= 14 && <p style={{ fontSize: 12.5, color: "var(--color-warning)", marginTop: 4, fontWeight: 700 }}>{toFa(p.days_left)} روز تا پایان اشتراک</p>}
       {p.sms_quota > 0 && (
         <>
           <p className="muted tabular" style={{ fontSize: 12, marginTop: 6 }}>پیامک این ماه: {toFa(p.sms_used)} از {toFa(p.sms_quota)}</p>
@@ -538,10 +543,10 @@ export function PlanCard({ notify }) {
           پرداخت‌های آنلاین این ماه: {formatToman(p.online_volume)} · کارمزد پلتفرم ({toFa(p.payment_fee_pct)}٪): {formatToman(p.payment_fee)}
         </p>
       )}
-      {p.online && (p.plans || []).length > 0 && (
+      {(p.online || p.demo) && (p.plans || []).length > 0 && (
         <>
           <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 10 }} role="radiogroup" aria-label="مدت">
-            {[[1, "۱ ماه"], [3, "۳ ماه (۵٪ کمتر)"], [6, "۶ ماه (۱۰٪ کمتر)"], [12, "۱۲ ماه (۲۰٪ کمتر)"]].map(([m, l]) => (
+            {[1, 3, 6, 12].map((m) => [m, `${toFa(m)} ماه${disc(m) > 0 ? ` (${toFa(disc(m))}٪ کمتر)` : ""}`]).map(([m, l]) => (
               <button key={m} role="radio" aria-checked={months === m} className="tap" onClick={() => setMonths(m)}
                 style={{ padding: "6px 10px", borderRadius: "var(--radius-full)", fontSize: 11.5, fontWeight: 700, border: `1px solid ${months === m ? "var(--color-accent-500)" : "var(--color-border)"}`, background: months === m ? "var(--color-accent-50)" : "var(--color-surface)" }}>{l}</button>
             ))}
@@ -551,6 +556,7 @@ export function PlanCard({ notify }) {
               <div key={x.id} className="flex items-center justify-between gap-2" style={{ padding: "8px 10px", borderRadius: "var(--radius-md)", border: `1px solid ${x.id === p.plan_id ? "var(--color-accent-500)" : "var(--color-border)"}` }}>
                 <span style={{ fontSize: 13 }}>
                   <b>{x.name}</b> <span className="muted tabular" style={{ fontSize: 11.5 }}>{formatToman(x.monthly_price)} در ماه{x.sms_quota ? ` · ${toFa(x.sms_quota)} پیامک` : ""}</span>
+                  {months > 1 && <span className="tabular" style={{ display: "block", fontSize: 12, fontWeight: 700 }}>{toFa(months)} ماه: {formatToman(Math.round(x.monthly_price * months * (1 - disc(months) / 100)))}</span>}
                 </span>
                 <button disabled={!!busy} className="tap accent-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => buy(x.id)}>
                   {busy === x.id ? <Loader2 size={13} className="salon-spin" /> : x.id === p.plan_id ? "تمدید" : "خرید"}
@@ -561,6 +567,7 @@ export function PlanCard({ notify }) {
         </>
       )}
       {p.demo && <p className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>در حالت دمو پرداخت فعال نیست.</p>}
+      {p.support_phone && <p className="muted tabular" style={{ fontSize: 11.5, marginTop: 6 }}>پشتیبانی: <span dir="ltr">{toFa(p.support_phone)}</span></p>}
     </div>
   );
 }

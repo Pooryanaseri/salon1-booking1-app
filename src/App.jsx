@@ -13,7 +13,8 @@ import { Toast } from "./components/ui";
 import { fetchShop } from "./lib/shop";
 import { requestPetTransport } from "./lib/petcare";
 import { applyBookingCoupon } from "./lib/business";
-import { applyOffpeak, applyUpsell, setBookingSource, currentSource, captureSource } from "./lib/growth";
+import { applyOffpeak, applyUpsell, setBookingSource, currentSource, captureSource, fetchSubscriptionStatus } from "./lib/growth";
+import { ClosedNotice } from "./components/ClosedNotice";
 import { applyStylistPrice, fetchStylistPrices } from "./lib/contracts";
 
 // Loaded on demand: a customer booking a slot never downloads the panel.
@@ -70,6 +71,10 @@ export default function App() {
 
   // ---- backend status -------------------------------------------------------
   const [dataReady, setDataReady] = useState(false);
+  // v2.58: subscription state (the server enforces the lock; this only explains it)
+  const [subStatus, setSubStatus] = useState({ state: "active" });
+  const locked = subStatus?.state === "locked";
+  useEffect(() => { fetchSubscriptionStatus().then((st) => setSubStatus(st || { state: "active" })); }, [panelAuthed]);
   const [backendNote, setBackendNote] = useState("");
 
   // ---- collections wired to Postgres (setter contract unchanged) ------------
@@ -677,14 +682,15 @@ export default function App() {
           </div>
         )}
 
-        {dataReady && tab === "book" && (
+        {dataReady && locked && tab !== "panel" && <ClosedNotice status={subStatus} />}
+        {dataReady && !locked && tab === "book" && (
           <BookingFlow services={services} stylists={stylists} bookings={bookings} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} addBooking={addBooking} waitlist={waitlist} addWaitlistEntry={addWaitlistEntry} notify={notify} onSectionChange={setActiveSection} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} automation={automation} depositTerms={depositTerms} />
         )}
         <Suspense fallback={<div className="flex justify-center" style={{ padding: 40 }}><Loader2 size={18} className="salon-spin" color="var(--color-accent-500)" /></div>}>
-        {dataReady && tab === "shop" && (
+        {dataReady && !locked && tab === "shop" && (
           <ShopView notify={notify} onTrack={(phone) => { setTrackPhone(phone); switchTab("track"); }} />
         )}
-        {dataReady && tab === "track" && (
+        {dataReady && !locked && tab === "track" && (
           <TrackView bookings={bookings} services={services} stylists={stylists} workingHours={workingHours} staffWorkingHours={staffWorkingHours} timeOff={timeOff} approvedDates={approvedDates} updateBooking={updateBooking} notify={notify} initialPhone={trackPhone} />
         )}
         {dataReady && tab === "panel" && !panelAuthed && (
@@ -741,6 +747,7 @@ export default function App() {
             notify={notify}
             onShopEnabledChange={setShopEnabled}
             onLogout={handleLogout}
+            subscription={subStatus}
           />
         )}
         </Suspense>

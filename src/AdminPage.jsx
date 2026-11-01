@@ -4,7 +4,7 @@ import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSession, signOut, signInPlatformAdmin, registerPlatformAdmin } from "./lib/auth";
 import { isPlatformAdmin, adminListSalons, adminCreateSalon, adminUpdateSalon } from "./lib/api";
 import { adminLinkBranch } from "./lib/business";
-import { adminFetchPlans, adminSavePlan, adminFetchPlatformSettings, adminSavePlatformSettings, adminSetPlan, adminBillingReport } from "./lib/growth";
+import { adminFetchPlans, adminSavePlan, adminFetchPlatformSettings, adminSavePlatformSettings, adminSetPlan, adminBillingReport, adminSubscriptionOverview } from "./lib/growth";
 import { toFa, normalizeMobile, jalaliLabel, parseDateKey } from "./lib/format";
 
 /**
@@ -325,14 +325,16 @@ function BillingDialog({ salons, onClose, onToast }) {
   const [plans, setPlans] = useState(null);
   const [settings, setSettings] = useState(null);
   const [report, setReport] = useState(null);
+  const [overview, setOverview] = useState(null);
   const [editing, setEditing] = useState(null);
   const [assign, setAssign] = useState({ salon: "", plan: "", expires: "" });
   const [tick, setTick] = useState(0);
   const month = new Date().toISOString().slice(0, 10);
   useEffect(() => {
     adminFetchPlans().then(setPlans);
-    adminFetchPlatformSettings().then((d) => setSettings(d || { zarinpal_merchant_id: "", trial_days: 14 }));
+    adminFetchPlatformSettings().then((d) => setSettings(d || { zarinpal_merchant_id: "", trial_days: 14, enforce_subscription: false, grace_days: 5, reminder_days: [14, 7, 3, 1], discount_3: 5, discount_6: 10, discount_12: 20, support_phone: "" }));
     adminBillingReport(month).then(setReport);
+    adminSubscriptionOverview().then(setOverview);
   }, [tick, month]);
   const fa = (n) => toFa(Number(n || 0).toLocaleString("en-US"));
   const totals = (report?.rows || []).reduce((t, r) => ({ sub: t.sub + Number(r.subscription || 0), fee: t.fee + Number(r.fee || 0) }), { sub: 0, fee: 0 });
@@ -384,17 +386,65 @@ function BillingDialog({ salons, onClose, onToast }) {
             onToast(r?.ok ? "پلن سالن ذخیره شد" : r?.error || "ناموفق بود"); setTick((t) => t + 1);
           }}>ذخیره پلن سالن</button>
         </section>
-        <section>
-          <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>درگاه پرداخت پلتفرم (برای خرید اشتراک)</p>
-          {settings && (
-            <>
-              <input dir="ltr" value={settings.zarinpal_merchant_id} placeholder="مرچنت‌کد زرین‌پال پلتفرم" onChange={(e) => setSettings((x) => ({ ...x, zarinpal_merchant_id: e.target.value.trim() }))} style={S.input} />
-              <button style={{ ...S.btn, marginTop: 6 }} onClick={async () => {
-                const r = await adminSavePlatformSettings(settings);
-                onToast(r.ok ? "ذخیره شد" : r.error);
-              }}>ذخیره</button>
-            </>
-          )}
+        <section data-admin="sub-settings">
+          <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>قوانین اشتراک و درگاه پرداخت</p>
+          {settings && (() => {
+            const set = (k) => (e) => setSettings((x) => ({ ...x, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
+            const num = (k, label, hint) => (
+              <label style={{ fontSize: 12, color: C.muted, display: "block", flex: 1 }}>{label}
+                <input dir="ltr" inputMode="numeric" value={settings[k] ?? ""} onChange={set(k)} style={S.input} aria-label={label} />
+                {hint && <span style={{ fontSize: 11 }}>{hint}</span>}
+              </label>
+            );
+            return (
+              <>
+                <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, marginBottom: 8 }}>
+                  <input type="checkbox" checked={!!settings.enforce_subscription} onChange={set("enforce_subscription")} style={{ marginTop: 4 }} />
+                  <span><b>اجرای اشتراک</b> — پس از پایان اشتراک و مهلت تمدید، پنل، رزرو آنلاین، فروشگاه و پیامک‌های آن سالن غیرفعال می‌شود.
+                    <span style={{ display: "block", color: C.muted, fontSize: 11.5 }}>سالنی که تاریخ پایان ندارد هرگز قفل نمی‌شود (نامحدود).</span></span>
+                </label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {num("trial_days", "روز آزمایشی سالن جدید")}
+                  {num("grace_days", "مهلت تمدید پس از پایان (روز)", "۰ تا ۳۰")}
+                </div>
+                <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>یادآوری پیامکی چند روز قبل از پایان
+                  <input dir="ltr" value={Array.isArray(settings.reminder_days) ? settings.reminder_days.join(", ") : settings.reminder_days ?? ""} onChange={set("reminder_days")} placeholder="14, 7, 3, 1" style={S.input} aria-label="روزهای یادآوری" />
+                  <span style={{ fontSize: 11 }}>با ویرگول جدا کنید. روز آخر اشتراک، روز آخر مهلت و روز قفل شدن هم خودکار پیامک می‌رود.</span>
+                </label>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  {num("discount_3", "تخفیف ۳ ماهه ٪")}
+                  {num("discount_6", "تخفیف ۶ ماهه ٪")}
+                  {num("discount_12", "تخفیف ۱۲ ماهه ٪")}
+                </div>
+                <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>شمارهٔ پشتیبانی (در پیامک‌ها و صفحهٔ قفل)
+                  <input dir="ltr" inputMode="tel" value={settings.support_phone ?? ""} onChange={set("support_phone")} placeholder="021…" style={S.input} aria-label="شمارهٔ پشتیبانی" />
+                </label>
+                <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>مرچنت‌کد زرین‌پال پلتفرم (برای خرید آنلاین اشتراک)
+                  <input dir="ltr" value={settings.zarinpal_merchant_id ?? ""} placeholder="xxxxxxxx-xxxx-…" onChange={(e) => setSettings((x) => ({ ...x, zarinpal_merchant_id: e.target.value.trim() }))} style={S.input} aria-label="مرچنت‌کد" />
+                </label>
+                <button style={{ ...S.btn, marginTop: 8 }} onClick={async () => {
+                  const r = await adminSavePlatformSettings(settings);
+                  onToast(r.ok ? "قوانین اشتراک ذخیره شد" : r.error);
+                  if (r.ok) setTick((t) => t + 1);
+                }}>ذخیره</button>
+              </>
+            );
+          })()}
+        </section>
+        <section data-admin="sub-overview">
+          <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>وضعیت اشتراک سالن‌ها</p>
+          {(overview?.rows || []).length === 0 && <p style={{ fontSize: 12, color: C.muted }}>{overview?.demo ? "در حالت دمو خالی است." : "سالنی نیست."}</p>}
+          <div style={{ maxHeight: 220, overflowY: "auto" }}>
+            {(overview?.rows || []).map((r) => {
+              const st = { active: ["فعال", "#16a34a"], grace: ["مهلت تمدید", "#d97706"], locked: ["قفل", "#dc2626"] }[r.state] || ["—", C.muted];
+              return (
+                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, padding: "5px 0", borderTop: `1px dashed ${C.border}` }}>
+                  <span><b>{r.name}</b> <span style={{ color: C.muted }}>{r.expires_at ? `تا ${r.expires_at}${r.days_left >= 0 ? ` (${toFa(r.days_left)} روز)` : ""}` : "بدون تاریخ (نامحدود)"}</span></span>
+                  <span style={{ color: st[1], fontWeight: 800 }}>{st[0]}</span>
+                </div>
+              );
+            })}
+          </div>
         </section>
       </div>
     </Dialog>
