@@ -116,7 +116,7 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
   // managers only; a stylist's own view stays services-only.
   const other = useOtherIncome(Number(range), bookings, canEditExpenses && !staffId);
   const otherIncome = other?.total || 0;
-  const totalIncome = realizedRevenue + (other ? other.shopRevenue + other.packages + other.gifts : 0);
+  const totalIncome = realizedRevenue + (other ? other.shopRevenue + other.packages + other.gifts + other.events : 0);
   const netProfit = realizedRevenue + otherIncome - totalExpenses;
   const profitMargin = totalIncome > 0 ? netProfit / totalIncome : null;
 
@@ -226,7 +226,7 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
         <StatCard label="تخفیف اعطاشده" value={formatToman(discountGiven)} icon={Percent} color="var(--color-accent-700)" />
       </div>
 
-      {other && (other.shopRevenue > 0 || other.packages > 0 || other.gifts > 0) && (
+      {other && (other.shopRevenue > 0 || other.packages > 0 || other.gifts > 0 || other.events > 0) && (
         <div className="card mb-2" style={{ padding: 14 }} data-card="income-sources">
           <p className="flex items-center gap-2 mb-2" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)" }}>
             <Coins size={15} /> درآمد به تفکیک منبع
@@ -236,6 +236,7 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
             ["فروشگاه", other.shopRevenue, other.shopCogs > 0 ? `قیمت خرید کالاها: ${formatToman(other.shopCogs)} — سود ناخالص ${formatToman(other.shopGross)}` : null],
             ["فروش بسته‌های پیش‌پرداخت", other.packages],
             ["فروش کارت هدیه", other.gifts],
+            ["مراسم (بیعانه و اقساط)", other.events],
           ].filter(([, v], i) => i === 0 || v > 0).map(([label, v, sub]) => (
             <div key={label} style={{ padding: "6px 0", borderTop: "1px dashed var(--color-border)" }}>
               <div className="flex justify-between gap-2" style={{ fontSize: 13 }}>

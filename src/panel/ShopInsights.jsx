@@ -126,7 +126,8 @@ export function useOtherIncome(days, bookings, enabled) {
         shopGross,
         packages: ex?.packages_revenue || 0,
         gifts: ex?.gift_cards_revenue || 0,
-        total: shopGross + (ex?.packages_revenue || 0) + (ex?.gift_cards_revenue || 0),
+        events: ex?.events_revenue || 0, // v2.53 event deposits and instalments
+        total: shopGross + (ex?.packages_revenue || 0) + (ex?.gift_cards_revenue || 0) + (ex?.events_revenue || 0),
       });
     });
     return () => { alive = false; };
