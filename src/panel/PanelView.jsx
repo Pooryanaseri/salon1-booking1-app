@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, Sparkles } from "lucide-react";
+import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, Sparkles, Target } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -132,11 +132,27 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     return () => { alive = false; document.removeEventListener("visibilitychange", onShow); };
   }, []);
 
+  // v2.63: «مرکز اقدام» has its own section next to today's bookings. Its
+  // badge is worked out quietly a few seconds after the panel opens, so the
+  // first screen stays fast.
+  const [actionCount, setActionCount] = useState(0);
+  const [countActions, setCountActions] = useState(false);
+  useEffect(() => {
+    if (currentStylist || subscription?.state === "locked") return undefined;
+    const t = setTimeout(() => setCountActions(true), 2500);
+    return () => clearTimeout(t);
+  }, [currentStylist, subscription?.state]);
+  const biProps = {
+    bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, automation,
+    onAutomationChange, onReminderHoursSaved, onNavigate: setSubTab, notify, onActionCount: setActionCount,
+  };
+
   // Every section, grouped into a few clear areas. Each one shows only what
   // belongs to the logged-in person; manager-only sections are left out for stylists.
   const manager = !currentStylist;
   const subTabs = [
     { id: "dashboard", group: "today", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList },
+    ...(manager ? [{ id: "actions", group: "today", label: "مرکز اقدام", badge: actionCount, Icon: Target }] : []),
     ...(petSalon ? [{ id: "quotes", group: "today", label: "استعلام قیمت", badge: quotesPending, Icon: QuoteIcon }] : []),
     ...(petSalon ? [{ id: "pets", group: "today", label: "حیوانات", Icon: PawPrint }] : []),
     { id: "loyalty", group: "clients", label: "باشگاه و تخفیف", Icon: Gift },
@@ -333,22 +349,9 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           offers={<MarketingTab isManager={!currentStylist} notify={notify} services={services} showPackages={!petSalon} />}
         />
       )}
-      {subTab === "bi" && !currentStylist && (
-        <BITab
-          bookings={bookings}
-          services={services}
-          stylists={stylists}
-          workingHours={workingHours}
-          staffWorkingHours={staffWorkingHours}
-          timeOff={timeOff}
-          approvedDates={approvedDates}
-          automation={automation}
-          onAutomationChange={onAutomationChange}
-          onReminderHoursSaved={onReminderHoursSaved}
-          onNavigate={setSubTab}
-          notify={notify}
-        />
-      )}
+      {subTab === "bi" && !currentStylist && <BITab {...biProps} />}
+      {subTab === "actions" && !currentStylist && <BITab {...biProps} mode="actions" />}
+      {countActions && !currentStylist && subTab !== "actions" && subTab !== "bi" && <BITab {...biProps} mode="count" />}
       </Suspense>
       </>)}
     </div>
