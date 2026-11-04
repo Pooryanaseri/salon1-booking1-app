@@ -5,7 +5,7 @@ import { formatToman, toFa, digitsOnly, isoToJalaliLabel } from "../lib/format";
 import {
   fetchGrowthSettings, saveGrowthSettings, EVENT_STATUS, eventKindLabel,
   fetchEventRequests, quoteEvent, setEventStatus, recordEventPayment,
-  fetchMyPlan, buyPlan,
+  fetchMyPlan, buyPlan, upgradePlan, buySmsPack, tierPrice, tierSaving,
 } from "../lib/growth";
 
 /* ============================================================
@@ -188,69 +188,157 @@ function EventPayModal({ ev, onClose, onDone }) {
 /* ================================================================ plan ===== */
 export function PlanCard({ notify }) {
   const [p, setP] = useState(null);
-  const [months, setMonths] = useState(1);
+  const [months, setMonths] = useState(3);
   const [busy, setBusy] = useState(null);
   useEffect(() => { fetchMyPlan().then((d) => setP(d || { ok: false })); }, []);
   if (!p || !p.ok) return null;
-  async function buy(id) {
-    setBusy(id);
-    const r = await buyPlan(id, months);
+  const tiers = (p.plans || []).filter((x) => x.tiered);
+  async function go(key, call) {
+    setBusy(key);
+    const r = await call();
     if (r?.ok && r.url) { window.location.assign(r.url); return; }
     setBusy(null);
-    notify(r?.error || "اتصال به درگاه پرداخت ناموفق بود");
+    notify(r?.demo ? "در حالت دمو پرداخت فعال نیست" : r?.error || "اتصال به درگاه پرداخت ناموفق بود");
   }
-  const quotaPct = p.sms_quota > 0 ? Math.min(1, p.sms_used / p.sms_quota) : 0;
-  // discounts are set by the platform owner (v2.58); older servers: the v2.53 defaults
-  const disc = (m) => Number((p.discounts || { 3: 5, 6: 10, 12: 20 })[m] || 0);
+  const canPay = p.online || p.demo;
+  const current = tiers.find((x) => x.id === p.plan_id);
+  const activeTerm = p.state === "active" && p.days_left != null && p.days_left > 0;
+  const seatPct = p.seat_limit ? Math.min(1, p.active_stylists / p.seat_limit) : 0;
+  const priceOf = (x) => x[`price_${months}`] ?? tierPrice(x, months, x.seats);
+  const smsOf = (x) => x[`sms_${months}`] || 0;
   return (
     <div className="card mb-4" style={{ padding: 14 }} data-card="plan">
       <p className="flex items-center gap-1.5 mb-2" style={{ fontSize: 15, fontWeight: 800 }}><Sparkles size={15} color="var(--color-accent-500)" /> اشتراک نرم‌افزار</p>
       <p style={{ fontSize: 13.5 }}>
-        پلن: <b>{p.plan_name || "بدون پلن"}</b>
+        سطح: <b>{p.plan_name || "بدون سطح"}</b>
         {p.expires_at && <span className="muted tabular"> · تا {isoToJalaliLabel(String(p.expires_at).slice(0, 10))}</span>}
       </p>
       {p.state === "locked" && <p className="flex items-center gap-1" style={{ fontSize: 12.5, color: "var(--color-danger)", marginTop: 4 }}><AlertTriangle size={13} /> اشتراک تمام شده و سرویس غیرفعال است — با تمدید همان لحظه فعال می‌شود</p>}
       {p.state === "grace" && <p className="flex items-center gap-1" style={{ fontSize: 12.5, color: "var(--color-danger)", marginTop: 4 }}><AlertTriangle size={13} /> اشتراک تمام شده — تا {isoToJalaliLabel(String(p.grace_until).slice(0, 10))} فرصت تمدید دارید</p>}
       {p.state !== "locked" && p.state !== "grace" && p.expired && <p className="flex items-center gap-1" style={{ fontSize: 12.5, color: "var(--color-danger)", marginTop: 4 }}><AlertTriangle size={13} /> اشتراک تمام شده — تمدید کنید</p>}
       {p.state === "active" && p.days_left != null && p.days_left >= 0 && p.days_left <= 14 && <p style={{ fontSize: 12.5, color: "var(--color-warning)", marginTop: 4, fontWeight: 700 }}>{toFa(p.days_left)} روز تا پایان اشتراک</p>}
-      {p.sms_quota > 0 && (
-        <>
-          <p className="muted tabular" style={{ fontSize: 12, marginTop: 6 }}>پیامک این ماه: {toFa(p.sms_used)} از {toFa(p.sms_quota)}</p>
+
+      {/* v2.64: what the tier allows and what is used */}
+      {p.seat_limit != null && (
+        <div style={{ marginTop: 8 }} data-plan="seats">
+          <p className="tabular" style={{ fontSize: 12.5 }}>آرایشگر فعال: <b>{toFa(p.active_stylists)}</b> از {toFa(p.seat_limit)}</p>
           <div style={{ height: 6, borderRadius: 3, background: "var(--color-surface-raised)", marginTop: 3, overflow: "hidden" }}>
-            <div style={{ width: `${quotaPct * 100}%`, height: "100%", background: quotaPct > 0.9 ? "var(--color-danger)" : "var(--color-accent-500)" }} />
+            <div style={{ width: `${seatPct * 100}%`, height: "100%", background: seatPct >= 1 ? "var(--color-warning)" : "var(--color-accent-500)" }} />
           </div>
-        </>
+          {seatPct >= 1 && <p className="muted" style={{ fontSize: 11.5, marginTop: 3 }}>برای افزودن آرایشگر بیشتر، سطح بالاتر را انتخاب کنید.</p>}
+        </div>
       )}
-      {p.payment_fee_pct > 0 && (
-        <p className="muted tabular" style={{ fontSize: 12, marginTop: 6 }}>
-          پرداخت‌های آنلاین این ماه: {formatToman(p.online_volume)} · کارمزد پلتفرم ({toFa(p.payment_fee_pct)}٪): {formatToman(p.payment_fee)}
+      {p.sms_metered ? (
+        <p className="tabular" data-plan="sms" style={{ fontSize: 12.5, marginTop: 8, color: p.sms_balance < 0 ? "var(--color-danger)" : p.sms_balance < 100 ? "var(--color-warning)" : undefined }}>
+          {p.sms_balance >= 0
+            ? <>پیامک باقی‌مانده: <b>{toFa(Number(p.sms_balance).toLocaleString("en-US"))}</b>{p.sms_balance < 100 && " — پیامک‌های تبلیغاتی به‌زودی متوقف می‌شوند"}</>
+            : <>پیامک‌ها تمام شده ({toFa(-p.sms_balance)} پیامک ضروری بیشتر ارسال شد) — پیامک‌های تبلیغاتی متوقف است و با خرید بعدی تسویه می‌شود</>}
         </p>
+      ) : tiers.length > 0 && (
+        <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>{p.enforced ? "پیامک‌ها از حساب پیامک خود سالن ارسال می‌شود و محدودیتی ندارد." : ""}</p>
       )}
-      {(p.online || p.demo) && (p.plans || []).length > 0 && (
+
+      {canPay && tiers.length > 0 && (
         <>
-          <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 10 }} role="radiogroup" aria-label="مدت">
-            {[1, 3, 6, 12].map((m) => [m, `${toFa(m)} ماه${disc(m) > 0 ? ` (${toFa(disc(m))}٪ کمتر)` : ""}`]).map(([m, l]) => (
-              <button key={m} role="radio" aria-checked={months === m} className="tap" onClick={() => setMonths(m)}
-                style={{ padding: "6px 10px", borderRadius: "var(--radius-full)", fontSize: 11.5, fontWeight: 700, border: `1px solid ${months === m ? "var(--color-accent-500)" : "var(--color-border)"}`, background: months === m ? "var(--color-accent-50)" : "var(--color-surface)" }}>{l}</button>
-            ))}
+          <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 12 }} role="radiogroup" aria-label="مدت اشتراک">
+            {[3, 6, 12].map((m) => {
+              const save = tierSaving(current || tiers[0], m);
+              return (
+                <button key={m} role="radio" aria-checked={months === m} className="tap" onClick={() => setMonths(m)}
+                  style={{ padding: "6px 11px", borderRadius: "var(--radius-full)", fontSize: 12, fontWeight: 700, border: `1px solid ${months === m ? "var(--color-accent-500)" : "var(--color-border)"}`, background: months === m ? "var(--color-accent-50)" : "var(--color-surface)" }}>
+                  {m === 12 ? "یک ساله" : `${toFa(m)} ماهه`}{save > 0 ? ` (${toFa(save)}٪ کمتر)` : ""}
+                </button>
+              );
+            })}
           </div>
           <div className="flex flex-col gap-2" style={{ marginTop: 8 }}>
-            {p.plans.filter((x) => x.monthly_price > 0).map((x) => (
-              <div key={x.id} className="flex items-center justify-between gap-2" style={{ padding: "8px 10px", borderRadius: "var(--radius-md)", border: `1px solid ${x.id === p.plan_id ? "var(--color-accent-500)" : "var(--color-border)"}` }}>
-                <span style={{ fontSize: 13 }}>
-                  <b>{x.name}</b> <span className="muted tabular" style={{ fontSize: 11.5 }}>{formatToman(x.monthly_price)} در ماه{x.sms_quota ? ` · ${toFa(x.sms_quota)} پیامک` : ""}</span>
-                  {months > 1 && <span className="tabular" style={{ display: "block", fontSize: 12, fontWeight: 700 }}>{toFa(months)} ماه: {formatToman(Math.round(x.monthly_price * months * (1 - disc(months) / 100)))}</span>}
-                </span>
-                <button disabled={!!busy} className="tap accent-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => buy(x.id)}>
-                  {busy === x.id ? <Loader2 size={13} className="salon-spin" /> : x.id === p.plan_id ? "تمدید" : "خرید"}
-                </button>
-              </div>
-            ))}
+            {tiers.map((x, i) => {
+              const prev = tiers[i - 1];
+              const range = x.extra_stylist_price_3 > 0
+                ? `${toFa((prev?.max_stylists || 0) + 1)} تا ${toFa(x.max_stylists)} آرایشگر · بیشتر: هر نفر ${formatToman(x.extra_stylist_price_3)} در ۳ ماه`
+                : `${prev ? `${toFa(prev.max_stylists + 1)} تا ` : "تا "}${toFa(x.max_stylists)} آرایشگر`;
+              const isCurrent = x.id === p.plan_id;
+              const up = activeTerm && x.upgrade?.ok ? x.upgrade : null;
+              return (
+                <div key={x.id} data-tier={x.id} style={{ padding: "9px 10px", borderRadius: "var(--radius-md)", border: `1px solid ${isCurrent ? "var(--color-accent-500)" : "var(--color-border)"}`, opacity: x.fits ? 1 : 0.55 }}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span style={{ fontSize: 13.5 }}><b>{x.name}</b>{isCurrent && <span style={{ fontSize: 11, color: "var(--color-accent-700)", fontWeight: 800 }}> · سطح فعلی</span>}</span>
+                    <b className="tabular" style={{ fontSize: 13 }}>{formatToman(priceOf(x))}</b>
+                  </div>
+                  <p className="muted tabular" style={{ fontSize: 11.5, marginTop: 2 }}>
+                    {range} · {toFa(smsOf(x).toLocaleString("en-US"))} پیامک رایگان
+                    {x.seats > x.max_stylists && <> · قیمت برای {toFa(x.seats)} آرایشگر</>}
+                  </p>
+                  <div className="flex gap-1.5" style={{ marginTop: 6, flexWrap: "wrap" }}>
+                    {!x.fits ? (
+                      <span className="muted" style={{ fontSize: 11.5 }}>برای {toFa(p.active_stylists)} آرایشگر فعال کافی نیست</span>
+                    ) : (
+                      <>
+                        {up && (
+                          <button disabled={!!busy} className="tap accent-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => go(`up-${x.id}`, () => upgradePlan(x.id))}>
+                            {busy === `up-${x.id}` ? <Loader2 size={13} className="salon-spin" /> : <>ارتقا از همین حالا · {formatToman(up.amount)}</>}
+                          </button>
+                        )}
+                        <button disabled={!!busy} className={`tap ${up ? "ghost-btn" : "accent-btn"}`} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => go(x.id, () => buyPlan(x.id, months))}>
+                          {busy === x.id ? <Loader2 size={13} className="salon-spin" /> : isCurrent ? "تمدید" : up ? "خرید بعد از پایان دوره" : "خرید"}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {up && <p className="muted tabular" style={{ fontSize: 11, marginTop: 4 }}>مابه‌التفاوت {toFa(up.days)} روز باقی‌مانده{up.sms > 0 ? ` + ${toFa(up.sms)} پیامک` : ""}؛ تاریخ پایان تغییر نمی‌کند.</p>}
+                </div>
+              );
+            })}
           </div>
+          {p.sms_metered && (p.sms_packs || []).length > 0 && p.sms_price > 0 && (
+            <div style={{ marginTop: 12 }} data-plan="sms-packs">
+              <p style={{ fontSize: 12.5, fontWeight: 800 }}>خرید پیامک بیشتر</p>
+              <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 5 }}>
+                {p.sms_packs.map((n) => (
+                  <button key={n} disabled={!!busy} className="tap ghost-btn tabular" style={{ padding: "6px 10px", fontSize: 11.5 }} onClick={() => go(`sms-${n}`, () => buySmsPack(n))}>
+                    {busy === `sms-${n}` ? <Loader2 size={13} className="salon-spin" /> : <>{toFa(n.toLocaleString("en-US"))} پیامک · {formatToman(n * p.sms_price)}</>}
+                  </button>
+                ))}
+              </div>
+              <p className="muted" style={{ fontSize: 11, marginTop: 4 }}>کد ورود مشتری و یادآوری تمدید رایگان است. بدون اعتبار، پیامک‌های رزرو (تایید، یادآوری، لغو) قطع نمی‌شوند؛ فقط پیامک‌های تبلیغاتی متوقف می‌شوند.</p>
+            </div>
+          )}
         </>
       )}
-      {p.demo && <p className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>در حالت دمو پرداخت فعال نیست.</p>}
+      {canPay && tiers.length === 0 && <LegacyPlans p={p} busy={busy} onBuy={(id, m) => go(id, () => buyPlan(id, m))} />}
+      {p.demo && <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>در حالت دمو پرداخت فعال نیست.</p>}
       {p.support_phone && <p className="muted tabular" style={{ fontSize: 11.5, marginTop: 6 }}>پشتیبانی: <span dir="ltr">{toFa(p.support_phone)}</span></p>}
     </div>
+  );
+}
+
+/* Before v2.64 (monthly plans with the owner's discounts) — kept until the migration runs. */
+function LegacyPlans({ p, busy, onBuy }) {
+  const [months, setMonths] = useState(1);
+  const disc = (m) => Number((p.discounts || { 3: 5, 6: 10, 12: 20 })[m] || 0);
+  return (
+    <>
+      <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 10 }} role="radiogroup" aria-label="مدت">
+        {[1, 3, 6, 12].map((m) => (
+          <button key={m} role="radio" aria-checked={months === m} className="tap" onClick={() => setMonths(m)}
+            style={{ padding: "6px 10px", borderRadius: "var(--radius-full)", fontSize: 11.5, fontWeight: 700, border: `1px solid ${months === m ? "var(--color-accent-500)" : "var(--color-border)"}`, background: months === m ? "var(--color-accent-50)" : "var(--color-surface)" }}>
+            {toFa(m)} ماه{disc(m) > 0 ? ` (${toFa(disc(m))}٪ کمتر)` : ""}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-col gap-2" style={{ marginTop: 8 }}>
+        {(p.plans || []).filter((x) => x.monthly_price > 0).map((x) => (
+          <div key={x.id} className="flex items-center justify-between gap-2" style={{ padding: "8px 10px", borderRadius: "var(--radius-md)", border: `1px solid ${x.id === p.plan_id ? "var(--color-accent-500)" : "var(--color-border)"}` }}>
+            <span style={{ fontSize: 13 }}>
+              <b>{x.name}</b> <span className="muted tabular" style={{ fontSize: 11.5 }}>{formatToman(x.monthly_price)} در ماه</span>
+              {months > 1 && <span className="tabular" style={{ display: "block", fontSize: 12, fontWeight: 700 }}>{toFa(months)} ماه: {formatToman(Math.round(x.monthly_price * months * (1 - disc(months) / 100)))}</span>}
+            </span>
+            <button disabled={!!busy} className="tap accent-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => onBuy(x.id, months)}>
+              {busy === x.id ? <Loader2 size={13} className="salon-spin" /> : x.id === p.plan_id ? "تمدید" : "خرید"}
+            </button>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
