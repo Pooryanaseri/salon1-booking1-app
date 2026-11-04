@@ -365,8 +365,17 @@ export async function fetchAllPages(makeQuery) {
 }
 
 /** Public booking only needs slots from yesterday on (v2.42 view filter too). */
+// v2.62 speed: the booking page only needs slots from today on. Without this
+// every visitor (and every live "slots changed" ping) downloaded the salon's
+// whole booking history, page by page — slower each month. Yesterday is the
+// cut so a device clock a few hours off never hides today.
+function slotsFromIso() {
+  const d = new Date(Date.now() - 86400000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 function publicSlotsQuery() {
   return supabase.from("appointments_public_slots").select("*")
+    .gte("date", slotsFromIso())
     .order("date").order("start_min").order("staff_id");
 }
 
@@ -393,7 +402,7 @@ export function bootstrapError() { return lastBootstrapError; }
 export async function bootstrap() {
   if (!SUPABASE_ENABLED) return null;
 
-  const [svc, sty, appt, off, wh, appr, exp] = await Promise.all([
+  const [svc, sty, appt, off, wh, appr] = await Promise.all([
     supabase.from("services").select("*").order("id"),
     // Public columns only — a stylist's personal phone is staff-only (v2.32
     // column grant); staff get the full rows from fetchStaffData().
@@ -407,7 +416,8 @@ export async function bootstrap() {
     fetchAllPages(() => supabase.from("time_offs").select("*").order("date").order("id")),
     supabase.from("working_hours").select("*").order("day_of_week"),
     supabase.from("approved_dates").select("date"),
-    supabase.from("expenses").select("*").order("date", { ascending: false }),
+    // (expenses and the waitlist are staff-only — fetchStaffData loads them;
+    //  asking here was a wasted request for every customer)
     // (the waitlist is staff-only since v2.41 — fetchStaffData loads it)
   ]);
 
@@ -421,7 +431,7 @@ export async function bootstrap() {
     lastBootstrapError = `${bad[0]}: ${bad[1].error.message || bad[1].error}`;
     return null;
   }
-  for (const [name, r] of [["time_offs", off], ["approved_dates", appr], ["expenses", exp]]) {
+  for (const [name, r] of [["time_offs", off], ["approved_dates", appr]]) {
     if (r.error) { fail(`bootstrap:${name}`, r.error); r.data = []; }
   }
   lastBootstrapError = "";
@@ -446,7 +456,7 @@ export async function bootstrap() {
     workingHours: salonHours.length === 7 ? salonHours : null,
     staffWorkingHours: staffHours,
     approvedDates: (appr.data || []).map((r) => isoToKey(r.date)),
-    expenses: (exp.data || []).map(map.expenses.fromRow),
+    expenses: [],
     waitlist: [],
   };
 }

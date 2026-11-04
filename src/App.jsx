@@ -13,7 +13,7 @@ import { Toast } from "./components/ui";
 import { fetchShop } from "./lib/shop";
 import { requestPetTransport } from "./lib/petcare";
 import { applyBookingCoupon } from "./lib/business";
-import { applyOffpeak, applyUpsell, setBookingSource, currentSource, captureSource, fetchSubscriptionStatus } from "./lib/growth";
+import { setBookingSource, currentSource, captureSource, fetchSubscriptionStatus } from "./lib/growth";
 import { ClosedNotice } from "./components/ClosedNotice";
 import { applyStylistPrice, fetchStylistPrices } from "./lib/contracts";
 
@@ -440,23 +440,6 @@ export default function App() {
     if (booking.final_price != null && booking.staff_id) {
       const sp = await applyStylistPrice(booking.id, params.customerPhone, booking, await fetchStylistPrices());
       if (sp?.ok) booking = { ...booking, original_price: Number(sp.price), final_price: Number(sp.final_price) };
-    }
-    // v2.53: quiet-hour discount (before the add-on and the code, so neither is discounted twice)
-    if (booking.final_price != null) {
-      const o = await applyOffpeak(booking.id, params.customerPhone, booking);
-      if (o?.ok) booking = { ...booking, offpeak_discount: Number(o.discount) || 0, final_price: o.final_price != null ? Number(o.final_price) : booking.final_price - (Number(o.discount) || 0) };
-    }
-    // v2.53: the add-on the client ticked on the booking page
-    if (params.upsellOffer) {
-      const u = await applyUpsell(booking.id, params.customerPhone, params.upsellOffer);
-      if (u?.ok) {
-        const amt = Number(u.amount) || 0;
-        booking = { ...booking, upsell_offer_id: params.upsellOffer.id, end_min: booking.end_min + (Number(u.extra_minutes) || 0),
-          extra_charges: [...(booking.extra_charges || []), { label: u.label, amount: amt }],
-          final_price: booking.final_price != null ? booking.final_price + amt : booking.final_price };
-      } else {
-        notify(u?.error || "افزودنی اضافه نشد — در سالن هماهنگ کنید");
-      }
     }
 
     // v2.50: a discount code, applied by the server to the fresh booking

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Plus, Pencil, Gift, Ticket, AlertTriangle, ShieldCheck, Download, Database, Camera, ScanLine, Building2, Image as ImageIcon, X, Users, Layers } from "lucide-react";
+import { Loader2, Plus, Pencil, Gift, Ticket, ShieldCheck, Download, Database, Camera, ScanLine, Building2, Image as ImageIcon, X, Layers } from "lucide-react";
 import { PackagesSection } from "./PetCare";
 import { Modal, Switch } from "../components/ui";
 import { formatToman, toFa, digitsOnly, normalizeMobile, isoToJalaliLabel, formatClock } from "../lib/format";
 import {
-  fetchCommissionReport, fetchCoupons, saveCoupon, fetchGiftCards, issueGiftCard, giftCardBalance,
-  fetchSupplies, saveSupply, supplyMove, fetchProfileSettings, saveProfileSettings, uploadGalleryPhoto, galleryUrl,
+  fetchCoupons, saveCoupon, fetchGiftCards, issueGiftCard, giftCardBalance,
+  fetchProfileSettings, saveProfileSettings, uploadGalleryPhoto, galleryUrl,
   mfaStatus, mfaEnroll, mfaVerify, mfaDisable, fetchBackups, backupNow, downloadBackup, fetchBranches, fetchBranchesSummary,
   switchBranch, checkIn,
 } from "../lib/business";
@@ -20,10 +20,6 @@ const money = (v, set) => ({
   onChange: (e) => set(digitsOnly(e.target.value, 11)), style: { ...input, textAlign: "left" },
 });
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const rangeDates = (days) => {
-  const to = new Date(); const from = new Date(); from.setDate(to.getDate() - (days - 1));
-  return [iso(from), iso(to)];
-};
 const Spinner = () => <div className="card flex items-center justify-center" style={{ padding: 20 }}><Loader2 size={16} className="salon-spin" /></div>;
 const cardTitle = (Icon, text, color = "var(--color-accent-500)") => (
   <p className="flex items-center gap-1.5" style={{ fontSize: 14, fontWeight: 800, color: "var(--color-heading)", marginBottom: 8 }}>
@@ -31,41 +27,6 @@ const cardTitle = (Icon, text, color = "var(--color-accent-500)") => (
   </p>
 );
 
-
-/* --------------------------------------------------------- 4. commission --- */
-export function CommissionCard({ bookings, stylists }) {
-  const [days, setDays] = useState(30);
-  const [r, setR] = useState(null);
-  useEffect(() => {
-    const [from, to] = rangeDates(days);
-    fetchCommissionReport(from, to, bookings, stylists).then(setR);
-  }, [days, bookings, stylists]);
-  return (
-    <div className="card mb-4" style={{ padding: 14 }} data-card="commission">
-      <div className="flex items-center justify-between">
-        {cardTitle(Users, "پورسانت کارکنان", "var(--color-info)")}
-        <select value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="بازهٔ پورسانت" style={{ padding: "4px 8px", fontSize: 12 }}>
-          {[7, 30, 90].map((d) => <option key={d} value={d}>{toFa(d)} روز</option>)}
-        </select>
-      </div>
-      {!r ? <Loader2 size={15} className="salon-spin" /> : !r.ok ? <p className="muted" style={{ fontSize: 12 }}>{r.error}</p> : (
-        <>
-          {r.rows.length === 0 && <p className="muted" style={{ fontSize: 12.5 }}>آرایشگری ثبت نشده</p>}
-          {r.rows.map((x) => (
-            <div key={x.id} style={{ padding: "8px 0", borderTop: "1px dashed var(--color-border)", fontSize: 12.5 }}>
-              <div className="flex justify-between"><b>{x.name}</b><b className="tabular" style={{ color: "var(--color-success)" }}>{formatToman(x.total_commission)}</b></div>
-              <div className="muted tabular" style={{ fontSize: 11.5, lineHeight: 1.8 }}>
-                {toFa(x.services_count)} خدمت · {formatToman(x.services_revenue)} × {toFa(x.commission_pct)}٪
-                {x.packages_count > 0 && <> · {toFa(x.packages_count)} بسته × {toFa(x.package_commission_pct)}٪</>}
-              </div>
-            </div>
-          ))}
-          <p className="muted" style={{ fontSize: 11, marginTop: 6 }}>درصدها را در «آرایشگرها ← ویرایش» تعیین کنید. هزینهٔ رفت‌وبرگشت در پورسانت حساب نمی‌شود.</p>
-        </>
-      )}
-    </div>
-  );
-}
 
 /* --------------------------------------------- 3. coupons + gift cards --- */
 export function MarketingTab({ isManager, notify, services = [], showPackages = false }) {
@@ -255,109 +216,6 @@ function IssueGiftModal({ onClose, onDone, notify }) {
         {err && <p role="alert" style={{ color: "var(--color-danger)", fontSize: 12.5 }}>{err}</p>}
         <button disabled={busy || !/^09\d{9}$/.test(f.recipientPhone) || !Number(f.amount)} className="tap accent-btn w-full flex items-center justify-center gap-1" style={{ padding: 12 }} onClick={go}>
           {busy && <Loader2 size={14} className="salon-spin" />} ساخت و ارسال پیامک
-        </button>
-      </div>
-    </Modal>
-  );
-}
-
-/* ---------------------------------------------------------- 10. supplies --- */
-export function SuppliesSection({ isManager, notify }) {
-  const [list, setList] = useState(null);
-  const [editing, setEditing] = useState(null);
-  const [moving, setMoving] = useState(null);
-  const [tick, setTick] = useState(0);
-  useEffect(() => { fetchSupplies().then(setList); }, [tick]);
-  if (!list) return <Spinner />;
-  const low = list.filter((s) => s.active && s.qty <= s.low_at);
-  return (
-    <div>
-      {low.length > 0 && (
-        <div className="card mb-3" style={{ padding: 12, borderColor: "var(--color-warning)" }}>
-          <p className="flex items-center gap-1.5" style={{ fontSize: 13, fontWeight: 800, color: "var(--color-warning)" }}>
-            <AlertTriangle size={14} /> رو به اتمام: {low.map((s) => s.name).join("، ")}
-          </p>
-        </div>
-      )}
-      {isManager && (
-        <button className="tap accent-btn w-full flex items-center justify-center gap-1.5 mb-3" style={{ padding: 11 }} onClick={() => setEditing({ name: "", unit: "عدد", low_at: 1, active: true })}>
-          <Plus size={15} /> قلم جدید
-        </button>
-      )}
-      {list.length === 0 && <div className="card" style={{ padding: 18, textAlign: "center" }}><p className="muted" style={{ fontSize: 13 }}>هنوز موادی ثبت نشده (شامپو، رنگ، تیغ…)</p></div>}
-      <div className="flex flex-col gap-2">
-        {list.map((s) => (
-          <div key={s.id} className="card flex items-center justify-between gap-2" data-supply={s.name} style={{ padding: 12 }}>
-            <div>
-              <p style={{ fontWeight: 700, fontSize: 13.5 }}>{s.name}</p>
-              <p className="tabular" style={{ fontSize: 12.5, color: s.qty <= s.low_at ? "var(--color-warning)" : "var(--color-muted)" }}>
-                {toFa(s.qty)} {s.unit}{s.qty <= s.low_at ? " — رو به اتمام" : ""}
-              </p>
-            </div>
-            <div className="flex gap-1.5">
-              <button className="tap ghost-btn" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => setMoving({ s, kind: "use" })}>مصرف</button>
-              {isManager && <button className="tap ghost-btn" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => setMoving({ s, kind: "purchase" })}>خرید</button>}
-              {isManager && <button className="tap ghost-btn" style={{ width: 34, height: 34, padding: 0 }} aria-label={`ویرایش ${s.name}`} onClick={() => setEditing(s)}><Pencil size={13} style={{ margin: "auto" }} /></button>}
-            </div>
-          </div>
-        ))}
-      </div>
-      {editing && <SupplyModal s={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); setTick((t) => t + 1); }} />}
-      {moving && <SupplyMoveModal {...moving} notify={notify} onClose={() => setMoving(null)} onDone={() => { setMoving(null); setTick((t) => t + 1); }} />}
-    </div>
-  );
-}
-
-function SupplyModal({ s: initial, onClose, onSaved }) {
-  const [s, setS] = useState(initial);
-  const [err, setErr] = useState("");
-  async function save() {
-    const res = await saveSupply(s);
-    if (!res.ok) { setErr(res.error); return; }
-    onSaved();
-  }
-  return (
-    <Modal title={s.id ? "ویرایش قلم" : "قلم جدید انبار"} onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <label className="muted" style={{ fontSize: 12 }}>نام<input value={s.name} maxLength={60} onChange={(e) => setS({ ...s, name: e.target.value })} style={input} /></label>
-        <div className="flex gap-2">
-          <label className="muted" style={{ fontSize: 12, flex: 1 }}>واحد<input value={s.unit} maxLength={15} placeholder="لیتر، عدد، بسته" onChange={(e) => setS({ ...s, unit: e.target.value })} style={input} /></label>
-          <label className="muted" style={{ fontSize: 12, flex: 1 }}>هشدار وقتی کمتر از
-            <input dir="ltr" inputMode="decimal" className="tabular" value={s.low_at} onChange={(e) => setS({ ...s, low_at: e.target.value })} style={{ ...input, textAlign: "left" }} />
-          </label>
-        </div>
-        {err && <p role="alert" style={{ color: "var(--color-danger)", fontSize: 12.5 }}>{err}</p>}
-        <button className="tap accent-btn w-full" style={{ padding: 12 }} onClick={save}>ذخیره</button>
-      </div>
-    </Modal>
-  );
-}
-
-function SupplyMoveModal({ s, kind, onClose, onDone, notify }) {
-  const [qty, setQty] = useState("");
-  const [cost, setCost] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  async function go() {
-    const q = Number(String(qty).replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)));
-    if (!(q > 0)) { setErr("مقدار را وارد کنید"); return; }
-    setBusy(true);
-    const res = await supplyMove(s, kind, q, kind === "purchase" ? Number(cost) || null : null);
-    setBusy(false);
-    if (!res?.ok) { setErr(res?.error || "ثبت ناموفق بود"); return; }
-    notify(kind === "purchase" ? `خرید ${s.name} ثبت شد${Number(cost) ? " و به هزینه‌ها اضافه شد" : ""}` : `مصرف ${s.name} ثبت شد${res.low ? " — رو به اتمام است" : ""}`);
-    onDone();
-  }
-  return (
-    <Modal title={`${kind === "purchase" ? "خرید" : "مصرف"} ${s.name}`} onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <label className="muted" style={{ fontSize: 12 }}>مقدار ({s.unit})
-          <input dir="ltr" inputMode="decimal" className="tabular" value={qty} onChange={(e) => setQty(e.target.value)} style={{ ...input, textAlign: "left" }} />
-        </label>
-        {kind === "purchase" && <label className="muted" style={{ fontSize: 12 }}>مبلغ خرید (اختیاری — در هزینه‌ها ثبت می‌شود)<input {...money(cost, setCost)} /></label>}
-        {err && <p role="alert" style={{ color: "var(--color-danger)", fontSize: 12.5 }}>{err}</p>}
-        <button disabled={busy} className="tap accent-btn w-full flex items-center justify-center gap-1" style={{ padding: 12 }} onClick={go}>
-          {busy && <Loader2 size={14} className="salon-spin" />} ثبت
         </button>
       </div>
     </Modal>
