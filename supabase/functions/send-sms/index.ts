@@ -332,7 +332,7 @@ Deno.serve(async (req) => {
     if (MARKETING_KINDS.includes(m.kind ?? "")) {
       const { data: may, error: mayErr } = await admin.rpc("sms_may_send", { p_salon: salonId, p_kind: m.kind });
       if (!mayErr && may === false) {
-        results.push({ to, ok: false, error: "پیامک‌های اشتراک تمام شده — از «پروفایل و امنیت ← اشتراک» بستهٔ پیامک بخرید" });
+        results.push({ to, ok: false, error: "پیامک‌های اشتراک تمام شده — از «تنظیمات سالن ← اشتراک نرم‌افزار» بستهٔ پیامک بخرید" });
         continue;
       }
     }

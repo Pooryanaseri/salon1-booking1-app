@@ -127,7 +127,7 @@ begin
   if v_limit is null then return new; end if;
   if (select count(*) from public.stylists where salon_id = new.salon_id and active and id <> new.id) >= v_limit then
     select p.name into v_plan from public.salons s join public.platform_plans p on p.id = s.plan_id where s.id = new.salon_id;
-    raise exception 'اشتراک «%» حداکثر % آرایشگر فعال دارد — برای افزودن، اشتراک را ارتقا دهید (تنظیمات سالن ← پروفایل و امنیت)',
+    raise exception 'اشتراک «%» حداکثر % آرایشگر فعال دارد — برای افزودن، اشتراک را ارتقا دهید (تنظیمات سالن ← اشتراک نرم‌افزار)',
       coalesce(v_plan, ''), public.fa_digits(v_limit::text) using errcode = 'P0001';
   end if;
   return new;

@@ -9712,7 +9712,7 @@ begin
     d := r.plan_expires_at - v_today;
     v_body := case
       when d > 0 and d = any (ps.reminder_days) then
-        'اشتراک نرم‌افزار نوبت‌دهی «' || r.name || '» ' || public.fa_digits(d::text) || ' روز دیگر تمام می‌شود. برای تمدید: پنل ← تنظیمات سالن ← پروفایل و امنیت.'
+        'اشتراک نرم‌افزار نوبت‌دهی «' || r.name || '» ' || public.fa_digits(d::text) || ' روز دیگر تمام می‌شود. برای تمدید: پنل ← تنظیمات سالن ← اشتراک نرم‌افزار.'
       when d = 0 then
         'امروز آخرین روز اشتراک «' || r.name || '» است.'
         || case when ps.grace_days > 0 then ' پس از آن ' || public.fa_digits(ps.grace_days::text) || ' روز مهلت تمدید دارید.' else ' لطفاً امروز تمدید کنید.' end
@@ -10218,7 +10218,7 @@ begin
   if v_limit is null then return new; end if;
   if (select count(*) from public.stylists where salon_id = new.salon_id and active and id <> new.id) >= v_limit then
     select p.name into v_plan from public.salons s join public.platform_plans p on p.id = s.plan_id where s.id = new.salon_id;
-    raise exception 'اشتراک «%» حداکثر % آرایشگر فعال دارد — برای افزودن، اشتراک را ارتقا دهید (تنظیمات سالن ← پروفایل و امنیت)',
+    raise exception 'اشتراک «%» حداکثر % آرایشگر فعال دارد — برای افزودن، اشتراک را ارتقا دهید (تنظیمات سالن ← اشتراک نرم‌افزار)',
       coalesce(v_plan, ''), public.fa_digits(v_limit::text) using errcode = 'P0001';
   end if;
   return new;
@@ -10876,7 +10876,7 @@ begin
     if s.owner_phone ~ '^09[0-9]{9}$' then
       insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
       values (s.id, s.owner_phone, 'پرداخت کارت‌به‌کارت «' || s.name || '» تایید نشد: ' || v_note
-              || '. برای اصلاح: پنل ← تنظیمات سالن ← پروفایل و امنیت.', 'plan', 'queued', now());
+              || '. برای اصلاح: پنل ← تنظیمات سالن ← اشتراک نرم‌افزار.', 'plan', 'queued', now());
     end if;
   end if;
   return json_build_object('ok', true);

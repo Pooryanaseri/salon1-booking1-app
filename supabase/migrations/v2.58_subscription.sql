@@ -243,7 +243,7 @@ begin
     d := r.plan_expires_at - v_today;
     v_body := case
       when d > 0 and d = any (ps.reminder_days) then
-        'اشتراک نرم‌افزار نوبت‌دهی «' || r.name || '» ' || public.fa_digits(d::text) || ' روز دیگر تمام می‌شود. برای تمدید: پنل ← تنظیمات سالن ← پروفایل و امنیت.'
+        'اشتراک نرم‌افزار نوبت‌دهی «' || r.name || '» ' || public.fa_digits(d::text) || ' روز دیگر تمام می‌شود. برای تمدید: پنل ← تنظیمات سالن ← اشتراک نرم‌افزار.'
       when d = 0 then
         'امروز آخرین روز اشتراک «' || r.name || '» است.'
         || case when ps.grace_days > 0 then ' پس از آن ' || public.fa_digits(ps.grace_days::text) || ' روز مهلت تمدید دارید.' else ' لطفاً امروز تمدید کنید.' end
