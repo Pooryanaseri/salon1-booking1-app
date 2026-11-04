@@ -2,67 +2,11 @@ import React, { useState, useEffect, useMemo } from "react";
 import { useData } from "../hooks/useData";
 import { Scissors, Palette, Sparkles, Hand, Eye, Droplet, SlidersHorizontal, LayoutGrid, TrendingUp, Users, Layers, Send, Loader2, AlertTriangle, RefreshCw, Star } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
-import { fetchFeedbackStats, fetchCampaigns, fetchRfmSegments, fetchCategoryMatrix, fetchCampaignPerformance, fetchSegmentSettings, updateSegmentSettings, previewSegmentDistribution } from "../lib/api";
+import { fetchFeedbackStats, fetchRfmSegments, fetchCategoryMatrix, fetchCampaignPerformance, fetchSegmentSettings, updateSegmentSettings, previewSegmentDistribution } from "../lib/api";
 import { sendBulkSms, renderTemplate } from "../lib/sms";
-import { toFa, formatToman, jalaliLabel } from "../lib/format";
+import { toFa, formatToman } from "../lib/format";
 import { CATEGORY_LABEL } from "../app/shared";
 import { Modal } from "../components/ui";
-
-// Surfaces the win-back campaign data that SmsTab already writes to the
-// database (campaigns / campaign_targets) — this card is the "missing"
-// display piece the phase-3 changelog flagged.
-export function CampaignReturnRateCard() {
-  const [campaigns, setCampaigns] = useState([]);
-  const [loading, setLoading] = useState(false);
-
-  async function load() {
-    setLoading(true);
-    setCampaigns(await fetchCampaigns());
-    setLoading(false);
-  }
-  useEffect(() => { load(); }, []);
-
-  return (
-    <div className="card mb-4" style={{ padding: 14 }}>
-      <div className="flex items-center justify-between mb-3">
-        <p className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>
-          <RefreshCw size={13} color="var(--color-accent-700)" /> نرخ بازگشت کمپین‌های جذب مجدد
-        </p>
-        <button className="tap ghost-btn" style={{ width: 28, height: 28, padding: 0 }} onClick={load} disabled={loading}>
-          <RefreshCw size={13} style={{ margin: "auto", animation: loading ? "salonSpin 1s linear infinite" : "none" }} />
-        </button>
-      </div>
-
-      {!SUPABASE_ENABLED && (
-        <p className="muted" style={{ fontSize: 11.5, marginBottom: 8 }}>در حالت دمو، کمپین‌ها از سرور خوانده نمی‌شوند.</p>
-      )}
-      {SUPABASE_ENABLED && campaigns.length === 0 && !loading && (
-        <p className="muted" style={{ fontSize: 12.5 }}>هنوز کمپینی از تب «پیامک» ارسال نشده</p>
-      )}
-
-      <div className="flex flex-col gap-2">
-        {campaigns.slice(0, 8).map((c) => {
-          const denom = c.sent_count > 0 ? c.sent_count : c.targeted_count;
-          const rate = denom > 0 ? (c.returned_count / denom) * 100 : null;
-          return (
-            <div key={c.id} style={{ padding: "8px 10px", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
-              <div className="flex items-center justify-between">
-                <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>{c.name || "کمپین بدون نام"}</span>
-                <span className="tabular" style={{ fontSize: 13, fontWeight: 800, color: rate == null ? "var(--color-muted)" : rate >= 15 ? "var(--color-success)" : "var(--color-heading)" }}>
-                  {rate == null ? "—" : `${toFa(Math.round(rate))}٪`}
-                </span>
-              </div>
-              <div className="muted tabular" style={{ fontSize: 10.5, marginTop: 2 }}>
-                {toFa(c.targeted_count)} هدف · {toFa(c.sent_count)} ارسال‌شده · {toFa(c.returned_count)} بازگشته
-                {c.created_at && <> · {jalaliLabel(new Date(c.created_at), { withWeekday: false })}</>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 export const RFM_SEGMENT_META = {
   champions: { label: "مشتریان وفادار", emoji: "👑", color: "var(--color-accent-500)" },

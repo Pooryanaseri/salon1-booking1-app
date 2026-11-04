@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
-import { X, Percent, Banknote, CheckCircle2, XCircle, Plus, TrendingUp, TrendingDown, Hourglass, Wallet, Coins, Users, Receipt, PiggyBank, ReceiptText } from "lucide-react";
+import { X, Percent, Banknote, XCircle, Plus, TrendingUp, TrendingDown, Hourglass, Wallet, Coins, Receipt, PiggyBank, ReceiptText } from "lucide-react";
 import { gregorianToJalali, MONTHS_FA, toFa, formatToman, jalaliLabel, dateKey, parseDateKey } from "../lib/format";
-import { EXPENSE_CATEGORY_META, SECTION_META, makeSeedExpense } from "../app/shared";
-import { GenderBadge, Modal, StatCard } from "../components/ui";
+import { EXPENSE_CATEGORY_META, makeSeedExpense } from "../app/shared";
+import { Modal, StatCard } from "../components/ui";
 import { useOtherIncome } from "./ShopInsights";
 import { useContractIncome } from "./Contracts";
 
@@ -55,29 +55,11 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
   const avgTicket = priced(completed).length > 0 ? Math.round(realizedRevenue / priced(completed).length) : 0;
   const unpricedCount = rangeBookings.filter((b) => b.final_price == null).length;
   const lostRevenue = priced(cancelled).reduce((s, b) => s + b.final_price, 0);
-  const completionRate = completed.length + cancelled.length > 0 ? completed.length / (completed.length + cancelled.length) : null;
 
   // Growth vs. the previous equally-sized window (e.g. this 7 days vs. the 7 days before that)
   const prevCompleted = prevRangeBookings.filter((b) => b.status === "completed");
   const prevRealizedRevenue = priced(prevCompleted).reduce((s, b) => s + b.final_price, 0);
   const growthPct = prevRealizedRevenue > 0 ? Math.round(((realizedRevenue - prevRealizedRevenue) / prevRealizedRevenue) * 100) : null;
-
-  // Revenue broken down per stylist — owner-only (a logged-in stylist already
-  // only ever sees their own numbers via the staffId scoping above).
-  const byStylist = useMemo(() => {
-    if (staffId) return [];
-    const buckets = new Map(); // staff_id (or "unassigned") -> revenue
-    for (const b of priced(completed)) {
-      const key = b.staff_id || "unassigned";
-      buckets.set(key, (buckets.get(key) || 0) + b.final_price);
-    }
-    const rows = Array.from(buckets.entries()).map(([staffKey, revenue]) => {
-      const stylist = stylists.find((s) => s.id === staffKey);
-      return { key: staffKey, name: stylist ? stylist.name : "بدون آرایشگر مشخص", gender: stylist?.gender, revenue };
-    });
-    return rows.sort((a, b) => b.revenue - a.revenue);
-  }, [completed, staffId, stylists]);
-  const byStylistMax = Math.max(1, ...byStylist.map((s) => s.revenue));
 
   const dailyRevenue = useMemo(() => {
     return days.map((d) => {
@@ -204,29 +186,6 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
         </div>
       </div>
 
-      {byStylist.length > 0 && (
-        <div className="card mb-3" style={{ padding: 14 }}>
-          <p className="flex items-center gap-2 mb-3" style={{ fontSize: 15, fontWeight: 800, color: "var(--color-heading)" }}>
-            <Users size={16} color="var(--color-accent-700)" /> درآمد هر آرایشگر
-          </p>
-          <div className="flex flex-col gap-2.5">
-            {byStylist.map((s) => (
-              <div key={s.key}>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>
-                    {s.name} {s.gender && <GenderBadge gender={s.gender} />}
-                  </span>
-                  <span className="tabular" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--color-heading)" }}>{formatToman(s.revenue)}</span>
-                </div>
-                <div style={{ height: 6, borderRadius: "var(--radius-full)", background: "var(--color-surface-raised)", overflow: "hidden" }}>
-                  <div style={{ width: `${(s.revenue / byStylistMax) * 100}%`, height: "100%", borderRadius: "var(--radius-full)", background: s.gender ? SECTION_META[s.gender].color : "var(--color-muted)" }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="flex gap-2 mb-2">
         <StatCard label="میانگین هر نوبت" value={formatToman(avgTicket)} icon={Banknote} color="var(--color-accent-500)" />
         <StatCard label="درآمد در انتظار" value={formatToman(expectedRevenue)} icon={Hourglass} color="var(--color-info)" />
@@ -292,35 +251,6 @@ export function AccountingTab({ bookings, services, stylists = [], expenses, add
         />
         <StatCard label="مجموع هزینه‌ها" value={formatToman(totalExpenses)} icon={Receipt} color="var(--color-warning)" />
         <StatCard label="درآمد ازدست‌رفته" value={formatToman(lostRevenue)} icon={XCircle} tone={lostRevenue > 0 ? "danger" : "default"} color={lostRevenue > 0 ? undefined : "var(--color-danger)"} />
-      </div>
-
-      {/* Completion-rate gauge */}
-      <div className="card mb-4" style={{ padding: 14, background: "linear-gradient(135deg, color-mix(in oklch, var(--color-success) 7%, var(--color-surface)), var(--color-surface))" }}>
-        <p className="flex items-center gap-2 mb-3" style={{ fontSize: 15, fontWeight: 800, color: "var(--color-success)" }}>
-          <CheckCircle2 size={16} /> نرخ تکمیل نوبت‌ها
-        </p>
-        <div className="flex items-center gap-3">
-          <div
-            style={{
-              width: 56, height: 56, borderRadius: "50%", flexShrink: 0,
-              background: completionRate == null
-                ? "color-mix(in oklch, var(--color-success) 14%, var(--color-surface))"
-                : `conic-gradient(var(--color-success) ${Math.round(completionRate * 360)}deg, color-mix(in oklch, var(--color-success) 14%, var(--color-surface)) 0deg)`,
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}
-          >
-            <div style={{ width: 42, height: 42, borderRadius: "50%", background: "var(--color-surface)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span className="tabular" style={{ fontSize: 12, fontWeight: 800, color: "var(--color-success)" }}>
-                {completionRate == null ? "—" : `${toFa(Math.round(completionRate * 100))}٪`}
-              </span>
-            </div>
-          </div>
-          <p className="muted" style={{ fontSize: 11, lineHeight: 1.6 }}>
-            {completed.length + cancelled.length > 0
-              ? `${toFa(completed.length)} تکمیل‌شده از ${toFa(completed.length + cancelled.length)} نوبت قطعی‌شده`
-              : "هنوز نوبت قطعی‌شده‌ای در این بازه نیست"}
-          </p>
-        </div>
       </div>
 
       {/* Revenue trend — daily for short ranges, monthly for the year view */}

@@ -1,8 +1,8 @@
 import { ShopBICard } from "./ShopInsights";
 import React, { useState, useMemo, useEffect } from "react";
-import { Clock, Percent, Banknote, XCircle, TrendingUp, TrendingDown, ChevronLeft, Wallet, Users, UserPlus, Repeat2, Award, AlertTriangle, ChevronDown, ChevronUp, PawPrint } from "lucide-react";
-import { gregorianToJalali, jalaliDayNum, MONTHS_FA, WEEKDAYS_FA_FULL, SCHEMA_DAY_LABELS, toFa, formatToman, jalaliLabel, hhmmToMin, dateKey, parseDateKey, bookingTimestamp } from "../lib/format";
-import { BookingHeatmap, CampaignPerformanceCard, CampaignReturnRateCard, FeedbackStatsCard, RevenueTrendChart, ServiceShareDonut } from "./biCards";
+import { Clock, Percent, Banknote, XCircle, TrendingUp, TrendingDown, ChevronLeft, Wallet, Users, UserPlus, Repeat2, Award, ChevronDown, ChevronUp, PawPrint } from "lucide-react";
+import { SCHEMA_DAY_LABELS, toFa, formatToman, jalaliLabel, hhmmToMin, dateKey, parseDateKey, bookingTimestamp } from "../lib/format";
+import { BookingHeatmap, CampaignPerformanceCard, FeedbackStatsCard, RevenueTrendChart, ServiceShareDonut } from "./biCards";
 import { GENDER_TYPE_LABEL, PET_SIZES, PET_SIZE_LABEL, schemaDayOf } from "../app/shared";
 import { getBusinessType } from "../lib/tenant";
 import { GenderBadge } from "../components/ui";
@@ -638,7 +638,6 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
 
       {!drill && <CampaignPerformanceCard />}
       {!drill && <FeedbackStatsCard />}
-      {!drill && <CampaignReturnRateCard />}
 
       {!drill && (
         <div className="card mb-4" style={{ padding: 14 }}>
@@ -836,43 +835,6 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
                 )}
               </div>
             </>
-          )}
-        </div>
-      )}
-
-      {/* ---- Demand forecast: 7-day moving average + next-7-days capacity ---- */}
-      {!drill && (
-        <div className="card mb-4" style={{ padding: 14 }}>
-          <p className="flex items-center gap-2" style={{ fontSize: 15, fontWeight: 800, color: "var(--color-heading)", marginBottom: 4 }}>
-            <TrendingUp size={16} color="var(--color-accent-700)" /> پیش‌بینی تقاضا
-          </p>
-          <p className="muted tabular" style={{ fontSize: 11.5, marginBottom: 10 }}>
-            میانگین متحرک ۷ روز گذشته: {toFa(Math.round(demandForecast.movingAvg * 10) / 10)} نوبت در روز
-          </p>
-          <div className="flex flex-col gap-2">
-            {demandForecast.days.map((d) => (
-              <div key={d.dKey}>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="flex items-center gap-1.5" style={{ fontSize: 12, fontWeight: 700, color: "var(--color-heading)" }}>
-                    {WEEKDAYS_FA_FULL[d.date.getDay()]} {toFa(jalaliDayNum(d.date))} {MONTHS_FA[gregorianToJalali(d.date.getFullYear(), d.date.getMonth() + 1, d.date.getDate()).jm - 1]}
-                    {d.lowFill && <AlertTriangle size={12} color="var(--color-warning)" />}
-                  </span>
-                  <span className="tabular muted" style={{ fontSize: 11 }}>
-                    {d.hasCapacity ? `${toFa(Math.round(d.fillRate * 100))}٪ پر شده` : "تعطیل / تایید نشده"}
-                  </span>
-                </div>
-                {d.hasCapacity && (
-                  <div style={{ height: 6, borderRadius: "var(--radius-full)", background: "color-mix(in oklch, var(--color-warning) 14%, transparent)", overflow: "hidden" }}>
-                    <div style={{ width: `${d.fillRate * 100}%`, height: "100%", background: d.lowFill ? "var(--color-warning)" : "var(--color-success)", borderRadius: "var(--radius-full)" }} />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          {demandForecast.days.some((d) => d.lowFill) && (
-            <p className="flex items-center gap-1.5" style={{ fontSize: 11, marginTop: 10, color: "var(--color-warning)" }}>
-              <AlertTriangle size={12} /> روزهای با کمتر از ۲۰٪ پرشدگی، فرصت از دست رفته‌اند — برای این روزها کمپین یا تخفیف در نظر بگیرید
-            </p>
           )}
         </div>
       )}
