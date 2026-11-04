@@ -40,17 +40,17 @@ set role anon;
 select tst.ok(public.check_coupon('yalda20', 'booking', 100000) ->> 'discount' = '20000', 'preview is case-insensitive');
 select tst.ok(public.check_coupon('YALDA20', 'shop', 100000) ->> 'ok' = 'false', 'scope respected');
 select tst.ok(public.check_coupon('NOPE', 'booking', 100000) ->> 'ok' = 'false', 'unknown code');
-select public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today(), 600, 'سارا', '09351240001', 'dog', null, '{"name":"پاپی","size":"small"}') ->> 'id' as b1 \gset
+select public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today(), 600, 'سارا', '09351240001', 'dog', null, '{"breed":"سایر","name":"پاپی","size":"small"}') ->> 'id' as b1 \gset
 select tst.ok(public.apply_booking_coupon(:'b1', '09351240001', 'YALDA20') ->> 'ok' = 'true', 'coupon on booking');
 select tst.ok(public.apply_booking_coupon(:'b1', '09351240001', 'YALDA20') ->> 'ok' = 'false', 'once per booking');
-select public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today(), 660, 'سارا', '09351240001', 'dog', null, '{"name":"پاپی","size":"small"}') ->> 'id' as b1b \gset
+select public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today(), 660, 'سارا', '09351240001', 'dog', null, '{"breed":"سایر","name":"پاپی","size":"small"}') ->> 'id' as b1b \gset
 select tst.ok(public.apply_booking_coupon(:'b1b', '09351240001', 'YALDA20') ->> 'error' = 'این کد را قبلاً استفاده کرده‌اید', 'once per customer');
 reset role;
 select tst.ok((select coupon_discount = round(:nprice * 0.2) and final_price = :nprice - round(:nprice * 0.2) from public.appointments where id = :'b1'), 'price reduced');
 select tst.ok((select used_count from public.coupons where code = 'YALDA20' and salon_id = :'bz') = 1, 'refused repeats do not bump the counter');
 -- the pick-up & drop-off fee is not discounted
 set role anon;
-select public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today(), 720, 'نیما', '09351240003', 'dog', null, '{"name":"رکس","size":"small"}') ->> 'id' as b1c \gset
+select public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today(), 720, 'نیما', '09351240003', 'dog', null, '{"breed":"سایر","name":"رکس","size":"small"}') ->> 'id' as b1c \gset
 reset role;
 select set_config('app.trusted_rpc', 'on', false);
 update public.appointments set transport_fee = 100000, final_price = final_price + 100000 where id = :'b1c';
@@ -168,12 +168,12 @@ update public.app_settings set deposit_percent = 20, deposit_min_price = 0, depo
 select tst.as_anon(:'bz');
 set role anon;
 select tst.ok((public.deposit_terms() ->> 'mode') = 'risky', 'mode public');
-select tst.ok(public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today() + 1, 600, 'رضا', '09351240008', 'dog', null, '{"name":"رکس","size":"small"}') ->> 'status' <> 'awaiting_payment', 'reliable customer: no deposit');
+select tst.ok(public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today() + 1, 600, 'رضا', '09351240008', 'dog', null, '{"breed":"سایر","name":"رکس","size":"small"}') ->> 'status' <> 'awaiting_payment', 'reliable customer: no deposit');
 reset role;
 insert into public.appointments (id, salon_id, customer_name, customer_phone, customer_gender, service_id, staff_id, date, start_min, end_min, status, tracking_code)
 values ('tst-biz-ns', :'bz', 'بدقول', '09351240009', 'dog', :'nails', 'tst-biz-g', public.salon_today() - 10, 600, 615, 'no_show', 'TBZNS1');
 set role anon;
-select tst.ok(public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today() + 1, 660, 'بدقول', '09351240009', 'dog', null, '{"name":"مکس","size":"small"}') ->> 'status' = 'awaiting_payment', 'after a no-show: deposit');
+select tst.ok(public.create_public_booking(:'nails', 'tst-biz-g', public.salon_today() + 1, 660, 'بدقول', '09351240009', 'dog', null, '{"breed":"سایر","name":"مکس","size":"small"}') ->> 'status' = 'awaiting_payment', 'after a no-show: deposit');
 reset role;
 
 -- ---- isolation ---------------------------------------------------------------------------

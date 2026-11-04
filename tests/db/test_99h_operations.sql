@@ -32,7 +32,7 @@ select id as nails from public.services where salon_id = :'o1' and gender = 'dog
 -- ---- check-in + pet health -------------------------------------------------------
 select tst.as_anon(:'o1');
 set role anon;
-select public.create_public_booking(:'nails', 'tst-ops-g', public.salon_today(), 600, 'سارا', '09351250001', 'dog', null, '{"name":"پاپی","size":"small"}') as b \gset
+select public.create_public_booking(:'nails', 'tst-ops-g', public.salon_today(), 600, 'سارا', '09351250001', 'dog', null, '{"breed":"سایر","name":"پاپی","size":"small"}') as b \gset
 reset role;
 select (:'b'::json ->> 'id') as bid, (:'b'::json ->> 'tracking_code') as tcode \gset
 set role authenticated;

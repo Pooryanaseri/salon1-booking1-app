@@ -6,13 +6,14 @@ import { fetchCustomerLoyalty, applyReferral, startDepositPayment } from "../lib
 import { WEEKDAYS_FA_FULL, toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, dateKey } from "../lib/format";
 import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, PET_SIZE_LABEL, SECTION_META, SERVICE_ICONS, extraChargesTotal, petService, petSurcharge, pricedBreeds, sectionsFor, staffServesSection, discountAmountFor, finalPriceFor, fitsWithoutOverlap, hasPrice, isOccupied, occupiedEndFor, priceLabel, schemaDayOf, uid } from "../app/shared";
 import { DateStrip, Row } from "../components/ui";
-import { PetForm, EMPTY_PET, loadSavedPets, rememberPet } from "./PetForm";
+import { PetForm, EMPTY_PET, loadSavedPets, rememberPet, petExtras } from "./PetForm";
 import { QuoteContactForm, QuoteSent, QuoteServicePicker } from "./QuoteRequest";
 import { fetchPublicPetCare, fetchPublicPackages, consentRequired, largeDogsAt } from "../lib/petcare";
 import { checkCoupon } from "../lib/business";
 import { BuyPackageModal } from "./BuyPackageModal";
 import { fetchPublicOffpeak, fetchPublicUpsells, offpeakFor } from "../lib/growth";
 import { fetchStylistPrices, priceFor } from "../lib/contracts";
+import { isVipCustomer } from "../lib/vip";
 
 /* ============================================================
    Booking flow (customer) — gender section chosen first, each
@@ -397,6 +398,14 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   // already uses, so a real returning customer is correctly recognized and
   // doesn't need to re-type their name on every booking.
   const phoneRef = useRef(phone);
+  // v2.61: VIP customers never pay a deposit (the server decides; this shows it)
+  const [vip, setVip] = useState(false);
+  useEffect(() => {
+    if (!/^09\d{9}$/.test(phone)) { setVip(false); return; }
+    let alive = true;
+    isVipCustomer(phone).then((v) => { if (alive) setVip(v); });
+    return () => { alive = false; };
+  }, [phone]);
   phoneRef.current = phone;
   async function lookupPhone() {
     setLookedUp(true);
@@ -470,7 +479,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
 
   // v2.37 online deposit — what the server will ask for on this booking
   // (mirrors hold_for_deposit; the server's answer is what actually counts).
-  const expectedDeposit = depositTerms?.enabled && depositTerms.mode !== "risky" && service && hasPrice(service) && finalPrice != null
+  const expectedDeposit = !vip && depositTerms?.enabled && depositTerms.mode !== "risky" && service && hasPrice(service) && finalPrice != null
     && finalPrice > 0 && finalPrice >= (depositTerms.min_price || 0)
     ? Math.max(1000, Math.round((finalPrice * depositTerms.percent) / 100))
     : 0;
@@ -512,7 +521,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           pet: petSalon ? {
             name: pet.name.trim(), size: pet.size, breed: pet.breed.trim(), temperament: pet.temperament,
             weight_kg: pet.weight_kg || null, vaccine_valid_until: pet.vaccine_valid_until || null, notes: pet.notes.trim(),
-            birth_date: pet.birth_date || null, ...(needConsent && consentOk ? { consent: "true" } : {}),
+            birth_date: pet.birth_date || null, ...petExtras(pet), ...(needConsent && consentOk ? { consent: "true" } : {}),
           } : null,
           transportAddress: petSalon && wantTransport && petCare?.transport_enabled ? transportAddress.trim() : null,
           couponCode: coupon?.code || null,
@@ -1128,6 +1137,12 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                 : lookedUp && phoneValid ? <CheckCircle2 size={16} color="var(--color-success)" /> : null}
             </span>
           </div>
+          {vip && phoneValid && (
+            <p className="flex items-center gap-1.5" data-vip="booking" style={{ fontSize: 12.5, marginTop: 6, fontWeight: 800, color: "var(--color-gold, #b8860b)" }}>
+              <span className="badge" style={{ background: "linear-gradient(135deg, #f5d27a, #d4a017)", color: "#3d2a00" }}>VIP</span>
+              شما مشتری ویژهٔ این سالن هستید — بدون بیعانه
+            </p>
+          )}
           {phone.length > 0 && !phoneValid && (
             <p className="muted tabular" style={{ fontSize: 11.5, marginTop: 6 }}>
               {phone.length === 11 || !phone.startsWith("09")

@@ -3,6 +3,7 @@ import { ArrowRight, Camera, Check, CheckCircle2, Loader2, MessageSquareText, Sp
 import { CATEGORY_LABEL, PET_SIZE_LABEL, SERVICE_ICONS, hasPrice } from "../app/shared";
 import { formatToman, normalizeMobile, toFa } from "../lib/format";
 import { MAX_QUOTE_PHOTOS, requestQuote, uploadQuotePhotos } from "../lib/api";
+import { petExtras } from "./PetForm";
 
 /* ============================================================
    v2.46 pet salons — price quotes. The customer tells the salon
@@ -89,7 +90,7 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
       pet: {
         name: pet.name.trim(), size: pet.size, breed: pet.breed.trim(), temperament: pet.temperament,
         weight_kg: pet.weight_kg || null, vaccine_valid_until: pet.vaccine_valid_until || null, notes: pet.notes.trim(),
-        birth_date: pet.birth_date || null, ...(consentText && consentOk ? { consent: "true" } : {}),
+        birth_date: pet.birth_date || null, ...petExtras(pet), ...(consentText && consentOk ? { consent: "true" } : {}),
       },
       serviceIds: services.map((s) => s.id), servicesLabel: label,
       note: note.trim(), preferredTime: times.join("، "),

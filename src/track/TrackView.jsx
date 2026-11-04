@@ -11,6 +11,7 @@ import { MyQuotes } from "./MyQuotes";
 import { MyOrders } from "./MyOrders";
 import { CheckinQR } from "./CheckinQR";
 import { fetchMyOrders } from "../lib/shop";
+import { isVipCustomer } from "../lib/vip";
 import { fetchMyVisitReports, fetchMyPackages, petPhotoUrl, HEALTH_CHECKS } from "../lib/petcare";
 
 /* ============================================================
@@ -42,6 +43,8 @@ export function avatarColorFor(key) {
 
 export function TrackView({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, updateBooking, notify, initialPhone = "" }) {
   const [phone, setPhone] = useState(initialPhone);
+  // v2.61: the VIP label, once the customer has proved this is their number
+  const [myVip, setMyVip] = useState(false);
   const [searched, setSearched] = useState(false);
   const [actionFor, setActionFor] = useState(null); // { id, type: "cancel" | "reschedule" }
   const [segment, setSegment] = useState("bookings");
@@ -67,6 +70,13 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
 
   const phoneValid = /^09\d{9}$/.test(phone);
   const codeValid = /^\d{6}$/.test(otpCode);
+
+  useEffect(() => {
+    if (otpStep !== "verified") { setMyVip(false); return undefined; }
+    let alive = true;
+    isVipCustomer(phone).then((v) => { if (alive) setMyVip(v); });
+    return () => { alive = false; };
+  }, [otpStep, phone]);
 
   async function requestCode() {
     setOtpError("");
@@ -210,7 +220,11 @@ export function TrackView({ bookings, services, stylists, workingHours, staffWor
 
   return (
     <div className="fade-in">
-      <h2 style={{ fontSize: 18, marginBottom: 4 }}>داشبورد من</h2>
+      <h2 className="flex items-center gap-2" style={{ fontSize: 18, marginBottom: 4 }}>
+        داشبورد من
+        {myVip && <span className="badge" data-vip="dashboard" title="مشتری ویژه — بدون بیعانه" style={{ background: "linear-gradient(135deg, #f5d27a, #d4a017)", color: "#3d2a00", fontSize: 12 }}>⭐ VIP</span>}
+      </h2>
+      {myVip && <p className="muted" style={{ fontSize: 12, marginBottom: 6 }}>شما مشتری ویژهٔ این سالن هستید؛ نوبت‌هایتان بدون بیعانه ثبت می‌شود.</p>}
 
       {otpStep !== "verified" && (
         <>

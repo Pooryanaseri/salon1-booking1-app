@@ -241,6 +241,43 @@ export function PetCareBadges({ booking, pet }) {
   );
 }
 
+/* v2.61 ---------------------------------------------- pet details, VIP --- */
+/** Age today, from the age given (in months) and the day it was given. */
+export function petAgeLabel(pet, today = new Date()) {
+  if (pet?.age_months == null) return "";
+  let m = Number(pet.age_months);
+  if (pet.age_set_on) {
+    const set = new Date(`${String(pet.age_set_on).slice(0, 10)}T00:00:00`);
+    m += Math.max(0, (today.getFullYear() - set.getFullYear()) * 12 + (today.getMonth() - set.getMonth()) - (today.getDate() < set.getDate() ? 1 : 0));
+  }
+  const y = Math.floor(m / 12), mo = m % 12;
+  if (y === 0) return `${toFa(mo)} ماهه`;
+  return mo ? `${toFa(y)} سال و ${toFa(mo)} ماه` : `${toFa(y)} ساله`;
+}
+
+/** Breed, age, first grooming and needed supplies — one line for staff. */
+export function PetDetailsLine({ pet }) {
+  if (!pet) return null;
+  const age = petAgeLabel(pet);
+  const supplies = [...(pet.supplies || []), ...(pet.supplies_note ? [pet.supplies_note] : [])];
+  if (!age && pet.first_grooming == null && !supplies.length && !pet.breed) return null;
+  return (
+    <div style={{ width: "100%", fontSize: 11.5, lineHeight: 1.8 }} data-pet-details>
+      <span className="muted">{[pet.breed, age].filter(Boolean).join(" · ")}</span>
+      {pet.first_grooming && (
+        <span className="badge" style={{ marginInlineStart: 6, background: "color-mix(in oklch, var(--color-warning) 16%, transparent)", color: "var(--color-warning)" }}>اولین آرایش</span>
+      )}
+      {supplies.length > 0 && <div style={{ color: "var(--color-info)", fontWeight: 700 }}>نیاز: {supplies.join("، ")}</div>}
+    </div>
+  );
+}
+
+export function VipBadge() {
+  return (
+    <span className="badge" data-vip="panel" title="مشتری ویژه — بدون بیعانه" style={{ background: "linear-gradient(135deg, #f5d27a, #d4a017)", color: "#3d2a00" }}>VIP</span>
+  );
+}
+
 /* ---------------------------------------------------------- settings --- */
 export function PetCareSettingsCard({ notify }) {
   const [s, setS] = useState(null);

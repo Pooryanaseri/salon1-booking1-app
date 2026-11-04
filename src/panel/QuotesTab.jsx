@@ -5,6 +5,7 @@ import { fetchQuotes, fetchQuotePhotos, sendQuote, declineQuote } from "../lib/a
 import { GenderBadge, Modal, PanelSectionHeader } from "../components/ui";
 import { PET_SIZE_LABEL, hasPrice, petService, staffServesSection } from "../app/shared";
 import { TemperamentBadge } from "./PetsTab";
+import { PetDetailsLine } from "./PetCare";
 
 /* ============================================================
    v2.46 pet salons — price quotes. A customer describes what the
@@ -93,8 +94,9 @@ export function QuotesTab({ services, stylists, pets, automation, notify, onPend
                   <span style={{ fontSize: 11.5, fontWeight: 700, color: st.color, whiteSpace: "nowrap" }}>{st.label}</span>
                 </div>
                 <div className="muted" style={{ fontSize: 11.5, marginTop: 2 }}>
-                  {[PET_SIZE_LABEL[q.pet_size], pet?.breed, pet?.weight_kg ? `${toFa(pet.weight_kg)} کیلو` : ""].filter(Boolean).join(" · ")}
+                  {[PET_SIZE_LABEL[q.pet_size], pet?.weight_kg ? `${toFa(pet.weight_kg)} کیلو` : ""].filter(Boolean).join(" · ")}
                 </div>
+                <PetDetailsLine pet={pet} />
                 <p style={{ fontSize: 13, fontWeight: 700, marginTop: 6 }}>{q.services_label}</p>
                 {q.customer_note && <p style={{ fontSize: 12.5, marginTop: 4, lineHeight: 1.8, background: "var(--color-surface-raised)", padding: "6px 10px", borderRadius: "var(--radius-sm)" }}>«{q.customer_note}»</p>}
                 <QuotePhotos quote={q} />

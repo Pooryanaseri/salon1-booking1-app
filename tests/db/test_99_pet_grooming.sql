@@ -36,18 +36,18 @@ select id as catbath from public.services where salon_id = :'pet_salon' and gend
 -- ---- public booking -----------------------------------------------------------
 select tst.as_anon(:'pet_salon');
 set role anon;
-select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'female', null, '{"name":"پاپی","size":"large"}') ->> 'error' = 'نوع حیوان نامعتبر است', 'beauty section refused in a pet salon');
+select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'female', null, '{"breed":"سایر","name":"پاپی","size":"large"}') ->> 'error' = 'نوع حیوان نامعتبر است', 'beauty section refused in a pet salon');
 select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'dog') ->> 'error' = 'نام حیوان را وارد کنید', 'pet required');
-select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'dog', null, '{"name":"پاپی","size":"huge"}') ->> 'ok' = 'false', 'bad size refused');
-select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'dog', null, '{"name":"پاپی","size":"large"}') ->> 'error' = 'این خدمت برای این حیوان نیست', 'cat service refused for a dog');
+select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'dog', null, '{"breed":"سایر","name":"پاپی","size":"huge"}') ->> 'ok' = 'false', 'bad size refused');
+select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'dog', null, '{"breed":"سایر","name":"پاپی","size":"large"}') ->> 'error' = 'این خدمت برای این حیوان نیست', 'cat service refused for a dog');
 
 select public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 2, 600, 'علی', '09351117777', 'dog', null,
   '{"name":" پاپی ","size":"large","breed":"گلدن","temperament":"aggressive","weight_kg":"32","notes":"به سشوار حساس است"}') as b1 \gset
 select tst.ok((:'b1'::json ->> 'ok')::boolean, 'dog booked');
 select tst.ok((:'b1'::json ->> 'final_price')::bigint = 1800000, 'priced for a large dog');
 -- the same slot cannot be taken for a smaller dog either: 19:30 + 90 min is past closing
-select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 3, 1140, 'علی', '09351117777', 'dog', null, '{"name":"پاپی","size":"large"}') ->> 'error' = 'خارج از ساعات کاری است', 'large-dog duration checked against closing time');
-select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 3, 1140, 'علی', '09351117777', 'dog', null, '{"name":"کوچولو","size":"small"}') ->> 'ok' = 'true', 'small dog fits (45 min)');
+select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 3, 1140, 'علی', '09351117777', 'dog', null, '{"breed":"سایر","name":"پاپی","size":"large"}') ->> 'error' = 'خارج از ساعات کاری است', 'large-dog duration checked against closing time');
+select tst.ok(public.create_public_booking(:'bath', 'tst-groomer', public.salon_today() + 3, 1140, 'علی', '09351117777', 'dog', null, '{"breed":"سایر","name":"کوچولو","size":"small"}') ->> 'ok' = 'true', 'small dog fits (45 min)');
 select tst.expect_error($$select * from public.pets$$);
 reset role;
 
@@ -60,7 +60,7 @@ select tst.ok((select body from public.sms_messages where appointment_id = :'a1'
 
 -- the next booking for the same pet updates its profile, keeps what was not sent
 set role anon;
-select tst.ok(public.create_public_booking(:'nails', 'tst-groomer', public.salon_today() + 4, 600, 'علی', '09351117777', 'dog', null, '{"name":"پاپی","size":"medium"}') ->> 'ok' = 'true', 'second booking');
+select tst.ok(public.create_public_booking(:'nails', 'tst-groomer', public.salon_today() + 4, 600, 'علی', '09351117777', 'dog', null, '{"breed":"گلدن","name":"پاپی","size":"medium"}') ->> 'ok' = 'true', 'second booking');
 reset role;
 select tst.ok((select count(*) from public.pets where salon_id = :'pet_salon' and owner_phone = '09351117777' and lower(name) = 'پاپی') = 1, 'one profile per pet');
 select tst.ok((select size = 'medium' and breed = 'گلدن' and temperament = 'aggressive' from public.pets where salon_id = :'pet_salon' and name = 'پاپی'), 'size refreshed, other fields kept');
@@ -68,11 +68,11 @@ select tst.ok((select size = 'medium' and breed = 'گلدن' and temperament = '
 -- ---- vaccination rule -------------------------------------------------------
 update public.app_settings set pet_require_vaccination = true where salon_id = :'pet_salon';
 set role anon;
-select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.salon_today() + 5, 600, 'مینا', '09351118888', 'cat', null, '{"name":"ملوس","size":"small"}') ->> 'ok' = 'false', 'no vaccination date refused');
+select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.salon_today() + 5, 600, 'مینا', '09351118888', 'cat', null, '{"breed":"سایر","name":"ملوس","size":"small"}') ->> 'ok' = 'false', 'no vaccination date refused');
 select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.salon_today() + 5, 600, 'مینا', '09351118888', 'cat', null,
-  json_build_object('name', 'ملوس', 'size', 'small', 'vaccine_valid_until', public.salon_today() + 4)::jsonb) ->> 'ok' = 'false', 'vaccination expiring before the visit refused');
+  json_build_object('breed', 'سایر', 'name', 'ملوس', 'size', 'small', 'vaccine_valid_until', public.salon_today() + 4)::jsonb) ->> 'ok' = 'false', 'vaccination expiring before the visit refused');
 select tst.ok(public.create_public_booking(:'catbath', 'tst-groomer', public.salon_today() + 5, 600, 'مینا', '09351118888', 'cat', null,
-  json_build_object('name', 'ملوس', 'size', 'small', 'vaccine_valid_until', public.salon_today() + 200)::jsonb) ->> 'final_price' = '800000', 'valid vaccination: cat booked');
+  json_build_object('breed', 'سایر', 'name', 'ملوس', 'size', 'small', 'vaccine_valid_until', public.salon_today() + 200)::jsonb) ->> 'final_price' = '800000', 'valid vaccination: cat booked');
 reset role;
 update public.app_settings set pet_require_vaccination = false where salon_id = :'pet_salon';
 
