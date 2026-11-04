@@ -304,7 +304,11 @@ export default function App() {
   // Any failed save to the server (see failWrite in lib/api.js) — the screen
   // already shows the change, so say plainly that it didn't stick.
   useEffect(() => {
-    const onSaveError = () => notify("ذخیره روی سرور ناموفق بود — اتصال را بررسی کنید و دوباره امتحان کنید");
+    // A rule the server explains in Persian (e.g. v2.64 «سقف آرایشگر اشتراک») is shown as is.
+    const onSaveError = (e) => {
+      const msg = e?.detail?.message || "";
+      notify(/[\u0600-\u06FF]/.test(msg) ? msg : "ذخیره روی سرور ناموفق بود — اتصال را بررسی کنید و دوباره امتحان کنید");
+    };
     window.addEventListener("salon:save-error", onSaveError);
     return () => window.removeEventListener("salon:save-error", onSaveError);
   }, []);
@@ -553,13 +557,17 @@ export default function App() {
 
   function addStylist(s) {
     setStylists((prev) => [...prev, s]);
-    insertOne("stylists", s);
     notify("آرایشگر اضافه شد");
+    // v2.64: refused by the server (e.g. the subscription's stylist limit) → take it back off the list
+    insertOne("stylists", s).then((err) => { if (err) setStylists((prev) => prev.filter((x) => x.id !== s.id)); });
   }
 
   function updateStylist(id, patch) {
+    const before = stylists.find((s) => s.id === id);
     setStylists((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
-    updateOne("stylists", id, patch);
+    updateOne("stylists", id, patch).then((err) => {
+      if (err && before && "active" in patch) setStylists((prev) => prev.map((s) => (s.id === id ? { ...s, active: before.active } : s)));
+    });
   }
 
   function removeStylist(id) {

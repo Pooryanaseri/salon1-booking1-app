@@ -16,6 +16,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { sendOne, smsAccounts, mapLimit } from "../_shared/providers.ts";
 
+// v2.64: kinds that stop when the SMS allowance is gone (public.sms_is_marketing)
+const MARKETING_KINDS = ["campaign", "loyalty", "predictive_rebooking", "slot_offer", "winback", "birthday", "pet_reminder"];
+
 const admin = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -93,6 +96,17 @@ Deno.serve(async (req) => {
       const status = apptStatus.get(msg.appointment_id);
       if (status && !["confirmed", "rescheduled"].includes(status)) {
         await admin.from("sms_messages").update({ status: "cancelled", error: `appointment status became '${status}'` }).eq("id", msg.id);
+        report.skipped++;
+        return;
+      }
+    }
+
+    // v2.64: marketing SMS stop once the salon's SMS allowance is used up
+    // (booking messages always go out). Older databases: no such function → send.
+    if (MARKETING_KINDS.includes(msg.kind)) {
+      const { data: may, error: mayErr } = await admin.rpc("sms_may_send", { p_salon: msg.salon_id, p_kind: msg.kind });
+      if (!mayErr && may === false) {
+        await admin.from("sms_messages").update({ status: "cancelled", error: "SMS allowance used up" }).eq("id", msg.id);
         report.skipped++;
         return;
       }

@@ -327,7 +327,7 @@ function BillingDialog({ salons, onClose, onToast }) {
   const [report, setReport] = useState(null);
   const [overview, setOverview] = useState(null);
   const [editing, setEditing] = useState(null);
-  const [assign, setAssign] = useState({ salon: "", plan: "", expires: "" });
+  const [assign, setAssign] = useState({ salon: "", plan: "", expires: "", sms: "" });
   const [tick, setTick] = useState(0);
   const month = new Date().toISOString().slice(0, 10);
   useEffect(() => {
@@ -357,11 +357,14 @@ function BillingDialog({ salons, onClose, onToast }) {
           <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>پلن‌ها</p>
           {(plans || []).map((p) => (
             <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, padding: "5px 0", borderTop: `1px dashed ${C.border}`, opacity: p.active ? 1 : 0.5 }}>
-              <span><b>{p.name}</b> ({p.id}) · {fa(p.monthly_price)} تومان/ماه · {fa(p.sms_quota)} پیامک · کارمزد {toFa(p.payment_fee_pct)}٪</span>
+              <span><b>{p.name}</b> ({p.id}) · {p.price_3 != null
+                ? <>{p.max_stylists ? `تا ${toFa(p.max_stylists)} آرایشگر` : "نامحدود"} · ۳ ماه {fa(p.price_3)} · ۶ ماه {fa(p.price_6)} · ۱۲ ماه {fa(p.price_12)} · پیامک {fa(p.sms_3)}/{fa(p.sms_6)}/{fa(p.sms_12)}{Number(p.extra_stylist_price_3) > 0 ? ` · هر آرایشگر اضافه ${fa(p.extra_stylist_price_3)}` : ""}</>
+                : <>{fa(p.monthly_price)} تومان/ماه</>}
+                {Number(p.payment_fee_pct) > 0 ? ` · کارمزد ${toFa(p.payment_fee_pct)}٪` : ""}</span>
               <button style={S.ghost} onClick={() => setEditing(p)}><Pencil size={12} /></button>
             </div>
           ))}
-          <button style={{ ...S.ghost, marginTop: 6 }} onClick={() => setEditing({ id: "", name: "", monthly_price: 0, sms_quota: 500, payment_fee_pct: 1, active: true, sort_order: (plans || []).length })}><Plus size={13} /> پلن جدید</button>
+          <button style={{ ...S.ghost, marginTop: 6 }} onClick={() => setEditing({ id: "", name: "", monthly_price: 0, sms_quota: 0, payment_fee_pct: 0, active: true, sort_order: (plans || []).length + 1, max_stylists: "", price_3: "", price_6: "", price_12: "", sms_3: 0, sms_6: 0, sms_12: 0, extra_stylist_price_3: 0 })}><Plus size={13} /> سطح جدید</button>
           {editing && <PlanForm plan={editing} onDone={async (p) => {
             const r = await adminSavePlan(p);
             onToast(r.ok ? "پلن ذخیره شد" : r.error);
@@ -381,8 +384,11 @@ function BillingDialog({ salons, onClose, onToast }) {
             </select>
             <input type="date" dir="ltr" value={assign.expires} onChange={(e) => setAssign((a) => ({ ...a, expires: e.target.value }))} style={S.input} aria-label="تا تاریخ" />
           </div>
+          <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>پیامک اضافه (هدیه یا خرید نقدی؛ منفی برای کم کردن)
+            <input dir="ltr" inputMode="numeric" value={assign.sms} onChange={(e) => setAssign((a) => ({ ...a, sms: e.target.value }))} placeholder="0" style={S.input} aria-label="پیامک اضافه" />
+          </label>
           <button style={{ ...S.btn, marginTop: 6 }} disabled={!assign.salon} onClick={async () => {
-            const r = await adminSetPlan(assign.salon, assign.plan, assign.expires);
+            const r = await adminSetPlan(assign.salon, assign.plan, assign.expires, assign.sms);
             onToast(r?.ok ? "پلن سالن ذخیره شد" : r?.error || "ناموفق بود"); setTick((t) => t + 1);
           }}>ذخیره پلن سالن</button>
         </section>
@@ -412,6 +418,22 @@ function BillingDialog({ salons, onClose, onToast }) {
                   <span style={{ fontSize: 11 }}>با ویرگول جدا کنید. روز آخر اشتراک، روز آخر مهلت و روز قفل شدن هم خودکار پیامک می‌رود.</span>
                 </label>
                 <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  {num("sms_price", "قیمت هر پیامک اضافه (تومان)", "برای فروش بسته‌های پیامک")}
+                  {num("trial_sms", "پیامک رایگان دورهٔ آزمایشی")}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <label style={{ fontSize: 12, color: C.muted, display: "block", flex: 1 }}>بسته‌های پیامک قابل خرید
+                    <input dir="ltr" value={Array.isArray(settings.sms_packs) ? settings.sms_packs.join(", ") : settings.sms_packs ?? ""} onChange={set("sms_packs")} placeholder="500, 1000, 5000" style={S.input} aria-label="بسته‌های پیامک" />
+                  </label>
+                  <label style={{ fontSize: 12, color: C.muted, display: "block", flex: 1 }}>سطح دورهٔ آزمایشی
+                    <select value={settings.trial_plan || ""} onChange={set("trial_plan")} style={S.input} aria-label="سطح آزمایشی">
+                      <option value="">بدون سطح</option>
+                      {(plans || []).filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <p style={{ fontSize: 11.5, color: C.muted, marginTop: 6 }}>تخفیف‌های زیر فقط برای پلن‌های قدیمیِ ماهانه است؛ قیمت ۶ و ۱۲ ماههٔ هر سطح را در خود سطح وارد کنید.</p>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
                   {num("discount_3", "تخفیف ۳ ماهه ٪")}
                   {num("discount_6", "تخفیف ۶ ماهه ٪")}
                   {num("discount_12", "تخفیف ۱۲ ماهه ٪")}
@@ -439,7 +461,9 @@ function BillingDialog({ salons, onClose, onToast }) {
               const st = { active: ["فعال", "#16a34a"], grace: ["مهلت تمدید", "#d97706"], locked: ["قفل", "#dc2626"] }[r.state] || ["—", C.muted];
               return (
                 <div key={r.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, padding: "5px 0", borderTop: `1px dashed ${C.border}` }}>
-                  <span><b>{r.name}</b> <span style={{ color: C.muted }}>{r.expires_at ? `تا ${r.expires_at}${r.days_left >= 0 ? ` (${toFa(r.days_left)} روز)` : ""}` : "بدون تاریخ (نامحدود)"}</span></span>
+                  <span><b>{r.name}</b> <span style={{ color: C.muted }}>{r.plan_name ? `${r.plan_name} · ` : ""}{r.expires_at ? `تا ${r.expires_at}${r.days_left >= 0 ? ` (${toFa(r.days_left)} روز)` : ""}` : "بدون تاریخ (نامحدود)"}
+                    {r.stylists != null && ` · آرایشگر ${toFa(r.stylists)}${r.seat_limit ? ` از ${toFa(r.seat_limit)}` : ""}`}
+                    {r.sms_balance != null && ` · پیامک ${fa(r.sms_balance)}`}</span></span>
                   <span style={{ color: st[1], fontWeight: 800 }}>{st[0]}</span>
                 </div>
               );
@@ -453,19 +477,35 @@ function BillingDialog({ salons, onClose, onToast }) {
 function PlanForm({ plan, onDone }) {
   const [p, setP] = useState(plan);
   const set = (k) => (e) => setP((x) => ({ ...x, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
+  const field = (k, label) => (
+    <label style={{ ...S.label, flex: 1 }}>{label}<input dir="ltr" inputMode="numeric" value={p[k] ?? ""} onChange={set(k)} style={S.input} aria-label={label} /></label>
+  );
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, padding: 10, background: C.bg, borderRadius: 10 }}>
       <div style={{ display: "flex", gap: 6 }}>
-        <input dir="ltr" placeholder="شناسه (pro)" value={p.id} disabled={!!plan.id} onChange={set("id")} style={S.input} aria-label="شناسه پلن" />
-        <input placeholder="نام (حرفه‌ای)" value={p.name} onChange={set("name")} style={S.input} aria-label="نام پلن" />
+        <input dir="ltr" placeholder="شناسه (vizhe)" value={p.id} disabled={!!plan.id} onChange={set("id")} style={S.input} aria-label="شناسه پلن" />
+        <input placeholder="نام (ویژه)" value={p.name} onChange={set("name")} style={S.input} aria-label="نام پلن" />
       </div>
       <div style={{ display: "flex", gap: 6 }}>
-        <label style={{ ...S.label, flex: 1 }}>قیمت ماهانه<input dir="ltr" inputMode="numeric" value={p.monthly_price} onChange={set("monthly_price")} style={S.input} /></label>
-        <label style={{ ...S.label, flex: 1 }}>سقف پیامک<input dir="ltr" inputMode="numeric" value={p.sms_quota} onChange={set("sms_quota")} style={S.input} /></label>
-        <label style={{ ...S.label, flex: 1 }}>کارمزد ٪<input dir="ltr" inputMode="decimal" value={p.payment_fee_pct} onChange={set("payment_fee_pct")} style={S.input} /></label>
+        {field("max_stylists", "سقف آرایشگر فعال (خالی = نامحدود)")}
+        {field("extra_stylist_price_3", "هر آرایشگر بیشتر از سقف، ۳ ماه (۰ = ممنوع)")}
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {field("price_3", "قیمت ۳ ماهه")}
+        {field("price_6", "قیمت ۶ ماهه")}
+        {field("price_12", "قیمت یک ساله")}
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {field("sms_3", "پیامک رایگان ۳ ماهه")}
+        {field("sms_6", "پیامک ۶ ماهه")}
+        {field("sms_12", "پیامک یک ساله")}
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {field("sort_order", "ترتیب نمایش")}
+        <label style={{ ...S.label, flex: 1 }}>کارمزد پرداخت آنلاین ٪<input dir="ltr" inputMode="decimal" value={p.payment_fee_pct ?? 0} onChange={set("payment_fee_pct")} style={S.input} /></label>
       </div>
       <label style={{ fontSize: 12.5, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={p.active !== false} onChange={set("active")} /> قابل خرید</label>
-      <button style={S.btn} onClick={() => onDone(p)}>ذخیره پلن</button>
+      <button style={S.btn} onClick={() => onDone(p)}>ذخیره سطح</button>
     </div>
   );
 }

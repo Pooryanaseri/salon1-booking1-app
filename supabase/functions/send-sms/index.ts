@@ -92,6 +92,9 @@ const STYLIST_KINDS = ["cancellation", "reschedule", "reschedule_proposed", "con
 // feedback follow-up after the customer has answered (FeedbackPage).
 const ANON_CANCELLABLE_KINDS = ["feedback_request", "feedback_followup"];
 
+// v2.64: kinds that stop when the SMS allowance is gone (public.sms_is_marketing)
+const MARKETING_KINDS = ["campaign", "loyalty", "predictive_rebooking", "slot_offer", "winback", "birthday", "pet_reminder"];
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -321,6 +324,15 @@ Deno.serve(async (req) => {
       const { data: isPrivate } = await admin.rpc("is_private_client", { p_salon: salonId, p_phone: to });
       if (isPrivate === true) {
         results.push({ to, ok: false, error: "مشتری اختصاصی آرایشگر مستقل است" });
+        continue;
+      }
+    }
+
+    // v2.64: marketing SMS need SMS allowance left (booking messages always go out)
+    if (MARKETING_KINDS.includes(m.kind ?? "")) {
+      const { data: may, error: mayErr } = await admin.rpc("sms_may_send", { p_salon: salonId, p_kind: m.kind });
+      if (!mayErr && may === false) {
+        results.push({ to, ok: false, error: "پیامک‌های اشتراک تمام شده — از «پروفایل و امنیت ← اشتراک» بستهٔ پیامک بخرید" });
         continue;
       }
     }

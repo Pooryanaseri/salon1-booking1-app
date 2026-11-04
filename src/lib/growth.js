@@ -352,11 +352,39 @@ export function targetStatus(r) {
 export async function fetchMyPlan() {
   if (!SUPABASE_ENABLED) {
     const st = demoSubscription();
-    return { ok: true, demo: true, plan_id: "pro", plan_name: "حرفه‌ای (نمونه)", expires_at: st.expires_at, state: st.state, days_left: st.days_left, grace_until: st.grace_until,
-      discounts: { 3: 5, 6: 10, 12: 20 }, support_phone: "", sms_quota: 2000, sms_used: 0, online_volume: 0, payment_fee_pct: 1, payment_fee: 0, online: false,
-      plans: [{ id: "pro", name: "حرفه‌ای (نمونه)", monthly_price: 490000, sms_quota: 2000 }] };
+    return { ok: true, demo: true, plan_id: "herfei", plan_name: "حرفه‌ای", expires_at: st.expires_at, state: st.state, days_left: st.days_left, grace_until: st.grace_until,
+      discounts: { 3: 5, 6: 10, 12: 20 }, support_phone: "", sms_quota: 0, sms_used: 0, online_volume: 0, payment_fee_pct: 0, payment_fee: 0, online: false,
+      enforced: true, active_stylists: 4, seat_limit: 5, sms_balance: 1840, sms_metered: true, sms_price: 250, sms_packs: [500, 1000, 5000],
+      plans: DEMO_TIERS.map((t) => ({ ...t, tiered: true, seats: t.max_stylists, fits: t.max_stylists >= 4,
+        upgrade: t.max_stylists > 5 ? { ok: true, amount: Math.round(((t.price_3 - 10000000) / 90) * 40 / 1000) * 1000, days: 40, sms: Math.round((t.sms_3 - 2500) * 40 / 90) } : null })) };
   }
   return rpc("my_plan", {});
+}
+
+// v2.64 tiers, for the demo (the real ones come from the server and are edited in /admin)
+const DEMO_TIERS = [
+  { id: "paye", name: "پایه", max_stylists: 2, price_3: 6000000, price_6: 11400000, price_12: 21600000, sms_3: 1000, sms_6: 2000, sms_12: 4000, extra_stylist_price_3: 0 },
+  { id: "herfei", name: "حرفه‌ای", max_stylists: 5, price_3: 10000000, price_6: 19000000, price_12: 36000000, sms_3: 2500, sms_6: 5000, sms_12: 10000, extra_stylist_price_3: 0 },
+  { id: "vizhe", name: "ویژه", max_stylists: 10, price_3: 15000000, price_6: 28500000, price_12: 54000000, sms_3: 4500, sms_6: 9000, sms_12: 18000, extra_stylist_price_3: 0 },
+  { id: "bozorg", name: "بزرگ", max_stylists: 20, price_3: 21000000, price_6: 40000000, price_12: 75500000, sms_3: 7500, sms_6: 15000, sms_12: 30000, extra_stylist_price_3: 900000 },
+];
+
+/** Pure: price of a tier for `months` and `seats` (extra seats on tiers that sell them) — mirrors plan_price(). */
+export function tierPrice(plan, months, seats) {
+  if (!plan) return null;
+  const base = { 3: plan.price_3, 6: plan.price_6, 12: plan.price_12 }[months];
+  if (base == null) return null;
+  const extra = Number(plan.extra_stylist_price_3) > 0 && seats > plan.max_stylists
+    ? Math.round((seats - plan.max_stylists) * plan.extra_stylist_price_3 * (months === 3 ? 1 : base / plan.price_3))
+    : 0;
+  return Number(base) + extra;
+}
+/** Pure: the 3-month tier price after the 6/12-month ratio, as a percent saved. */
+export function tierSaving(plan, months) {
+  if (!plan?.price_3 || months === 3) return 0;
+  const full = plan.price_3 * (months / 3);
+  const p = months === 6 ? plan.price_6 : plan.price_12;
+  return p ? Math.round((1 - p / full) * 100) : 0;
 }
 
 /* v2.58: subscription state — active / grace / locked (server-enforced). */
@@ -399,9 +427,24 @@ export async function adminSubscriptionOverview() {
   if (!SUPABASE_ENABLED) return DEMO_OFF;
   return rpc("admin_subscription_overview", {});
 }
-export async function buyPlan(planId, months) {
+export async function buyPlan(planId, months, seats = null) {
   if (!SUPABASE_ENABLED) return DEMO_OFF;
-  const inv = await rpc("create_plan_invoice", { p_plan: planId, p_months: months });
+  const inv = seats ? await rpc("create_plan_invoice", { p_plan: planId, p_months: months, p_seats: seats })
+    : await rpc("create_plan_invoice", { p_plan: planId, p_months: months });
+  if (!inv?.ok) return inv;
+  return invokePayment({ action: "request", plan_invoice_id: inv.id });
+}
+/** v2.64: move up a tier mid-term — pays the difference for the days left. */
+export async function upgradePlan(planId, seats = null) {
+  if (!SUPABASE_ENABLED) return DEMO_OFF;
+  const inv = await rpc("create_upgrade_invoice", { p_plan: planId, p_seats: seats });
+  if (!inv?.ok) return inv;
+  return invokePayment({ action: "request", plan_invoice_id: inv.id });
+}
+/** v2.64: an SMS pack on top of the tier's allowance. */
+export async function buySmsPack(count) {
+  if (!SUPABASE_ENABLED) return DEMO_OFF;
+  const inv = await rpc("create_sms_invoice", { p_count: count });
   if (!inv?.ok) return inv;
   return invokePayment({ action: "request", plan_invoice_id: inv.id });
 }
@@ -413,8 +456,15 @@ export async function adminFetchPlans() {
 }
 export async function adminSavePlan(p) {
   if (!SUPABASE_ENABLED) return DEMO_OFF;
-  const row = { id: (p.id || "").trim().toLowerCase(), name: (p.name || "").trim(), monthly_price: Math.round(Number(p.monthly_price) || 0),
-    sms_quota: Math.round(Number(p.sms_quota) || 0), payment_fee_pct: Number(p.payment_fee_pct) || 0, active: p.active !== false, sort_order: Number(p.sort_order) || 0 };
+  const n = (v) => Math.max(0, Math.round(Number(v) || 0));
+  const opt = (v) => (v === "" || v == null ? null : n(v));
+  const row = { id: (p.id || "").trim().toLowerCase(), name: (p.name || "").trim(), monthly_price: n(p.monthly_price),
+    sms_quota: n(p.sms_quota), payment_fee_pct: Number(p.payment_fee_pct) || 0, active: p.active !== false, sort_order: Number(p.sort_order) || 0,
+    // v2.64 tiers
+    max_stylists: opt(p.max_stylists), price_3: opt(p.price_3), price_6: opt(p.price_6), price_12: opt(p.price_12),
+    sms_3: n(p.sms_3), sms_6: n(p.sms_6), sms_12: n(p.sms_12), extra_stylist_price_3: n(p.extra_stylist_price_3) };
+  if (row.price_3 != null && (row.price_6 == null || row.price_12 == null)) return { ok: false, error: "قیمت ۳، ۶ و ۱۲ ماهه را کامل وارد کنید" };
+  if (row.price_3 != null && !row.monthly_price) row.monthly_price = Math.round(row.price_3 / 3);
   if (!/^[a-z0-9_-]{2,20}$/.test(row.id)) return { ok: false, error: "شناسه: ۲ تا ۲۰ حرف کوچک انگلیسی یا عدد" };
   if (!row.name) return { ok: false, error: "نام پلن لازم است" };
   const { error } = await supabase.from("platform_plans").upsert(row);
@@ -440,13 +490,20 @@ export async function adminSavePlatformSettings(s) {
     enforce_subscription: !!s.enforce_subscription, grace_days: Math.min(30, Math.max(0, Number(s.grace_days) || 0)),
     reminder_days: [...new Set(days)].sort((a, b) => b - a), discount_3: pct(s.discount_3, 5), discount_6: pct(s.discount_6, 10), discount_12: pct(s.discount_12, 20),
     support_phone: phone };
+  // v2.64 SMS and trial (older databases don't have these columns yet)
+  if ("sms_price" in s) {
+    const packs = String(s.sms_packs ?? "").split(/[,،\s]+/).map((x) => Number(String(x).replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)))).filter((x) => x > 0);
+    if (!packs.length || packs.length > 6 || packs.some((x) => x > 100000)) return { ok: false, error: "بسته‌های پیامک: ۱ تا ۶ عدد" };
+    Object.assign(row, { sms_price: Math.min(100000, Math.max(0, Number(s.sms_price) || 0)), sms_packs: [...new Set(packs)].sort((a, b) => a - b),
+      trial_sms: Math.min(100000, Math.max(0, Number(s.trial_sms) || 0)), trial_plan: s.trial_plan || null });
+  }
   const { error } = await supabase.from("platform_settings").update(row).eq("id", true);
   if (error) { log("platform_settings.save", error); return { ok: false, error: "ذخیره ناموفق بود" }; }
   return { ok: true };
 }
-export async function adminSetPlan(salonId, planId, expires) {
+export async function adminSetPlan(salonId, planId, expires, addSms = 0) {
   if (!SUPABASE_ENABLED) return DEMO_OFF;
-  return rpc("admin_set_plan", { p_salon: salonId, p_plan: planId || null, p_expires: expires || null });
+  return rpc("admin_set_plan", { p_salon: salonId, p_plan: planId || null, p_expires: expires || null, p_add_sms: Math.round(Number(addSms) || 0) });
 }
 export async function adminBillingReport(month) {
   if (!SUPABASE_ENABLED) return DEMO_OFF;
