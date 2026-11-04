@@ -448,6 +448,35 @@ export async function buySmsPack(count) {
   if (!inv?.ok) return inv;
   return invokePayment({ action: "request", plan_invoice_id: inv.id });
 }
+/* v2.66 — card-to-card, approved by the platform owner (until an online gateway is licensed). */
+const DEMO_CARD = { ok: true, demo: true, enabled: true, card_number: "6037990000000000", card_holder: "نام صاحب حساب (نمونه)", card_sheba: "", invoices: [] };
+export async function fetchCardPayments() {
+  if (!SUPABASE_ENABLED) return DEMO_CARD;
+  const { data, error } = await supabase.rpc("my_card_payments");
+  if (error) { if (!missing(error, "my_card_payments")) log("my_card_payments", error); return { ok: false, enabled: false, invoices: [] }; }
+  return data || { ok: false, enabled: false, invoices: [] };
+}
+/** kind: "plan" (plan, months) | "upgrade" (plan) | "sms" (count) → {ok, id, amount, card_number, card_holder, card_sheba} */
+export async function createCardInvoice({ kind, plan = null, months = 0, seats = null, count = null, amount = 0 }) {
+  // demo: shows the price the card already displays (the real amount is the server's)
+  if (!SUPABASE_ENABLED) return { ok: true, demo: true, id: "demo", amount, card_number: DEMO_CARD.card_number, card_holder: DEMO_CARD.card_holder, card_sheba: "" };
+  return rpc("create_card_invoice", { p_kind: kind, p_plan: plan, p_months: months, p_seats: seats, p_count: count });
+}
+export async function submitCardPayment(id, ref, last4) {
+  if (!SUPABASE_ENABLED) return { ...DEMO_OFF, demo: true };
+  return rpc("submit_card_payment", { p_id: id, p_ref: ref, p_last4: last4 });
+}
+export async function adminCardPayments() {
+  if (!SUPABASE_ENABLED) return DEMO_OFF;
+  return rpc("admin_card_payments", {});
+}
+export async function adminReviewCardPayment(id, approve, note = "") {
+  if (!SUPABASE_ENABLED) return DEMO_OFF;
+  return rpc("admin_review_card_payment", { p_id: id, p_approve: !!approve, p_note: note });
+}
+/** Pure: 6037991234567890 → "6037 9912 3456 7890" */
+export const formatCardNumber = (n) => String(n || "").replace(/\D/g, "").replace(/(\d{4})(?=\d)/g, "$1 ");
+
 export async function adminFetchPlans() {
   if (!SUPABASE_ENABLED) return [];
   const { data, error } = await supabase.from("platform_plans").select("*").order("sort_order").order("monthly_price");
@@ -491,6 +520,18 @@ export async function adminSavePlatformSettings(s) {
     reminder_days: [...new Set(days)].sort((a, b) => b - a), discount_3: pct(s.discount_3, 5), discount_6: pct(s.discount_6, 10), discount_12: pct(s.discount_12, 20),
     support_phone: phone };
   // v2.64 SMS and trial (older databases don't have these columns yet)
+  // v2.66 card-to-card
+  if ("card_enabled" in s) {
+    const digits = (v) => String(v || "").replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)).replace(/[\s-]/g, "");
+    const card = digits(s.card_number);
+    const sheba = digits(s.card_sheba).toUpperCase();
+    const mobile = digits(s.owner_mobile);
+    if (card && !/^[0-9]{16}$/.test(card)) return { ok: false, error: "شماره کارت ۱۶ رقم است" };
+    if (sheba && !/^IR[0-9]{24}$/.test(sheba)) return { ok: false, error: "شبا با IR و ۲۴ رقم" };
+    if (mobile && !/^09[0-9]{9}$/.test(mobile)) return { ok: false, error: "موبایل اطلاع‌رسانی ۱۱ رقم و با ۰۹" };
+    if (s.card_enabled && (!card || !String(s.card_holder || "").trim())) return { ok: false, error: "برای کارت‌به‌کارت شماره کارت و نام صاحب حساب لازم است" };
+    Object.assign(row, { card_enabled: !!s.card_enabled, card_number: card, card_holder: String(s.card_holder || "").trim().slice(0, 60), card_sheba: sheba, owner_mobile: mobile });
+  }
   if ("sms_price" in s) {
     const packs = String(s.sms_packs ?? "").split(/[,،\s]+/).map((x) => Number(String(x).replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)))).filter((x) => x > 0);
     if (!packs.length || packs.length > 6 || packs.some((x) => x > 100000)) return { ok: false, error: "بسته‌های پیامک: ۱ تا ۶ عدد" };

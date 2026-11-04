@@ -11,13 +11,13 @@ import { MONTHS_FA, toFa, gregorianToJalali, jalaliToIso, isoToJalaliLabel } fro
    returning customer picks theirs with one tap.
    ============================================================ */
 
-// v2.61: the well-known breeds; anything else is «سایر» or typed by the customer
+// v2.65: a few famous breeds as one-tap choices; everything else is «سایر»,
+// where the customer may type the breed (left empty, it is saved as «سایر»)
 export const BREEDS = {
-  dog: ["پامرانین", "شیتزو", "پودل", "مالتیز", "یورکشایر تریر", "پاگ", "چاو چاو", "جک راسل", "بیگل", "شیپ داگ", "گلدن رتریور", "لابرادور", "ژرمن شپرد", "هاسکی", "سامویید", "دوبرمن", "روتوایلر", "پیت بول", "دورگه (مخلوط)"],
-  cat: ["پرشین", "هیمالیا", "اسکاتیش فولد", "اسکاتیش استریت", "بریتیش شورت‌هیر", "بریتیش لانگ‌هیر", "سیامی", "مین‌کون", "اگزوتیک", "رگدال", "اسفینکس", "خانگی (مخلوط)"],
+  dog: ["پامرانین", "شیتزو", "پودل", "مالتیز", "تریر", "گلدن رتریور", "هاسکی", "ژرمن شپرد"],
+  cat: ["پرشین", "اسکاتیش", "بریتیش", "سیامی", "خانگی"],
 };
 export const OTHER_BREED = "سایر";
-const TYPE_BREED = "__type__";
 // what the animal needs at the salon (v2.61)
 export const PET_SUPPLIES = ["حوله", "شامپوی مخصوص", "شامپوی ضد حساسیت", "شامپوی ضد کک و کنه", "نرم‌کننده مو", "عطر", "پد بهداشتی"];
 
@@ -125,8 +125,8 @@ export function PetForm({ species, pet, onChange, onContinue, onBack, requireVac
   const ready = petReady(pet, requireVaccination) && !nameTooLong;
   const kind = species === "cat" ? "گربه" : "سگ";
   const breedList = [...new Set([...pricedBreeds, ...BREEDS[species]])];
-  const [typing, setTyping] = useState(() => !!pet.breed.trim() && pet.breed !== OTHER_BREED && !breedList.includes(pet.breed));
-  const breedChoice = typing ? TYPE_BREED : pet.breed;
+  const isOther = (b) => !!(b || "").trim() && !breedList.includes(b);
+  const [other, setOther] = useState(() => isOther(pet.breed));
 
   const input = { width: "100%", padding: "11px 14px", fontSize: 14, marginTop: 4 };
   const chip = (active) => ({
@@ -151,7 +151,7 @@ export function PetForm({ species, pet, onChange, onContinue, onBack, requireVac
             {mine.map((p) => (
               <button key={p.name} type="button" className="tap" style={chip(pet.name.trim() === p.name.trim())}
                 onClick={() => { onChange({ ...EMPTY_PET, ...p }); setSizeTouched(true); setPickedKey((k) => k + 1);
-                  setTyping(!!(p.breed || "").trim() && p.breed !== OTHER_BREED && !breedList.includes(p.breed)); }}>
+                  setOther(isOther(p.breed)); }}>
                 {p.name}
               </button>
             ))}
@@ -192,19 +192,19 @@ export function PetForm({ species, pet, onChange, onContinue, onBack, requireVac
         </div>
 
         <div>
-          <label htmlFor="pet-breed" className="muted" style={{ fontSize: 12 }}>نژاد</label>
-          <select id="pet-breed" value={breedChoice} onChange={(e) => {
-            const v = e.target.value;
-            if (v === TYPE_BREED) { setTyping(true); set({ breed: "" }); } else { setTyping(false); set({ breed: v }); }
-          }} style={input} aria-invalid={!pet.breed.trim()}>
-            <option value="">انتخاب نژاد…</option>
-            {breedList.map((b) => <option key={b} value={b}>{b}</option>)}
-            <option value={OTHER_BREED}>{OTHER_BREED}</option>
-            <option value={TYPE_BREED}>نژاد دیگر — خودم می‌نویسم</option>
-          </select>
-          {breedChoice === TYPE_BREED && (
-            <input id="pet-breed-typed" autoFocus autoComplete="off" maxLength={40} value={pet.breed} onChange={(e) => set({ breed: e.target.value })}
-              placeholder="نام نژاد را بنویسید" style={input} aria-label="نام نژاد" />
+          <p id="pet-breed-label" className="muted" style={{ fontSize: 12 }}>نژاد</p>
+          <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 6 }} role="radiogroup" aria-labelledby="pet-breed-label" data-field="breed">
+            {breedList.map((b) => (
+              <button key={b} type="button" role="radio" aria-checked={!other && pet.breed === b} className="tap" style={chip(!other && pet.breed === b)}
+                onClick={() => { setOther(false); set({ breed: b }); }}>{b}</button>
+            ))}
+            <button type="button" role="radio" aria-checked={other} className="tap" style={chip(other)}
+              onClick={() => { setOther(true); if (!isOther(pet.breed)) set({ breed: OTHER_BREED }); }}>{OTHER_BREED}</button>
+          </div>
+          {other && (
+            <input id="pet-breed-typed" autoFocus autoComplete="off" maxLength={40} value={pet.breed === OTHER_BREED ? "" : pet.breed}
+              onChange={(e) => set({ breed: e.target.value.trim() ? e.target.value : OTHER_BREED })}
+              placeholder="نام نژاد را بنویسید (اختیاری)" style={input} aria-label="نام نژاد" />
           )}
           {breedPriced && <p style={{ fontSize: 11.5, marginTop: 4, color: meta.color, fontWeight: 700 }}>این سالن برای این نژاد قیمت ویژه دارد</p>}
         </div>

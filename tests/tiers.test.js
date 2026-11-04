@@ -23,3 +23,11 @@ describe("v2.64 tier prices (mirror plan_price)", () => {
     expect(tierSaving(paye, 12)).toBe(10);
   });
 });
+
+import { formatCardNumber } from "../src/lib/growth";
+describe("v2.66 card-to-card", () => {
+  it("groups the card number in fours", () => {
+    expect(formatCardNumber("6037991234567890")).toBe("6037 9912 3456 7890");
+    expect(formatCardNumber("")).toBe("");
+  });
+});

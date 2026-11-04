@@ -93,7 +93,7 @@ export function ActionCenter({ insights, history, onHistoryChange, rfmRows, book
       {/* ---- header ---- */}
       <div style={{ padding: "14px 14px 12px", background: "linear-gradient(135deg, color-mix(in oklch, var(--color-accent-500) 10%, var(--color-surface)), var(--color-surface))" }}>
         <p className="flex items-center gap-2" style={{ fontSize: 15.5, fontWeight: 800, color: "var(--color-heading)" }}>
-          <Target size={17} color="var(--color-accent-700)" /> مرکز اقدام
+          <Target size={17} color="var(--color-accent-700)" /> دستیار هوشمند — فرصت‌های امروز سالن
         </p>
         <p className="muted" style={{ fontSize: 11.5, marginTop: 3, lineHeight: 1.8 }}>
           مهم‌ترین کارهایی که آمار ۳۰ روز گذشتهٔ سالن پیشنهاد می‌کند، به ترتیب اثر. هیچ کاری بدون تایید شما انجام نمی‌شود.

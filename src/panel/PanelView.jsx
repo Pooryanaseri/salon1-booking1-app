@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, Sparkles, Target } from "lucide-react";
+import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, Sparkles } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -152,7 +152,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
   const manager = !currentStylist;
   const subTabs = [
     { id: "dashboard", group: "today", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList },
-    ...(manager ? [{ id: "actions", group: "today", label: "مرکز اقدام", badge: actionCount, Icon: Target }] : []),
+    ...(manager ? [{ id: "actions", group: "assistant", label: "دستیار هوشمند", badge: actionCount, Icon: Sparkles }] : []),
     ...(petSalon ? [{ id: "quotes", group: "today", label: "استعلام قیمت", badge: quotesPending, Icon: QuoteIcon }] : []),
     ...(petSalon ? [{ id: "pets", group: "today", label: "حیوانات", Icon: PawPrint }] : []),
     { id: "loyalty", group: "clients", label: "باشگاه و تخفیف", Icon: Gift },
@@ -169,6 +169,8 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
   ];
   const GROUPS = [
     { id: "today", label: currentStylist ? "نوبت‌های من" : "نوبت‌ها", Icon: LayoutList, color: "var(--color-tab-book)" },
+    // v2.65: the action center as its own tab, right next to the bookings
+    { id: "assistant", label: "دستیار هوشمند", Icon: Sparkles, color: "var(--color-accent-500)" },
     { id: "clients", label: "مشتری و فروش", Icon: Gift, color: "var(--color-female-500)" },
     { id: "shop", label: "فروشگاه", Icon: ShoppingBag, color: "var(--color-tab-shop)" },
     { id: "money", label: "مالی و گزارش", Icon: Wallet, color: "var(--color-warning)" },

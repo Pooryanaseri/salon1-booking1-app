@@ -6,6 +6,7 @@ import {
   fetchGrowthSettings, saveGrowthSettings, EVENT_STATUS, eventKindLabel,
   fetchEventRequests, quoteEvent, setEventStatus, recordEventPayment,
   fetchMyPlan, buyPlan, upgradePlan, buySmsPack, tierPrice, tierSaving,
+  fetchCardPayments, createCardInvoice, submitCardPayment, formatCardNumber,
 } from "../lib/growth";
 
 /* ============================================================
@@ -190,7 +191,12 @@ export function PlanCard({ notify }) {
   const [p, setP] = useState(null);
   const [months, setMonths] = useState(3);
   const [busy, setBusy] = useState(null);
-  useEffect(() => { fetchMyPlan().then((d) => setP(d || { ok: false })); }, []);
+  // v2.66 card-to-card
+  const [card, setCard] = useState(null);
+  const [method, setMethod] = useState("online");
+  const [cardFor, setCardFor] = useState(null); // {params} for a new invoice | {invoice} to (re)submit
+  const reloadCard = () => fetchCardPayments().then((d) => setCard(d?.ok ? d : null));
+  useEffect(() => { fetchMyPlan().then((d) => setP(d || { ok: false })); reloadCard(); }, []);
   if (!p || !p.ok) return null;
   const tiers = (p.plans || []).filter((x) => x.tiered);
   async function go(key, call) {
@@ -200,7 +206,12 @@ export function PlanCard({ notify }) {
     setBusy(null);
     notify(r?.demo ? "در حالت دمو پرداخت فعال نیست" : r?.error || "اتصال به درگاه پرداخت ناموفق بود");
   }
-  const canPay = p.online || p.demo;
+  const canPay = p.online || p.demo || !!card?.enabled;
+  const useCard = !!card?.enabled && (!p.online || method === "card");
+  function pay(key, onlineCall, cardParams) {
+    if (useCard) setCardFor({ params: cardParams });
+    else go(key, onlineCall);
+  }
   const current = tiers.find((x) => x.id === p.plan_id);
   const activeTerm = p.state === "active" && p.days_left != null && p.days_left > 0;
   const seatPct = p.seat_limit ? Math.min(1, p.active_stylists / p.seat_limit) : 0;
@@ -238,8 +249,20 @@ export function PlanCard({ notify }) {
         <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>{p.enforced ? "پیامک‌ها از حساب پیامک خود سالن ارسال می‌شود و محدودیتی ندارد." : ""}</p>
       )}
 
-      {canPay && tiers.length > 0 && (
+      {/* v2.65: the tiers and prices are always visible; buying needs the platform's online payment */}
+      {card?.invoices?.length > 0 && <CardInvoices list={card.invoices} onContinue={(inv) => setCardFor({ invoice: inv })} />}
+      {tiers.length > 0 && (
         <>
+          {p.online && card?.enabled && (
+            <div className="flex gap-1.5" style={{ marginTop: 12 }} role="radiogroup" aria-label="روش پرداخت">
+              {[["online", "پرداخت آنلاین"], ["card", "کارت‌به‌کارت"]].map(([id, label]) => (
+                <button key={id} role="radio" aria-checked={method === id} className="tap" onClick={() => setMethod(id)}
+                  style={{ padding: "6px 11px", borderRadius: "var(--radius-full)", fontSize: 12, fontWeight: 700, border: `1px solid ${method === id ? "var(--color-accent-500)" : "var(--color-border)"}`, background: method === id ? "var(--color-accent-50)" : "var(--color-surface)" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 12 }} role="radiogroup" aria-label="مدت اشتراک">
             {[3, 6, 12].map((m) => {
               const save = tierSaving(current || tiers[0], m);
@@ -275,11 +298,11 @@ export function PlanCard({ notify }) {
                     ) : (
                       <>
                         {up && (
-                          <button disabled={!!busy} className="tap accent-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => go(`up-${x.id}`, () => upgradePlan(x.id))}>
+                          <button disabled={!!busy || !canPay} className="tap accent-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => pay(`up-${x.id}`, () => upgradePlan(x.id), { kind: "upgrade", plan: x.id, amount: up?.amount })}>
                             {busy === `up-${x.id}` ? <Loader2 size={13} className="salon-spin" /> : <>ارتقا از همین حالا · {formatToman(up.amount)}</>}
                           </button>
                         )}
-                        <button disabled={!!busy} className={`tap ${up ? "ghost-btn" : "accent-btn"}`} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => go(x.id, () => buyPlan(x.id, months))}>
+                        <button disabled={!!busy || !canPay} className={`tap ${up ? "ghost-btn" : "accent-btn"}`} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => pay(x.id, () => buyPlan(x.id, months), { kind: "plan", plan: x.id, months, amount: priceOf(x) })}>
                           {busy === x.id ? <Loader2 size={13} className="salon-spin" /> : isCurrent ? "تمدید" : up ? "خرید بعد از پایان دوره" : "خرید"}
                         </button>
                       </>
@@ -290,12 +313,17 @@ export function PlanCard({ notify }) {
               );
             })}
           </div>
-          {p.sms_metered && (p.sms_packs || []).length > 0 && p.sms_price > 0 && (
+          {!canPay && (
+            <p className="muted" data-plan="offline" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.9 }}>
+              خرید آنلاین اشتراک هنوز فعال نشده است. برای خرید یا تمدید{p.support_phone ? <> با پشتیبانی (<span className="tabular" dir="ltr">{toFa(p.support_phone)}</span>)</> : " با پشتیبانی"} تماس بگیرید.
+            </p>
+          )}
+          {canPay && p.sms_metered && (p.sms_packs || []).length > 0 && p.sms_price > 0 && (
             <div style={{ marginTop: 12 }} data-plan="sms-packs">
               <p style={{ fontSize: 12.5, fontWeight: 800 }}>خرید پیامک بیشتر</p>
               <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 5 }}>
                 {p.sms_packs.map((n) => (
-                  <button key={n} disabled={!!busy} className="tap ghost-btn tabular" style={{ padding: "6px 10px", fontSize: 11.5 }} onClick={() => go(`sms-${n}`, () => buySmsPack(n))}>
+                  <button key={n} disabled={!!busy} className="tap ghost-btn tabular" style={{ padding: "6px 10px", fontSize: 11.5 }} onClick={() => pay(`sms-${n}`, () => buySmsPack(n), { kind: "sms", count: n, amount: n * p.sms_price })}>
                     {busy === `sms-${n}` ? <Loader2 size={13} className="salon-spin" /> : <>{toFa(n.toLocaleString("en-US"))} پیامک · {formatToman(n * p.sms_price)}</>}
                   </button>
                 ))}
@@ -307,8 +335,119 @@ export function PlanCard({ notify }) {
       )}
       {canPay && tiers.length === 0 && <LegacyPlans p={p} busy={busy} onBuy={(id, m) => go(id, () => buyPlan(id, m))} />}
       {p.demo && <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>در حالت دمو پرداخت فعال نیست.</p>}
+      {cardFor && <CardPayModal for={cardFor} notify={notify} onClose={() => setCardFor(null)} onDone={() => { setCardFor(null); reloadCard(); }} />}
       {p.support_phone && <p className="muted tabular" style={{ fontSize: 11.5, marginTop: 6 }}>پشتیبانی: <span dir="ltr">{toFa(p.support_phone)}</span></p>}
     </div>
+  );
+}
+
+/* v2.66 — the salon's own card-to-card payments and their state. */
+const CARD_STATUS = {
+  awaiting_payment: ["پرداخت نشده", "var(--color-muted)"],
+  submitted: ["در انتظار تایید", "var(--color-warning)"],
+  paid: ["تایید شد", "var(--color-success)"],
+  rejected: ["تایید نشد", "var(--color-danger)"],
+  cancelled: ["لغو شد", "var(--color-muted)"],
+};
+const cardInvoiceTitle = (i) => (i.kind === "sms" ? `${toFa(Number(i.sms_count).toLocaleString("en-US"))} پیامک`
+  : i.kind === "upgrade" ? `ارتقا به ${i.plan_name || ""}` : `${i.plan_name || "اشتراک"} · ${i.months === 12 ? "یک ساله" : `${toFa(i.months)} ماهه`}`);
+function CardInvoices({ list, onContinue }) {
+  return (
+    <div style={{ marginTop: 10 }} data-plan="card-invoices">
+      <p style={{ fontSize: 12.5, fontWeight: 800 }}>پرداخت‌های کارت‌به‌کارت</p>
+      {list.map((i) => {
+        const [label, color] = CARD_STATUS[i.status] || ["—", "var(--color-muted)"];
+        return (
+          <div key={i.id} style={{ padding: "6px 0", borderTop: "1px dashed var(--color-border)", fontSize: 12 }}>
+            <div className="flex items-center justify-between gap-2">
+              <span>{cardInvoiceTitle(i)} · <span className="tabular">{formatToman(i.amount)}</span></span>
+              <b style={{ color, fontSize: 11.5 }}>{label}</b>
+            </div>
+            {i.status === "submitted" && <p className="muted" style={{ fontSize: 11 }}>پس از بررسی واریز، همین‌جا تایید می‌شود و پیامک می‌گیرید.</p>}
+            {i.status === "rejected" && i.review_note && <p style={{ fontSize: 11.5, color: "var(--color-danger)" }}>دلیل: {i.review_note}</p>}
+            {(i.status === "awaiting_payment" || i.status === "rejected") && (
+              <button className="tap ghost-btn" style={{ padding: "4px 10px", fontSize: 11.5, marginTop: 4 }} onClick={() => onContinue(i)}>
+                {i.status === "rejected" ? "اصلاح و ارسال دوباره" : "ادامهٔ پرداخت"}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CardPayModal({ for: target, notify, onClose, onDone }) {
+  const [inv, setInv] = useState(target.invoice ? null : undefined); // undefined = creating
+  const [info, setInfo] = useState(null); // card details
+  const [ref, setRef] = useState("");
+  const [last4, setLast4] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    if (target.invoice) {
+      fetchCardPayments().then((d) => { if (alive) { setInfo(d); setInv(target.invoice); } });
+    } else {
+      createCardInvoice(target.params).then((r) => {
+        if (!alive) return;
+        if (!r?.ok) { notify(r?.error || "ثبت ناموفق بود"); onClose(); return; }
+        setInfo(r); setInv({ id: r.id, amount: r.amount });
+      });
+    }
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  async function copy(text) {
+    try { await navigator.clipboard.writeText(text); notify("کپی شد"); } catch { /* not allowed */ }
+  }
+  async function submit() {
+    setBusy(true); setError("");
+    const r = await submitCardPayment(inv.id, ref, last4);
+    setBusy(false);
+    if (r?.demo) { notify("در حالت دمو پرداخت ثبت نمی‌شود"); onClose(); return; }
+    if (!r?.ok) { setError(r?.error || "ثبت ناموفق بود"); return; }
+    notify("پرداخت ثبت شد — پس از تایید، اشتراک فعال می‌شود و پیامک می‌گیرید");
+    onDone();
+  }
+  const fieldStyle = { width: "100%", padding: "10px 12px", fontSize: 15, marginTop: 4, textAlign: "left" };
+  return (
+    <Modal title="پرداخت کارت‌به‌کارت" onClose={onClose}>
+      {!inv || !info ? <div className="flex justify-center" style={{ padding: 20 }}><Loader2 size={18} className="salon-spin" /></div> : (
+        <div className="flex flex-col gap-3" data-modal="card-pay">
+          <div style={{ padding: 12, borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }}>
+            <p className="muted" style={{ fontSize: 12 }}>مبلغ قابل واریز</p>
+            <p className="tabular" style={{ fontSize: 20, fontWeight: 800 }}>{formatToman(inv.amount)}</p>
+            <p className="muted" style={{ fontSize: 11.5 }}>دقیقاً همین مبلغ را واریز کنید تا تایید سریع‌تر انجام شود.</p>
+          </div>
+          <div>
+            <p className="muted" style={{ fontSize: 12 }}>به کارت</p>
+            <div className="flex items-center justify-between gap-2">
+              <b className="tabular" dir="ltr" style={{ fontSize: 17, letterSpacing: 1 }}>{formatCardNumber(info.card_number)}</b>
+              <button className="tap ghost-btn" style={{ padding: "4px 10px", fontSize: 11.5 }} onClick={() => copy(info.card_number)}>کپی</button>
+            </div>
+            <p style={{ fontSize: 13 }}>به نام <b>{info.card_holder}</b></p>
+            {info.card_sheba && (
+              <div className="flex items-center justify-between gap-2" style={{ marginTop: 4 }}>
+                <span className="tabular muted" dir="ltr" style={{ fontSize: 12 }}>{info.card_sheba}</span>
+                <button className="tap ghost-btn" style={{ padding: "4px 10px", fontSize: 11.5 }} onClick={() => copy(info.card_sheba)}>کپی شبا</button>
+              </div>
+            )}
+          </div>
+          <label style={{ fontSize: 12.5 }}>شمارهٔ پیگیری / مرجع تراکنش
+            <input dir="ltr" inputMode="numeric" autoComplete="off" value={ref} onChange={(e) => setRef(e.target.value)} style={fieldStyle} aria-label="شمارهٔ پیگیری" />
+          </label>
+          <label style={{ fontSize: 12.5 }}>۴ رقم آخر کارتی که از آن واریز کردید
+            <input dir="ltr" inputMode="numeric" maxLength={4} autoComplete="off" value={last4} onChange={(e) => setLast4(e.target.value)} style={fieldStyle} aria-label="۴ رقم آخر کارت" />
+          </label>
+          {error && <p role="alert" style={{ color: "var(--color-danger)", fontSize: 12.5 }}>{error}</p>}
+          <button className="tap accent-btn" disabled={busy || !ref.trim() || last4.trim().length !== 4} onClick={submit} style={{ padding: "11px 14px" }}>
+            {busy ? <Loader2 size={15} className="salon-spin" /> : "واریز کردم — ثبت برای تایید"}
+          </button>
+          <p className="muted" style={{ fontSize: 11, lineHeight: 1.8 }}>پس از بررسی واریز (معمولاً همان روز) اشتراک فعال می‌شود و پیامک تایید می‌گیرید. اگر مهلت اشتراک تمام شده باشد، تا تایید (حداکثر ۴۸ ساعت) سالن قفل نمی‌شود.</p>
+        </div>
+      )}
+    </Modal>
   );
 }
 
