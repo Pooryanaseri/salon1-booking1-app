@@ -265,7 +265,7 @@ begin
     if s.owner_phone ~ '^09[0-9]{9}$' then
       insert into public.sms_messages (salon_id, to_phone, body, kind, status, scheduled_for)
       values (s.id, s.owner_phone, 'پرداخت کارت‌به‌کارت «' || s.name || '» تایید نشد: ' || v_note
-              || '. برای اصلاح: پنل ← تنظیمات سالن ← پروفایل و امنیت.', 'plan', 'queued', now());
+              || '. برای اصلاح: پنل ← تنظیمات سالن ← اشتراک نرم‌افزار.', 'plan', 'queued', now());
     end if;
   end if;
   return json_build_object('ok', true);

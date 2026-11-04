@@ -166,6 +166,8 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     ...(manager ? [{ id: "staff", group: "setup", label: "آرایشگرها", Icon: Users }] : []),
     ...(manager ? [{ id: "automation", group: "setup", label: "خودکارها", Icon: Bell }] : []),
     { id: "settings", group: "setup", label: manager ? "پروفایل و امنیت" : "امنیت حساب", Icon: ShieldCheck },
+    // v2.67: the subscription has its own tab under «تنظیمات سالن»
+    ...(manager ? [{ id: "subscription", group: "setup", label: "اشتراک نرم‌افزار", Icon: CreditCard }] : []),
   ];
   const GROUPS = [
     { id: "today", label: currentStylist ? "نوبت‌های من" : "نوبت‌ها", Icon: LayoutList, color: "var(--color-tab-book)" },
@@ -203,7 +205,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       {subscription?.state === "locked" ? (
         <SubscriptionLock status={subscription} isManager={!currentStylist} notify={notify} />
       ) : (<>
-      {!currentStylist && <SubscriptionBanner status={subscription} onRenew={() => setSubTab("settings")} />}
+      {!currentStylist && <SubscriptionBanner status={subscription} onRenew={() => setSubTab("subscription")} />}
       {!currentStylist && <BranchBar notify={notify} />}
 
       {/* Two levels: a few big areas, then the sections of the open area. */}
@@ -324,10 +326,10 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           <GrowthAutomations notify={notify} />
         </>
       )}
+      {subTab === "subscription" && !currentStylist && <PlanCard notify={notify} />}
       {subTab === "settings" && (
         <>
           {!currentStylist && <ProfileSettingsCard notify={notify} />}
-          {!currentStylist && <PlanCard notify={notify} />}
           <SecurityCard notify={notify} isManager={!currentStylist} />
           {!currentStylist && SUPABASE_ENABLED && <AppHealthCard />}
         </>
