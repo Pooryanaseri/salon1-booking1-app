@@ -1,22 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, TrendingUp, Sparkles } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
-import { RevenueForecastCard } from "./RevenueForecast";
 import { SubscriptionBanner, SubscriptionLock } from "./Subscription";
-import { AccountingTab } from "./AccountingTab";
-import { BITab } from "./BITab";
 import { Badge, DayTimeline, GenderBadge, MenuItem, Modal, PanelSectionHeader, Row, StatCard, Switch } from "../components/ui";
 import { CancelModal, ReferralVerifyModal, RescheduleModal } from "../components/bookingModals";
-import { LoyaltyTab } from "./LoyaltyTab";
 import { PET_SIZE_LABEL, SECTION_META, STATUS_META, sectionFilters, sectionsFor, staffSectionsFor, makeSeedStylist, occupiedEndFor, schemaDayOf } from "../app/shared";
 import { getBusinessType } from "../lib/tenant";
-import { ScheduleTab, AutomationCard, DepositCard, AppHealthCard } from "./ScheduleTab";
-import { ServicesTab } from "./ServicesTab";
-import { SmsTab } from "./SmsTab";
-import { QuotesTab } from "./QuotesTab";
-import { ShopTab } from "./ShopTab";
 import { CommissionCard, MarketingTab, BranchBar, CheckInModal, ProfileSettingsCard, SecurityCard } from "./BusinessTools";
 import { fetchOrders } from "../lib/shop";
 import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
@@ -27,6 +18,31 @@ import { redeemGiftCard } from "../lib/business";
 import { GrowthTab, EventsTab, TargetsCard, GrowthAutomations, PlanCard } from "./GrowthTools";
 import { ContractsCard, MyStatementCard, MyPricesCard } from "./Contracts";
 import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceModal } from "./ClientRecord";
+
+/* v2.62 speed: each big section loads only when it is opened, so the panel
+   (and «نوبت‌های امروز», where staff spend their day) opens much faster. */
+const named = (load, name) => lazy(() => load().then((m) => ({ default: m[name] })));
+const loadSchedule = () => import("./ScheduleTab");
+const RevenueForecastCard = named(() => import("./RevenueForecast"), "RevenueForecastCard");
+const AccountingTab = named(() => import("./AccountingTab"), "AccountingTab");
+const BITab = named(() => import("./BITab"), "BITab");
+const LoyaltyTab = named(() => import("./LoyaltyTab"), "LoyaltyTab");
+const ScheduleTab = named(loadSchedule, "ScheduleTab");
+const AutomationCard = named(loadSchedule, "AutomationCard");
+const DepositCard = named(loadSchedule, "DepositCard");
+const AppHealthCard = named(loadSchedule, "AppHealthCard");
+const ServicesTab = named(() => import("./ServicesTab"), "ServicesTab");
+const SmsTab = named(() => import("./SmsTab"), "SmsTab");
+const QuotesTab = named(() => import("./QuotesTab"), "QuotesTab");
+const ShopTab = named(() => import("./ShopTab"), "ShopTab");
+
+function SectionLoading() {
+  return (
+    <div className="card" role="status" aria-live="polite" style={{ padding: 22, textAlign: "center", fontSize: 13 }}>
+      <span className="muted">در حال باز کردن بخش…</span>
+    </div>
+  );
+}
 
 /* ============================================================
    Panel view (staff) — dashboard / services / schedule
@@ -71,18 +87,26 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       setQuotesPending(pending.length);
     });
     check();
-    const t = setInterval(check, 60000);
-    return () => { alive = false; clearInterval(t); };
+    // v2.62: not on every section click, and not while the app is in the background
+    const t = setInterval(() => { if (!document.hidden) check(); }, 60000);
+    const onShow = () => { if (!document.hidden) check(); };
+    document.addEventListener("visibilitychange", onShow);
+    return () => { alive = false; clearInterval(t); document.removeEventListener("visibilitychange", onShow); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [petSalon, subTab]);
+  }, [petSalon]);
 
   // v2.48: new shop orders (badge on the tab)
   const [ordersPending, setOrdersPending] = useState(0);
+  // v2.62: loaded once and when the app comes back to the screen (was: on every
+  // section click). The shop section itself keeps the badge current.
   useEffect(() => {
     let alive = true;
-    fetchOrders().then((list) => { if (alive) setOrdersPending(list.filter((o) => o.status === "pending").length); });
-    return () => { alive = false; };
-  }, [subTab]);
+    const load = () => fetchOrders().then((list) => { if (alive) setOrdersPending(list.filter((o) => o.status === "pending").length); });
+    load();
+    const onShow = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onShow);
+    return () => { alive = false; document.removeEventListener("visibilitychange", onShow); };
+  }, []);
 
   // Every section, grouped into a few clear areas. Each one shows only what
   // belongs to the logged-in person; manager-only sections are left out for stylists.
@@ -200,6 +224,8 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       )}
       {activeGroup.tabs.length === 1 && <div className="mb-3" />}
 
+      <Suspense fallback={<SectionLoading />}>
+
       {subTab === "dashboard" && currentStylist && <MyStatementCard stylist={currentStylist} bookings={bookings} notify={notify} />}
       {subTab === "dashboard" && currentStylist && <MyPricesCard stylist={currentStylist} services={services} notify={notify} />}
       {subTab === "dashboard" && currentStylist && (
@@ -310,6 +336,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
           notify={notify}
         />
       )}
+      </Suspense>
       </>)}
     </div>
   );
