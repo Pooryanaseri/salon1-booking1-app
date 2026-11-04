@@ -96,7 +96,7 @@ export function ActionCenter({ insights, history, onHistoryChange, rfmRows, book
           <Target size={17} color="var(--color-accent-700)" /> مرکز اقدام
         </p>
         <p className="muted" style={{ fontSize: 11.5, marginTop: 3, lineHeight: 1.8 }}>
-          مهم‌ترین کارهایی که اعداد همین صفحه پیشنهاد می‌کنند، به ترتیب اثر. هیچ کاری بدون تایید شما انجام نمی‌شود.
+          مهم‌ترین کارهایی که آمار ۳۰ روز گذشتهٔ سالن پیشنهاد می‌کند، به ترتیب اثر. هیچ کاری بدون تایید شما انجام نمی‌شود.
         </p>
         <div className="flex gap-2" style={{ marginTop: 10, flexWrap: "wrap" }}>
           <span style={chip("var(--color-accent-700)")}><Sparkles size={11} /> {toFa(actions.length)} اقدام پیشنهادی</span>

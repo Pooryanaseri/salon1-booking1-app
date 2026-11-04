@@ -177,7 +177,10 @@ export const BI_KPIS = [
 
 const DONUT_COLORS = ["var(--color-accent-500)", "var(--color-info)", "var(--color-success)", "var(--color-warning)", "var(--color-tab-panel)"];
 
-export function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, automation, onAutomationChange, onReminderHoursSaved, onNavigate, notify }) {
+/* v2.63: mode "actions" = only the action center (its own panel section),
+   mode "count" = nothing on screen, just reports how many actions wait
+   (the badge on «مرکز اقدام»). The full report no longer repeats it. */
+export function BITab({ bookings, services, stylists, workingHours, staffWorkingHours, timeOff, approvedDates, automation, onAutomationChange, onReminderHoursSaved, onNavigate, notify, mode = "report", onActionCount }) {
   const [range, setRange] = useState("30"); // default 30 days
   const [branchFilter, setBranchFilter] = useState("all");
   const [staffFilter, setStaffFilter] = useState("all");
@@ -514,6 +517,26 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
     return rows.sort((a, b) => b.value - a.value);
   }, [activeKpi, currentLevel, pathFilteredPeriod, pathFilteredPrev, baseFiltered, services, periodStart, prevPeriodStart, spanDays]);
 
+  const actionCount = insights.actions.length;
+  useEffect(() => { onActionCount?.(actionCount); }, [actionCount, onActionCount]);
+  if (mode === "count") return null;
+  if (mode === "actions") {
+    return (
+      <ActionCenter
+        insights={insights}
+        history={actionHistory}
+        onHistoryChange={reloadActions}
+        bookings={bookings}
+        rfmRows={rfmRows}
+        automation={automation}
+        onAutomationChange={onAutomationChange}
+        onReminderHoursSaved={onReminderHoursSaved}
+        onNavigate={onNavigate}
+        notify={notify}
+      />
+    );
+  }
+
   function openDrill(kpiId) { setDrill({ kpiId, path: [] }); }
   function drillInto(row) {
     if (!currentLevel || currentLevel.key === "invoice") return;
@@ -597,22 +620,7 @@ export function BITab({ bookings, services, stylists, workingHours, staffWorking
         </div>
       )}
 
-      {!drill && (
-        <div style={{ marginTop: 12 }}>
-          <ActionCenter
-            insights={insights}
-            history={actionHistory}
-            onHistoryChange={reloadActions}
-            bookings={bookings}
-            rfmRows={rfmRows}
-            automation={automation}
-            onAutomationChange={onAutomationChange}
-            onReminderHoursSaved={onReminderHoursSaved}
-            onNavigate={onNavigate}
-            notify={notify}
-          />
-        </div>
-      )}
+      {!drill && <div style={{ marginTop: 12 }} />}
 
       {/* ---- v2.12: Revenue trend (SVG line/area) ---- */}
       {!drill && (
