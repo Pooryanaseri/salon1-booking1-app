@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect, useState } from "react";
-import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, TrendingUp, Sparkles } from "lucide-react";
+import { Camera, CreditCard, PawPrint, MessageSquareText as QuoteIcon, Clock, Phone, X, Calendar as CalendarIcon, MoreVertical, CheckCircle2, MessageSquareText, User, Plus, Trash2, Pencil, Settings, LayoutList, BarChart3, ChevronLeft, ChevronRight, History, CalendarClock, Wallet, Users, Bell, Gift, ShieldCheck, ShoppingBag, QrCode, ClipboardList, Sparkles } from "lucide-react";
 import { SUPABASE_ENABLED } from "../lib/supabase";
 import { fetchCustomerReferredBy, fetchPets, fetchQuotes } from "../lib/api";
 import { toFa, normalizeMobile, formatToman, jalaliLabel, formatClock, hhmmToMin, isRevenueEligible, dateKey, parseDateKey } from "../lib/format";
@@ -8,14 +8,14 @@ import { Badge, DayTimeline, GenderBadge, MenuItem, Modal, PanelSectionHeader, R
 import { CancelModal, ReferralVerifyModal, RescheduleModal } from "../components/bookingModals";
 import { PET_SIZE_LABEL, SECTION_META, STATUS_META, sectionFilters, sectionsFor, staffSectionsFor, makeSeedStylist, occupiedEndFor, schemaDayOf } from "../app/shared";
 import { getBusinessType } from "../lib/tenant";
-import { CommissionCard, MarketingTab, BranchBar, CheckInModal, ProfileSettingsCard, SecurityCard } from "./BusinessTools";
+import { MarketingTab, BranchBar, CheckInModal, ProfileSettingsCard, SecurityCard } from "./BusinessTools";
 import { fetchOrders } from "../lib/shop";
 import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
 import { GroomStageBar, VisitReportModal, PetCareBadges, PetDetailsLine, VipBadge } from "./PetCare";
 import { fetchVipPhones, setCustomerVip } from "../lib/vip";
 import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
 import { redeemGiftCard } from "../lib/business";
-import { GrowthTab, EventsTab, TargetsCard, GrowthAutomations, PlanCard } from "./GrowthTools";
+import { EventsTab, GrowthAutomations, PlanCard } from "./GrowthTools";
 import { ContractsCard, MyStatementCard, MyPricesCard } from "./Contracts";
 import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceModal } from "./ClientRecord";
 
@@ -23,7 +23,6 @@ import { useClientRecords, ClientRecordBadges, ClientRecordModal, PackageChoiceM
    (and «نوبت‌های امروز», where staff spend their day) opens much faster. */
 const named = (load, name) => lazy(() => load().then((m) => ({ default: m[name] })));
 const loadSchedule = () => import("./ScheduleTab");
-const RevenueForecastCard = named(() => import("./RevenueForecast"), "RevenueForecastCard");
 const AccountingTab = named(() => import("./AccountingTab"), "AccountingTab");
 const BITab = named(() => import("./BITab"), "BITab");
 const LoyaltyTab = named(() => import("./LoyaltyTab"), "LoyaltyTab");
@@ -35,6 +34,27 @@ const ServicesTab = named(() => import("./ServicesTab"), "ServicesTab");
 const SmsTab = named(() => import("./SmsTab"), "SmsTab");
 const QuotesTab = named(() => import("./QuotesTab"), "QuotesTab");
 const ShopTab = named(() => import("./ShopTab"), "ShopTab");
+
+/* v2.62: «باشگاه مشتریان» and «تخفیف و هدیه» in one section, two tabs. */
+function ClientsHub({ loyalty, offers }) {
+  const [seg, setSeg] = useState("loyalty");
+  const items = [["loyalty", "باشگاه مشتریان"], ["offers", "کد تخفیف و کارت هدیه"]];
+  return (
+    <>
+      <div className="grid gap-2 mb-3" style={{ gridTemplateColumns: "1fr 1fr" }} role="tablist" aria-label="باشگاه و تخفیف">
+        {items.map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={seg === id} onClick={() => setSeg(id)} className="tap"
+            style={{ padding: "9px 6px", borderRadius: "var(--radius-md)", fontSize: 12.5, fontWeight: 700,
+              background: seg === id ? "var(--color-accent-500)" : "var(--color-surface)", color: seg === id ? "white" : "var(--color-body)",
+              border: seg === id ? "none" : "1px solid var(--color-border)" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {seg === "loyalty" ? loyalty : offers}
+    </>
+  );
+}
 
 function SectionLoading() {
   return (
@@ -50,7 +70,11 @@ function SectionLoading() {
 export function PanelView({ bookings, services, setServices, stylists, addStylist, updateStylist, removeStylist, currentStylistId, currentRole, smsTemplates, workingHours, setWorkingHours, staffWorkingHours, setStaffWorkingHours, timeOff, setTimeOff, approvedDates, setApprovedDates, updateBooking, expenses, addExpense, removeExpense, waitlist, removeWaitlistEntry, notify, onLogout, automation, onAutomationChange, onReminderHoursSaved, onShopEnabledChange, subscription }) {
   // The last section is remembered per person, so the panel reopens where they left off.
   const navKey = `salon-panel-tab:${currentStylistId || "manager"}`;
-  const [subTab, setSubTabRaw] = useState(() => { try { return localStorage.getItem(navKey) || "dashboard"; } catch { return "dashboard"; } });
+  const [subTab, setSubTabRaw] = useState(() => {
+    let id = "dashboard";
+    try { id = localStorage.getItem(navKey) || "dashboard"; } catch { /* private mode */ }
+    return id === "marketing" ? "loyalty" : id; // v2.62: merged into «باشگاه و تخفیف»
+  });
   const setSubTab = (id) => { setSubTabRaw(id); try { localStorage.setItem(navKey, id); } catch { /* private mode */ } };
   const [pendingSmsSegment, setPendingSmsSegment] = useState(null);
   const currentStylist = stylists.find((s) => s.id === currentStylistId) || null;
@@ -115,9 +139,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     { id: "dashboard", group: "today", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList },
     ...(petSalon ? [{ id: "quotes", group: "today", label: "استعلام قیمت", badge: quotesPending, Icon: QuoteIcon }] : []),
     ...(petSalon ? [{ id: "pets", group: "today", label: "حیوانات", Icon: PawPrint }] : []),
-    { id: "loyalty", group: "clients", label: "باشگاه مشتریان", Icon: Gift },
-    { id: "marketing", group: "clients", label: "تخفیف و هدیه", Icon: Gift },
-    ...(manager ? [{ id: "growth", group: "clients", label: "رشد فروش", Icon: TrendingUp }] : []),
+    { id: "loyalty", group: "clients", label: "باشگاه و تخفیف", Icon: Gift },
     ...(manager ? [{ id: "sms", group: "clients", label: "پیامک", Icon: MessageSquareText }] : []),
     ...(petSalon ? [] : [{ id: "events", group: "clients", label: "مراسم و عروس", Icon: Sparkles }]),
     { id: "shop", group: "shop", label: "فروشگاه", badge: ordersPending, Icon: ShoppingBag },
@@ -228,27 +250,20 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
 
       {subTab === "dashboard" && currentStylist && <MyStatementCard stylist={currentStylist} bookings={bookings} notify={notify} />}
       {subTab === "dashboard" && currentStylist && <MyPricesCard stylist={currentStylist} services={services} notify={notify} />}
-      {subTab === "dashboard" && currentStylist && (
-        <TargetsCard bookings={bookings} stylists={stylists} isManager={false} currentStylistId={currentStylistId} notify={notify} />
-      )}
       {subTab === "dashboard" && (
         <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} pets={pets} setPets={setPets} notify={notify} automation={automation} />
       )}
       {subTab === "quotes" && petSalon && (
         <QuotesTab services={services} stylists={stylists} pets={pets} automation={automation} notify={notify} onPendingChange={setQuotesPending} />
       )}
-      {subTab === "marketing" && <MarketingTab isManager={!currentStylist} notify={notify} services={services} showPackages={!petSalon} />}
       {subTab === "shop" && (
         <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} stylists={stylists} />
       )}
       {subTab === "pets" && petSalon && (
         <PetsTab pets={pets} setPets={setPets} bookings={bookings} services={services} notify={notify} isManager={!currentStylist} />
       )}
-      {subTab === "growth" && !currentStylist && <GrowthTab services={services} bookings={bookings} notify={notify} />}
       {subTab === "events" && !petSalon && <EventsTab notify={notify} isManager={!currentStylist} />}
       {subTab === "accounting" && !currentStylist && <ContractsCard stylists={stylists} bookings={bookings} services={services} notify={notify} />}
-      {subTab === "accounting" && !currentStylist && <TargetsCard bookings={bookings} stylists={stylists} isManager notify={notify} />}
-      {subTab === "accounting" && !currentStylist && <CommissionCard bookings={bookings} stylists={stylists} />}
       {subTab === "accounting" && !currentStylist && (
         <AccountingTab
           bookings={bookings}
@@ -313,13 +328,11 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
         />
       )}
       {subTab === "loyalty" && (
-        <LoyaltyTab
-          notify={notify}
-          currentStylist={currentStylist}
-          onNavigateToSmsSegment={(segment) => { setPendingSmsSegment(segment); setSubTab("sms"); }}
+        <ClientsHub
+          loyalty={<LoyaltyTab notify={notify} currentStylist={currentStylist} onNavigateToSmsSegment={(segment) => { setPendingSmsSegment(segment); setSubTab("sms"); }} />}
+          offers={<MarketingTab isManager={!currentStylist} notify={notify} services={services} showPackages={!petSalon} />}
         />
       )}
-      {subTab === "bi" && !currentStylist && <RevenueForecastCard bookings={bookings} />}
       {subTab === "bi" && !currentStylist && (
         <BITab
           bookings={bookings}

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Boxes, ShoppingBag, Package, Settings, Plus, Pencil, Loader2, Phone, MapPin, Camera, Trash2, Truck, Store, AlertTriangle } from "lucide-react";
+import { ShoppingBag, Package, Settings, Plus, Pencil, Loader2, Phone, MapPin, Camera, Trash2, Truck, Store, AlertTriangle } from "lucide-react";
 import { formatToman, toFa, digitsOnly } from "../lib/format";
 import { Modal, Switch } from "../components/ui";
-import { SuppliesSection } from "./BusinessTools";
 import { isPetSalon } from "../lib/tenant";
 import { setOrderSeller } from "../lib/contracts";
 import {
@@ -25,7 +24,6 @@ export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChang
   const segs = [
     { id: "orders", label: "سفارش‌ها", Icon: ShoppingBag },
     ...(isManager ? [{ id: "products", label: "کالاها", Icon: Package }] : []),
-    { id: "supplies", label: "انبار مواد", Icon: Boxes },
     ...(isManager ? [{ id: "settings", label: "تنظیمات", Icon: Settings }] : []),
   ];
   return (
@@ -45,7 +43,6 @@ export function ShopTab({ isManager, notify, onPendingChange, onShopEnabledChang
       {segment === "orders" && <OrdersSection isManager={isManager} notify={notify} onPendingChange={onPendingChange} stylists={stylists} />}
       {segment === "products" && isManager && <ProductsSection notify={notify} />}
       {segment === "settings" && isManager && <SettingsSection notify={notify} onShopEnabledChange={onShopEnabledChange} />}
-      {segment === "supplies" && <SuppliesSection isManager={isManager} notify={notify} />}
     </div>
   );
 }
