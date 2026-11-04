@@ -4,7 +4,7 @@ import { SUPABASE_ENABLED } from "./lib/supabase";
 import { getSession, signOut, signInPlatformAdmin, registerPlatformAdmin } from "./lib/auth";
 import { isPlatformAdmin, adminListSalons, adminCreateSalon, adminUpdateSalon } from "./lib/api";
 import { adminLinkBranch } from "./lib/business";
-import { adminFetchPlans, adminSavePlan, adminFetchPlatformSettings, adminSavePlatformSettings, adminSetPlan, adminBillingReport, adminSubscriptionOverview } from "./lib/growth";
+import { adminFetchPlans, adminSavePlan, adminFetchPlatformSettings, adminSavePlatformSettings, adminSetPlan, adminBillingReport, adminSubscriptionOverview, adminCardPayments, adminReviewCardPayment, formatCardNumber } from "./lib/growth";
 import { toFa, normalizeMobile, jalaliLabel, parseDateKey } from "./lib/format";
 
 /**
@@ -326,6 +326,7 @@ function BillingDialog({ salons, onClose, onToast }) {
   const [settings, setSettings] = useState(null);
   const [report, setReport] = useState(null);
   const [overview, setOverview] = useState(null);
+  const [cardRows, setCardRows] = useState(null); // v2.66
   const [editing, setEditing] = useState(null);
   const [assign, setAssign] = useState({ salon: "", plan: "", expires: "", sms: "" });
   const [tick, setTick] = useState(0);
@@ -335,12 +336,52 @@ function BillingDialog({ salons, onClose, onToast }) {
     adminFetchPlatformSettings().then((d) => setSettings(d || { zarinpal_merchant_id: "", trial_days: 14, enforce_subscription: false, grace_days: 5, reminder_days: [14, 7, 3, 1], discount_3: 5, discount_6: 10, discount_12: 20, support_phone: "" }));
     adminBillingReport(month).then(setReport);
     adminSubscriptionOverview().then(setOverview);
+    adminCardPayments().then((r) => setCardRows(r?.ok ? r.rows : []));
   }, [tick, month]);
+  async function review(row, approve) {
+    let note = "";
+    if (!approve) {
+      note = window.prompt("دلیل رد (برای مدیر سالن پیامک می‌شود):", "مبلغی با این شماره پیگیری به حساب نیامد") || "";
+      if (!note.trim()) return;
+    } else if (!window.confirm(`واریز ${toFa(Number(row.amount).toLocaleString("en-US"))} تومان از «${row.salon}» را تایید می‌کنید؟`)) return;
+    const r = await adminReviewCardPayment(row.id, approve, note);
+    onToast(r?.ok ? (approve ? "تایید شد — اشتراک سالن فعال شد" : "رد شد و به سالن پیامک رفت") : r?.error || "ناموفق بود");
+    if (r?.ok) setTick((t) => t + 1);
+  }
   const fa = (n) => toFa(Number(n || 0).toLocaleString("en-US"));
   const totals = (report?.rows || []).reduce((t, r) => ({ sub: t.sub + Number(r.subscription || 0), fee: t.fee + Number(r.fee || 0) }), { sub: 0, fee: 0 });
   return (
     <Dialog title="اشتراک سالن‌ها و درآمد پلتفرم" onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <section data-admin="card-payments">
+          <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>
+            پرداخت‌های کارت‌به‌کارت
+            {(cardRows || []).some((r) => r.status === "submitted") && <span style={{ color: C.danger, marginRight: 6 }}>({toFa((cardRows || []).filter((r) => r.status === "submitted").length)} منتظر تایید)</span>}
+          </p>
+          {(cardRows || []).length === 0 && <p style={{ fontSize: 12, color: C.muted }}>پرداختی در ۳۰ روز اخیر نیست.</p>}
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            {(cardRows || []).map((r) => (
+              <div key={r.id} style={{ fontSize: 12.5, padding: "7px 0", borderTop: `1px dashed ${C.border}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span><b>{r.salon}</b> · {r.kind === "sms" ? `${toFa(r.sms_count)} پیامک` : r.kind === "upgrade" ? `ارتقا به ${r.plan_name}` : `${r.plan_name} ${toFa(r.months)} ماهه`}</span>
+                  <b>{fa(r.amount)} تومان</b>
+                </div>
+                <div style={{ color: C.muted }}>
+                  پیگیری <span dir="ltr">{r.card_ref || "—"}</span> · کارت ****{r.card_last4 || "—"}
+                  {r.submitted_at ? ` · ${new Date(r.submitted_at).toLocaleString("fa-IR")}` : ""}
+                  {r.status === "paid" && <span style={{ color: "#16a34a", fontWeight: 800 }}> · تایید شد</span>}
+                  {r.status === "rejected" && <span style={{ color: C.danger, fontWeight: 800 }}> · رد شد: {r.review_note}</span>}
+                </div>
+                {r.status === "submitted" && (
+                  <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
+                    <button style={S.btn} onClick={() => review(r, true)}>تایید واریز</button>
+                    <button style={S.ghost} onClick={() => review(r, false)}>رد</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
         <section>
           <p style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>این ماه</p>
           <p style={{ fontSize: 13 }}>اشتراک‌های پرداخت‌شده: <b>{fa(totals.sub)}</b> تومان · کارمزد پرداخت آنلاین سالن‌ها: <b>{fa(totals.fee)}</b> تومان</p>
@@ -441,7 +482,26 @@ function BillingDialog({ salons, onClose, onToast }) {
                 <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>شمارهٔ پشتیبانی (در پیامک‌ها و صفحهٔ قفل)
                   <input dir="ltr" inputMode="tel" value={settings.support_phone ?? ""} onChange={set("support_phone")} placeholder="021…" style={S.input} aria-label="شمارهٔ پشتیبانی" />
                 </label>
-                <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>مرچنت‌کد زرین‌پال پلتفرم (برای خرید آنلاین اشتراک)
+                <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: C.bg }} data-admin="card-settings">
+                  <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13 }}>
+                    <input type="checkbox" checked={!!settings.card_enabled} onChange={set("card_enabled")} style={{ marginTop: 4 }} />
+                    <span><b>پرداخت کارت‌به‌کارت</b> — مدیر سالن مبلغ را به کارت شما واریز و شمارهٔ پیگیری را ثبت می‌کند؛ شما اینجا تایید می‌کنید.</span>
+                  </label>
+                  <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>شماره کارت
+                    <input dir="ltr" inputMode="numeric" value={settings.card_number ?? ""} onChange={set("card_number")} placeholder="6037 99…" style={S.input} aria-label="شماره کارت" />
+                    {settings.card_number && <span style={{ fontSize: 11 }} dir="ltr">{formatCardNumber(settings.card_number)}</span>}
+                  </label>
+                  <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>نام صاحب حساب
+                    <input value={settings.card_holder ?? ""} onChange={set("card_holder")} style={S.input} aria-label="نام صاحب حساب" />
+                  </label>
+                  <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>شبا (اختیاری)
+                    <input dir="ltr" value={settings.card_sheba ?? ""} onChange={set("card_sheba")} placeholder="IR…" style={S.input} aria-label="شبا" />
+                  </label>
+                  <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>موبایل شما برای پیامک «پرداخت جدید»
+                    <input dir="ltr" inputMode="tel" value={settings.owner_mobile ?? ""} onChange={set("owner_mobile")} placeholder="09…" style={S.input} aria-label="موبایل اطلاع‌رسانی" />
+                  </label>
+                </div>
+                <label style={{ fontSize: 12, color: C.muted, display: "block", marginTop: 6 }}>مرچنت‌کد زرین‌پال پلتفرم (برای خرید آنلاین اشتراک، پس از گرفتن مجوز)
                   <input dir="ltr" value={settings.zarinpal_merchant_id ?? ""} placeholder="xxxxxxxx-xxxx-…" onChange={(e) => setSettings((x) => ({ ...x, zarinpal_merchant_id: e.target.value.trim() }))} style={S.input} aria-label="مرچنت‌کد" />
                 </label>
                 <button style={{ ...S.btn, marginTop: 8 }} onClick={async () => {
