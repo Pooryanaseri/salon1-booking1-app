@@ -33,7 +33,7 @@ select tst.as_anon(:'cs');
 set role anon;
 select tst.ok(public.pet_care_settings() ->> 'consent_mode' = 'risky' and length(public.pet_care_settings() ->> 'consent_text') > 20, 'consent settings public');
 select public.create_public_booking(:'nails', 'tst-care-g1', public.salon_today(), 600, 'نگار', '09351230001', 'dog', null,
-  '{"name":"پشمک","size":"small","temperament":"aggressive","birth_date":"2020-03-15","consent":"true"}') as b1 \gset
+  '{"breed":"سایر","name":"پشمک","size":"small","temperament":"aggressive","birth_date":"2020-03-15","consent":"true"}') as b1 \gset
 select tst.ok((:'b1'::json ->> 'ok')::boolean, 'booked');
 reset role;
 select (:'b1'::json ->> 'id') as b1id \gset
@@ -125,7 +125,7 @@ reset role;
 -- ---- groomer checkout: may add charges, may not lower the price --------------
 select tst.as_anon(:'cs');
 set role anon;
-select public.create_public_booking(:'nails', 'tst-care-g1', public.salon_today(), 720, 'نگار', '09351230001', 'dog', null, '{"name":"پشمک","size":"small"}') ->> 'id' as b2id \gset
+select public.create_public_booking(:'nails', 'tst-care-g1', public.salon_today(), 720, 'نگار', '09351230001', 'dog', null, '{"breed":"سایر","name":"پشمک","size":"small"}') ->> 'id' as b2id \gset
 reset role;
 select final_price as fp2 from public.appointments where id = :'b2id' \gset
 set role authenticated;
@@ -142,10 +142,10 @@ select tst.ok((select final_price = :fp2 + 350000 and status = 'completed' from 
 update public.app_settings set pet_large_capacity = 1 where salon_id = :'cs';
 select tst.as_anon(:'cs');
 set role anon;
-select tst.ok((public.create_public_booking(:'nails', 'tst-care-g1', public.salon_today() + 3, 600, 'الف', '09351230002', 'dog', null, '{"name":"رکس","size":"large"}') ->> 'ok')::boolean, 'first large dog');
-select tst.expect_error(format($$select public.create_public_booking(%L, 'tst-care-g2', public.salon_today() + 3, 600, 'ب', '09351230003', 'dog', null, '{"name":"مکس","size":"giant"}')$$, :'nails'), 'ظرفیت سگ‌های بزرگ');
-select tst.ok((public.create_public_booking(:'nails', 'tst-care-g2', public.salon_today() + 3, 600, 'ج', '09351230004', 'dog', null, '{"name":"مینی","size":"small"}') ->> 'ok')::boolean, 'small dog still fits');
-select tst.ok((public.create_public_booking(:'nails', 'tst-care-g2', public.salon_today() + 3, 720, 'ب', '09351230003', 'dog', null, '{"name":"مکس","size":"giant"}') ->> 'ok')::boolean, 'large dog at another time');
+select tst.ok((public.create_public_booking(:'nails', 'tst-care-g1', public.salon_today() + 3, 600, 'الف', '09351230002', 'dog', null, '{"breed":"سایر","name":"رکس","size":"large"}') ->> 'ok')::boolean, 'first large dog');
+select tst.expect_error(format($$select public.create_public_booking(%L, 'tst-care-g2', public.salon_today() + 3, 600, 'ب', '09351230003', 'dog', null, '{"breed":"سایر","name":"مکس","size":"giant"}')$$, :'nails'), 'ظرفیت سگ‌های بزرگ');
+select tst.ok((public.create_public_booking(:'nails', 'tst-care-g2', public.salon_today() + 3, 600, 'ج', '09351230004', 'dog', null, '{"breed":"سایر","name":"مینی","size":"small"}') ->> 'ok')::boolean, 'small dog still fits');
+select tst.ok((public.create_public_booking(:'nails', 'tst-care-g2', public.salon_today() + 3, 720, 'ب', '09351230003', 'dog', null, '{"breed":"سایر","name":"مکس","size":"giant"}') ->> 'ok')::boolean, 'large dog at another time');
 reset role;
 
 -- ---- reminders -------------------------------------------------------------------

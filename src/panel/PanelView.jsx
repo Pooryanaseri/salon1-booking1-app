@@ -20,7 +20,8 @@ import { ShopTab } from "./ShopTab";
 import { CommissionCard, MarketingTab, BranchBar, CheckInModal, ProfileSettingsCard, SecurityCard } from "./BusinessTools";
 import { fetchOrders } from "../lib/shop";
 import { PetsTab, PetProfileModal, TemperamentBadge, derivePetsFromBookings, CompleteVisitModal } from "./PetsTab";
-import { GroomStageBar, VisitReportModal, PetCareBadges } from "./PetCare";
+import { GroomStageBar, VisitReportModal, PetCareBadges, PetDetailsLine, VipBadge } from "./PetCare";
+import { fetchVipPhones, setCustomerVip } from "../lib/vip";
 import { fetchPurchases, redeemPackageSession } from "../lib/petcare";
 import { redeemGiftCard } from "../lib/business";
 import { GrowthTab, EventsTab, TargetsCard, GrowthAutomations, PlanCard } from "./GrowthTools";
@@ -54,9 +55,25 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
 
   // v2.46: open price requests (badge on the tab)
   const [quotesPending, setQuotesPending] = useState(0);
+  // v2.61: checked every minute too — a new request pops up even without SMS
+  const seenQuotes = React.useRef(null);
   useEffect(() => {
-    if (!petSalon) return;
-    fetchQuotes().then((list) => setQuotesPending(list.filter((q) => q.status === "pending").length));
+    if (!petSalon) return undefined;
+    let alive = true;
+    const check = () => fetchQuotes().then((list) => {
+      if (!alive) return;
+      const pending = list.filter((q) => q.status === "pending");
+      if (seenQuotes.current) {
+        const fresh = pending.filter((q) => !seenQuotes.current.has(q.id));
+        if (fresh.length) notify(`درخواست قیمت جدید: ${fresh[0].pet_name || ""}${fresh.length > 1 ? ` و ${toFa(fresh.length - 1)} مورد دیگر` : ""} — «نوبت‌ها ← استعلام قیمت»`);
+      }
+      seenQuotes.current = new Set(pending.map((q) => q.id));
+      setQuotesPending(pending.length);
+    });
+    check();
+    const t = setInterval(check, 60000);
+    return () => { alive = false; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [petSalon, subTab]);
 
   // v2.48: new shop orders (badge on the tab)
@@ -518,6 +535,17 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
   const petOf = (b) => (b.pet_id ? pets.find((p) => p.id === b.pet_id) : null)
     || pets.find((p) => p.owner_phone === b.customer_phone && p.species === b.customer_gender && p.name === (b.pet_name || "").trim()) || null;
   const [menuFor, setMenuFor] = useState(null);
+  // v2.61: VIP customers (no deposit; the customer sees the label too)
+  const [vips, setVips] = useState(() => new Set());
+  const [vipTick, setVipTick] = useState(0);
+  useEffect(() => { fetchVipPhones().then((l) => setVips(new Set(l))); }, [vipTick]);
+  async function toggleVip(b) {
+    const on = !vips.has(b.customer_phone);
+    const r = await setCustomerVip(b.customer_phone, on);
+    notify(r?.ok ? (on ? `${b.customer_name || "مشتری"} مشتری VIP شد — دیگر بیعانه نمی‌دهد` : "برچسب VIP برداشته شد") : r?.error || "ناموفق بود");
+    if (r?.ok) setVipTick((t) => t + 1);
+    setMenuFor(null);
+  }
   const [action, setAction] = useState(null);
   const [verifyAction, setVerifyAction] = useState(null); // { booking } — pending referral-verification prompt
   const [genderFilter, setGenderFilter] = useState("all");
@@ -826,12 +854,14 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                     )}
                     <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                       <Badge status={b.status} />
+                      {vips.has(b.customer_phone) && <VipBadge />}
                       {b.deposit_paid_at && (
                         <span className="badge" style={{ background: "color-mix(in oklch, var(--color-info) 15%, transparent)", color: "var(--color-info)" }} title={b.deposit_ref ? `کد پیگیری زرین‌پال: ${b.deposit_ref}` : undefined}>
                           <CreditCard size={12} /> بیعانه {formatToman(b.deposit_amount || 0)} پرداخت شد
                         </span>
                       )}
                       {petSalonDash && <PetCareBadges booking={b} pet={petOf(b)} />}
+                      {petSalonDash && <PetDetailsLine pet={petOf(b)} />}
                       {!petSalonDash && <ClientRecordBadges record={records.get(b.customer_phone)} booking={b} />}
                       {b.customer_response === "confirmed" && ["confirmed", "rescheduled", "pending"].includes(b.status) && (
                         <span className="badge" style={{ background: "color-mix(in oklch, var(--color-success) 15%, transparent)", color: "var(--color-success)" }}>
@@ -898,6 +928,9 @@ export function DashboardTab({ bookings, services, stylists, defaultStaffId, wor
                   )}
                   {["pending", "confirmed", "rescheduled", "pending_verification"].includes(b.status) && (
                     <MenuItem label="عدم حضور" onClick={() => { updateBooking(b.id, { status: "no_show" }, "وضعیت به «عدم حضور» تغییر کرد"); setMenuFor(null); }} />
+                  )}
+                  {!locked && /^09\d{9}$/.test(b.customer_phone || "") && (
+                    <MenuItem label={vips.has(b.customer_phone) ? "برداشتن برچسب VIP" : "مشتری VIP (بدون بیعانه)"} onClick={() => toggleVip(b)} />
                   )}
                   {["pending", "confirmed", "rescheduled", "reschedule_proposed", "awaiting_payment"].includes(b.status) && (
                     <MenuItem danger label="لغو نوبت" onClick={() => { setAction({ type: "cancel", booking: b }); setMenuFor(null); }} />

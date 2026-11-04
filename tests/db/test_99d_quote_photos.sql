@@ -18,7 +18,7 @@ select tst.ok(exists (select 1 from storage.buckets where id = 'quote-photos' an
 
 select tst.as_anon(:'ps');
 set role anon;
-select public.request_quote('سارا', '09351116601', 'dog', '{"name":"پاپی","size":"medium"}', array[:'svc']) ->> 'id' as qid \gset
+select public.request_quote('سارا', '09351116601', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', array[:'svc']) ->> 'id' as qid \gset
 -- the requester uploads into their quote
 insert into storage.objects (bucket_id, name) values ('quote-photos', :'ps' || '/' || :'qid' || '/a1b2c3d4e5.jpg');
 insert into storage.objects (bucket_id, name) values ('quote-photos', :'ps' || '/' || :'qid' || '/a1b2c3d4e6.jpg');

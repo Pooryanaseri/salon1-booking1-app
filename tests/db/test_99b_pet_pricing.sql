@@ -27,12 +27,12 @@ select tst.as_anon(:'ps');
 set role anon;
 -- aggression surcharge on top of the size price, recorded as an extra charge
 select public.create_public_booking(:'bath', 'tst-groomer3', public.salon_today() + 2, 600, 'رضا', '09351119901', 'dog', null,
-  '{"name":"رکس","size":"medium","temperament":"aggressive"}') as r1 \gset
+  '{"breed":"سایر","name":"رکس","size":"medium","temperament":"aggressive"}') as r1 \gset
 select tst.ok((:'r1'::json ->> 'final_price')::bigint = 910000, 'medium bath 700,000 + 30% = 910,000');
 select tst.ok((:'r1'::json -> 'extra_charges' -> 0 ->> 'amount')::bigint = 210000, 'surcharge reported');
 -- calm animal: no surcharge
 select tst.ok((public.create_public_booking(:'bath', 'tst-groomer3', public.salon_today() + 2, 720, 'سارا', '09351119902', 'dog', null,
-  '{"name":"لوسی","size":"small","temperament":"calm"}') ->> 'final_price')::bigint = 500000, 'calm small dog: list price');
+  '{"breed":"سایر","name":"لوسی","size":"small","temperament":"calm"}') ->> 'final_price')::bigint = 500000, 'calm small dog: list price');
 -- breed price over size; spelling variants match
 select public.create_public_booking(:'full_groom', 'tst-groomer3', public.salon_today() + 3, 600, 'نیما', '09351119903', 'dog', null,
   '{"name":"خرسی","size":"large","breed":"چاوچاو"}') as r3 \gset
@@ -44,7 +44,7 @@ select tst.ok((public.create_public_booking(:'full_groom', 'tst-groomer3', publi
   '{"name":"جکی","size":"medium","breed":"مخلوط"}') ->> 'final_price') is null, 'other breeds: price in salon');
 -- add-ons are for staff only
 select tst.ok(public.create_public_booking(:'detangle', 'tst-groomer3', public.salon_today() + 6, 600, 'علی', '09351119905', 'dog', null,
-  '{"name":"جکی","size":"medium"}') ->> 'ok' = 'false', 'add-on not bookable online');
+  '{"breed":"سایر","name":"جکی","size":"medium"}') ->> 'ok' = 'false', 'add-on not bookable online');
 reset role;
 
 select tst.ok((select end_min - start_min from public.appointments where id = :'r3'::json ->> 'id') = 180, 'chow chow duration');

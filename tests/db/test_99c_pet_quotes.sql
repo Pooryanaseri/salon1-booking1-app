@@ -29,14 +29,14 @@ select id as detangle from public.services where salon_id = :'qs' and gender = '
 -- ---- customer request -----------------------------------------------------
 select tst.as_anon();
 set role anon;
-select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"name":"پاپی","size":"medium"}', array['tsvc']) ->> 'error' = 'این سالن استعلام قیمت ندارد', 'beauty salon: no quotes');
+select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', array['tsvc']) ->> 'error' = 'این سالن استعلام قیمت ندارد', 'beauty salon: no quotes');
 reset role;
 select tst.as_anon(:'qs');
 set role anon;
-select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"name":"پاپی","size":"medium"}', '{}') ->> 'ok' = 'false', 'needs a service');
-select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"name":"پاپی","size":"medium"}', array[:'catbath']) ->> 'ok' = 'false', 'cat service for a dog refused');
-select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"name":"پاپی","size":"medium"}', array[:'detangle']) ->> 'ok' = 'false', 'add-on not requestable');
-select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"size":"medium"}', array[:'full_groom']) ->> 'ok' = 'false', 'pet name required');
+select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', '{}') ->> 'ok' = 'false', 'needs a service');
+select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', array[:'catbath']) ->> 'ok' = 'false', 'cat service for a dog refused');
+select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', array[:'detangle']) ->> 'ok' = 'false', 'add-on not requestable');
+select tst.ok(public.request_quote('سارا', '09351114401', 'dog', '{"breed":"سایر","size":"medium"}', array[:'full_groom']) ->> 'ok' = 'false', 'pet name required');
 select public.request_quote('سارا', '09351114401', 'dog', '{"name":"پاپی","size":"medium","breed":"شیتزو","temperament":"nervous"}',
   array[:'full_groom', :'nails'], 'موهایش گره زیادی دارد', 'پنجشنبه صبح') as q1 \gset
 select tst.ok((:'q1'::json ->> 'ok')::boolean, 'quote requested');
@@ -85,10 +85,10 @@ reset role;
 -- ---- dashboard: list, fresh link, re-quote, cancel, decline, expiry ----------
 select tst.as_anon(:'qs');
 set role anon;
-select public.request_quote('', '09351114401', 'dog', '{"name":"پاپی","size":"medium"}', array[:'nails']) ->> 'id' as q2id \gset
-select public.request_quote('', '09351114401', 'dog', '{"name":"پاپی","size":"medium"}', array[:'nails']) ->> 'id' as q3id \gset
-select public.request_quote('', '09351114401', 'dog', '{"name":"پاپی","size":"medium"}', array[:'nails']) ->> 'id' as q4id \gset
-select tst.ok(public.request_quote('', '09351114401', 'dog', '{"name":"پاپی","size":"medium"}', array[:'nails']) ->> 'ok' = 'false', 'at most three open requests');
+select public.request_quote('', '09351114401', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', array[:'nails']) ->> 'id' as q2id \gset
+select public.request_quote('', '09351114401', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', array[:'nails']) ->> 'id' as q3id \gset
+select public.request_quote('', '09351114401', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', array[:'nails']) ->> 'id' as q4id \gset
+select tst.ok(public.request_quote('', '09351114401', 'dog', '{"breed":"سایر","name":"پاپی","size":"medium"}', array[:'nails']) ->> 'ok' = 'false', 'at most three open requests');
 reset role;
 set role authenticated;
 select tst.as_user('aaaaaaaa-0000-0000-0000-0000000000a9', '09120009999@salon.local', :'qs');
