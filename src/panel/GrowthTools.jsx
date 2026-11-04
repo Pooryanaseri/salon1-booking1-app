@@ -238,7 +238,8 @@ export function PlanCard({ notify }) {
         <p className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>{p.enforced ? "پیامک‌ها از حساب پیامک خود سالن ارسال می‌شود و محدودیتی ندارد." : ""}</p>
       )}
 
-      {canPay && tiers.length > 0 && (
+      {/* v2.65: the tiers and prices are always visible; buying needs the platform's online payment */}
+      {tiers.length > 0 && (
         <>
           <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 12 }} role="radiogroup" aria-label="مدت اشتراک">
             {[3, 6, 12].map((m) => {
@@ -275,11 +276,11 @@ export function PlanCard({ notify }) {
                     ) : (
                       <>
                         {up && (
-                          <button disabled={!!busy} className="tap accent-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => go(`up-${x.id}`, () => upgradePlan(x.id))}>
+                          <button disabled={!!busy || !canPay} className="tap accent-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => go(`up-${x.id}`, () => upgradePlan(x.id))}>
                             {busy === `up-${x.id}` ? <Loader2 size={13} className="salon-spin" /> : <>ارتقا از همین حالا · {formatToman(up.amount)}</>}
                           </button>
                         )}
-                        <button disabled={!!busy} className={`tap ${up ? "ghost-btn" : "accent-btn"}`} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => go(x.id, () => buyPlan(x.id, months))}>
+                        <button disabled={!!busy || !canPay} className={`tap ${up ? "ghost-btn" : "accent-btn"}`} style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => go(x.id, () => buyPlan(x.id, months))}>
                           {busy === x.id ? <Loader2 size={13} className="salon-spin" /> : isCurrent ? "تمدید" : up ? "خرید بعد از پایان دوره" : "خرید"}
                         </button>
                       </>
@@ -290,7 +291,12 @@ export function PlanCard({ notify }) {
               );
             })}
           </div>
-          {p.sms_metered && (p.sms_packs || []).length > 0 && p.sms_price > 0 && (
+          {!canPay && (
+            <p className="muted" data-plan="offline" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.9 }}>
+              خرید آنلاین اشتراک هنوز فعال نشده است. برای خرید یا تمدید{p.support_phone ? <> با پشتیبانی (<span className="tabular" dir="ltr">{toFa(p.support_phone)}</span>)</> : " با پشتیبانی"} تماس بگیرید.
+            </p>
+          )}
+          {canPay && p.sms_metered && (p.sms_packs || []).length > 0 && p.sms_price > 0 && (
             <div style={{ marginTop: 12 }} data-plan="sms-packs">
               <p style={{ fontSize: 12.5, fontWeight: 800 }}>خرید پیامک بیشتر</p>
               <div className="flex gap-1.5 flex-wrap" style={{ marginTop: 5 }}>
