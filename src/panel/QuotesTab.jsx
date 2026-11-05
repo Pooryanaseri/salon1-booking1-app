@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { MessageSquareText, RefreshCw, Clock, Phone, Send, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { formatToman, toFa } from "../lib/format";
-import { fetchQuotes, fetchQuotePhotos, sendQuote, declineQuote } from "../lib/api";
-import { GenderBadge, Modal, PanelSectionHeader } from "../components/ui";
+import { fetchQuotes, fetchQuotePhotos, sendQuote, declineQuote, updateAutomationSettings } from "../lib/api";
+import { GenderBadge, Modal, PanelSectionHeader, Switch } from "../components/ui";
+import { getBusinessType } from "../lib/tenant";
+import { consultDetailsLine } from "../lib/consult";
 import { PET_SIZE_LABEL, hasPrice, petService, staffServesSection } from "../app/shared";
 import { TemperamentBadge } from "./PetsTab";
 import { PetDetailsLine } from "./PetCare";
@@ -31,7 +33,15 @@ function timeAgo(iso) {
   return `${toFa(Math.round(min / 1440))} روز پیش`;
 }
 
-export function QuotesTab({ services, stylists, pets, automation, notify, onPendingChange }) {
+export function QuotesTab({ services, stylists, pets, automation, notify, onPendingChange, isManager = false, onAutomationChange }) {
+  const petSalon = getBusinessType() === "pet";
+  const consultOn = automation?.consult_enabled !== false;
+  async function toggleConsult(on) {
+    const { error } = await updateAutomationSettings({ consult_enabled: on });
+    if (error) { notify("ذخیره ناموفق بود"); return; }
+    onAutomationChange?.({ ...automation, consult_enabled: on });
+    notify(on ? "«مشاوره و تعیین قیمت» در صفحهٔ نوبت‌دهی نمایش داده می‌شود" : "گزینهٔ مشاوره از صفحهٔ نوبت‌دهی برداشته شد");
+  }
   const [quotes, setQuotes] = useState(null);
   const [filter, setFilter] = useState("pending");
   const [pricing, setPricing] = useState(null);
@@ -56,7 +66,15 @@ export function QuotesTab({ services, stylists, pets, automation, notify, onPend
 
   return (
     <div>
-      <PanelSectionHeader Icon={MessageSquareText} title="استعلام قیمت" subtitle="درخواست‌های مشتری‌ها را ببینید و قیمت و زمان پیشنهادی بفرستید" color="var(--color-pet-500)" />
+      {petSalon
+        ? <PanelSectionHeader Icon={MessageSquareText} title="استعلام قیمت" subtitle="درخواست‌های مشتری‌ها را ببینید و قیمت و زمان پیشنهادی بفرستید" color="var(--color-pet-500)" />
+        : <PanelSectionHeader Icon={MessageSquareText} title="مشاوره و تعیین قیمت" subtitle="شرایط مشتری را ببینید، قیمت و مدت را تعیین کنید؛ مشتری با لینک پیامکی زمان را انتخاب می‌کند" color="var(--color-accent-500)" />}
+      {!petSalon && isManager && (
+        <div className="card mb-3 flex items-center justify-between gap-2" style={{ padding: 12 }} data-card="consult-toggle">
+          <span style={{ fontSize: 12.5, fontWeight: 700 }}>گزینهٔ «مشاوره و تعیین قیمت» در صفحهٔ نوبت‌دهی</span>
+          <Switch checked={consultOn} onChange={toggleConsult} label="نمایش مشاوره در صفحهٔ نوبت‌دهی" />
+        </div>
+      )}
       <div className="flex items-center justify-between mb-3 gap-2">
         <div className="flex gap-1" style={{ background: "var(--color-surface-raised)", padding: 3, borderRadius: "var(--radius-md)" }}>
           {[{ v: "pending", l: `در انتظار (${toFa(counts.pending)})` }, { v: "quoted", l: `قیمت‌داده (${toFa(counts.quoted)})` }, { v: "all", l: "همه" }].map((f) => (
@@ -82,21 +100,28 @@ export function QuotesTab({ services, stylists, pets, automation, notify, onPend
         <div className="flex flex-col gap-2">
           {list.map((q) => {
             const st = STATUS[effectiveStatus(q)] || STATUS.pending;
-            const pet = (q.pet_id && pets.find((p) => p.id === q.pet_id)) || q.demoPet || null;
+            const consult = q.kind === "consult";
+            const pet = consult ? null : (q.pet_id && pets.find((p) => p.id === q.pet_id)) || q.demoPet || null;
             return (
-              <div key={q.id} className="card" style={{ padding: 12 }}>
+              <div key={q.id} className="card" style={{ padding: 12 }} data-quote={consult ? "consult" : "pet"}>
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span style={{ fontWeight: 800, fontSize: 14, color: "var(--color-heading)" }}>{q.pet_name}</span>
-                    <GenderBadge gender={q.pet_species} />
+                    <span style={{ fontWeight: 800, fontSize: 14, color: "var(--color-heading)" }}>{consult ? q.customer_name : q.pet_name}</span>
+                    <GenderBadge gender={consult ? q.customer_gender : q.pet_species} />
                     {pet && <TemperamentBadge temperament={pet.temperament} />}
                   </div>
                   <span style={{ fontSize: 11.5, fontWeight: 700, color: st.color, whiteSpace: "nowrap" }}>{st.label}</span>
                 </div>
-                <div className="muted" style={{ fontSize: 11.5, marginTop: 2 }}>
-                  {[PET_SIZE_LABEL[q.pet_size], pet?.weight_kg ? `${toFa(pet.weight_kg)} کیلو` : ""].filter(Boolean).join(" · ")}
-                </div>
-                <PetDetailsLine pet={pet} />
+                {consult ? (
+                  consultDetailsLine(q.details) && <p style={{ fontSize: 12, marginTop: 4, lineHeight: 1.9 }} data-consult="details">{consultDetailsLine(q.details)}</p>
+                ) : (
+                  <>
+                    <div className="muted" style={{ fontSize: 11.5, marginTop: 2 }}>
+                      {[PET_SIZE_LABEL[q.pet_size], pet?.weight_kg ? `${toFa(pet.weight_kg)} کیلو` : ""].filter(Boolean).join(" · ")}
+                    </div>
+                    <PetDetailsLine pet={pet} />
+                  </>
+                )}
                 <p style={{ fontSize: 13, fontWeight: 700, marginTop: 6 }}>{q.services_label}</p>
                 {q.customer_note && <p style={{ fontSize: 12.5, marginTop: 4, lineHeight: 1.8, background: "var(--color-surface-raised)", padding: "6px 10px", borderRadius: "var(--radius-sm)" }}>«{q.customer_note}»</p>}
                 <QuotePhotos quote={q} />
@@ -134,7 +159,7 @@ export function QuotesTab({ services, stylists, pets, automation, notify, onPend
           quote={pricing}
           services={services}
           stylists={stylists}
-          pet={(pricing.pet_id && pets.find((p) => p.id === pricing.pet_id)) || pricing.demoPet || null}
+          pet={pricing.kind === "consult" ? null : (pricing.pet_id && pets.find((p) => p.id === pricing.pet_id)) || pricing.demoPet || null}
           validDays={automation?.pet_quote_valid_days || 3}
           onClose={() => setPricing(null)}
           onSent={() => { setPricing(null); notify("قیمت برای مشتری پیامک شد"); load(); }}
@@ -165,8 +190,8 @@ function QuotePhotos({ quote }) {
         ))}
       </div>
       {open != null && (
-        <Modal title={`عکس ${toFa(open + 1)} از ${toFa(urls.length)} — ${quote.pet_name}`} onClose={() => setOpen(null)} wide>
-          <img src={urls[open]} alt={`عکس ${quote.pet_name}`} style={{ width: "100%", maxHeight: "70vh", objectFit: "contain", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }} />
+        <Modal title={`عکس ${toFa(open + 1)} از ${toFa(urls.length)} — ${quote.pet_name || quote.customer_name}`} onClose={() => setOpen(null)} wide>
+          <img src={urls[open]} alt={`عکس ${quote.pet_name || quote.customer_name}`} style={{ width: "100%", maxHeight: "70vh", objectFit: "contain", borderRadius: "var(--radius-md)", background: "var(--color-surface-raised)" }} />
           {urls.length > 1 && (
             <div className="flex justify-between mt-3">
               <button className="tap ghost-btn flex items-center gap-1" style={{ padding: "8px 12px" }} onClick={() => setOpen((open + 1) % urls.length)}><ChevronRight size={14} /> بعدی</button>
@@ -181,7 +206,8 @@ function QuotePhotos({ quote }) {
 
 function SendQuoteModal({ quote, services, stylists, pet, validDays, onClose, onSent, notify }) {
   // a starting point: the list price/duration of each service for this animal
-  const chosen = services.filter((s) => (quote.service_ids || []).includes(s.id)).map((s) => petService(s, quote.pet_size, pet?.breed));
+  const consult = quote.kind === "consult";
+  const chosen = services.filter((s) => (quote.service_ids || []).includes(s.id)).map((s) => (consult ? s : petService(s, quote.pet_size, pet?.breed)));
   const suggestedPrice = chosen.every(hasPrice) && chosen.length ? chosen.reduce((t, s) => t + s.price, 0) : null;
   const suggestedDuration = chosen.reduce((t, s) => t + (s.duration_minutes || 0), 0) || 60;
   const [price, setPrice] = useState(quote.quoted_price != null ? String(quote.quoted_price) : suggestedPrice != null ? String(suggestedPrice) : "");
@@ -189,7 +215,7 @@ function SendQuoteModal({ quote, services, stylists, pet, validDays, onClose, on
   const [staffId, setStaffId] = useState(quote.quoted_staff_id || "");
   const [note, setNote] = useState(quote.quote_note || "");
   const [sending, setSending] = useState(false);
-  const groomers = stylists.filter((s) => s.active && staffServesSection(s, quote.pet_species));
+  const groomers = stylists.filter((s) => s.active && staffServesSection(s, consult ? quote.customer_gender : quote.pet_species));
   const priceNum = Math.round(Number(price));
   const durNum = Math.round(Number(duration));
   const valid = Number.isFinite(priceNum) && priceNum >= 1000 && Number.isFinite(durNum) && durNum >= 5 && durNum <= 600;
@@ -204,7 +230,7 @@ function SendQuoteModal({ quote, services, stylists, pet, validDays, onClose, on
   }
   const input = { width: "100%", padding: "10px 12px", fontSize: 14, marginTop: 4 };
   return (
-    <Modal title={`قیمت برای ${quote.pet_name}`} onClose={onClose}>
+    <Modal title={`قیمت برای ${consult ? quote.customer_name : quote.pet_name}`} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <p className="muted" style={{ fontSize: 12.5, lineHeight: 1.8 }}>
           {quote.services_label}

@@ -14,16 +14,20 @@ import { petExtras } from "./PetForm";
 const TIME_CHIPS = ["صبح", "ظهر", "عصر", "آخر هفته", "هر زمان"];
 
 /** Step 2 in quote mode: several services can be picked; prices are indicative. */
-export function QuoteServicePicker({ services, section, pet, selected, onToggle, onContinue, onBack }) {
+// v2.68: the beauty salons' consultation uses the same picker with its own words (consult)
+export function QuoteServicePicker({ services, section, pet, selected, onToggle, onContinue, onBack, consult = false }) {
   return (
-    <div className="fade-in">
+    <div className="fade-in" data-step={consult ? "consult-services" : "quote-services"}>
       <button className="flex items-center gap-1.5 mb-3" style={{ fontSize: 12.5, fontWeight: 700, color: section.color }} onClick={onBack}>
-        <section.Icon size={14} /> {pet.name.trim()} · {section.label}، {PET_SIZE_LABEL[pet.size] || ""}
-        <span className="muted" style={{ fontWeight: 400 }}>· ویرایش مشخصات</span>
+        {consult ? <><section.Icon size={14} /> {section.label} <span className="muted" style={{ fontWeight: 400 }}>· بازگشت به خدمات</span></>
+          : <><section.Icon size={14} /> {pet.name.trim()} · {section.label}، {PET_SIZE_LABEL[pet.size] || ""}
+            <span className="muted" style={{ fontWeight: 400 }}>· ویرایش مشخصات</span></>}
       </button>
-      <h2 style={{ fontSize: 18, marginBottom: 4 }}>چه خدماتی لازم دارد؟</h2>
+      <h2 style={{ fontSize: 18, marginBottom: 4 }}>{consult ? "برای چه خدماتی مشاوره می‌خواهید؟" : "چه خدماتی لازم دارد؟"}</h2>
       <p className="muted" style={{ fontSize: 13, marginBottom: 14, lineHeight: 1.8 }}>
-        یک یا چند خدمت را انتخاب کنید. آرایشگر با توجه به وضعیت {pet.name.trim() || "حیوان"} و حجم کار، قیمت دقیق را پیامک می‌کند و بعد زمان را انتخاب می‌کنید.
+        {consult
+          ? "یک یا چند خدمت را انتخاب کنید. در مرحلهٔ بعد شرایط مو و پوست و نتیجهٔ دلخواهتان را می‌گویید؛ آرایشگر بررسی می‌کند و قیمت دقیق را پیامک می‌کند و بعد زمان را انتخاب می‌کنید."
+          : <>یک یا چند خدمت را انتخاب کنید. آرایشگر با توجه به وضعیت {pet.name.trim() || "حیوان"} و حجم کار، قیمت دقیق را پیامک می‌کند و بعد زمان را انتخاب می‌کنید.</>}
       </p>
       <div className="flex flex-col gap-2">
         {services.map((s) => {
@@ -51,7 +55,7 @@ export function QuoteServicePicker({ services, section, pet, selected, onToggle,
       </div>
       <div className="sticky-cta mt-5">
         <button disabled={selected.length === 0} onClick={onContinue} className="tap accent-btn w-full" style={{ padding: 13 }}>
-          {selected.length === 0 ? "حداقل یک خدمت انتخاب کنید" : `ادامه — درخواست قیمت (${toFa(selected.length)} خدمت)`}
+          {selected.length === 0 ? "حداقل یک خدمت انتخاب کنید" : `ادامه — ${consult ? "فرم مشاوره" : "درخواست قیمت"} (${toFa(selected.length)} خدمت)`}
         </button>
       </div>
     </div>
@@ -184,7 +188,7 @@ export function QuoteContactForm({ species, pet, services, onBack, onSent, secti
   );
 }
 
-export function QuoteSent({ petName, onTrack, onNew, demo, photoNote }) {
+export function QuoteSent({ petName, onTrack, onNew, demo, photoNote, consult = false }) {
   return (
     <div className="fade-in" style={{ textAlign: "center", paddingTop: 12 }}>
       <div style={{ width: 64, height: 64, borderRadius: "50%", background: "color-mix(in oklch, var(--color-success) 18%, transparent)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
@@ -192,11 +196,11 @@ export function QuoteSent({ petName, onTrack, onNew, demo, photoNote }) {
       </div>
       <h2 style={{ fontSize: 18 }}>درخواست شما ثبت شد</h2>
       <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.9 }}>
-        آرایشگر درخواست {petName} را بررسی می‌کند و قیمت را همراه لینک انتخاب زمان برایتان پیامک می‌کند.
+        {consult ? "آرایشگر یا مدیر سالن شرایط شما را بررسی می‌کند" : `آرایشگر درخواست ${petName} را بررسی می‌کند`} و قیمت را همراه لینک انتخاب زمان برایتان پیامک می‌کند.
         قیمت در «داشبورد من» هم نمایش داده می‌شود.
       </p>
       {photoNote && <p role="alert" style={{ fontSize: 12, marginTop: 6, color: "var(--color-warning)" }}>{photoNote} — درخواست بدون آن ثبت شد.</p>}
-      {demo && <p className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>حالت نمایشی: درخواست در «پنل مدیریت ← استعلام قیمت» دیده می‌شود.</p>}
+      {demo && <p className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>حالت نمایشی: درخواست در «پنل مدیریت ← {consult ? "مشاوره و قیمت" : "استعلام قیمت"}» دیده می‌شود.</p>}
       <div className="flex gap-2 mt-5">
         {onTrack && (
           <button onClick={onTrack} className="tap ghost-btn flex-1 flex items-center justify-center gap-1.5" style={{ padding: "11px 8px", fontSize: 13, fontWeight: 700 }}>

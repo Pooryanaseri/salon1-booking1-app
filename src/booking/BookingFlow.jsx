@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Sparkles, Phone, Check, Sun, Moon, Clock, PawPrint, Ticket, Gift, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard } from "lucide-react";
+import { Sparkles, Phone, Check, Sun, Moon, Clock, PawPrint, Ticket, Gift, ArrowRight, CheckCircle2, User, CalendarX, Users, Bell, Loader2, Info, CalendarPlus, LayoutDashboard, CreditCard, MessageSquareText, ChevronLeft } from "lucide-react";
 import { SUPABASE_ENABLED, getCurrentSalonId } from "../lib/supabase";
 import { getSalonName, getBusinessType } from "../lib/tenant";
 import { fetchCustomerLoyalty, applyReferral, startDepositPayment } from "../lib/api";
@@ -8,6 +8,7 @@ import { CATEGORY_LABEL, OCCUPYING_STATUSES, KNOWN_CUSTOMER, PET_SIZE_LABEL, SEC
 import { DateStrip, Row } from "../components/ui";
 import { PetForm, EMPTY_PET, loadSavedPets, rememberPet, petExtras } from "./PetForm";
 import { QuoteContactForm, QuoteSent, QuoteServicePicker } from "./QuoteRequest";
+import { ConsultForm } from "./ConsultRequest";
 import { fetchPublicPetCare, fetchPublicPackages, consentRequired, largeDogsAt } from "../lib/petcare";
 import { checkCoupon } from "../lib/business";
 import { BuyPackageModal } from "./BuyPackageModal";
@@ -191,6 +192,8 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
   // v2.46: 'all' — every pet visit is priced by the groomer first; 'unpriced'
   // — only services with no price for this animal. Steps 20/21 = quote form/sent.
   const quoteMode = petSalon ? automation?.pet_quote_mode || "off" : "off";
+  // v2.68: beauty salons — consultation and pricing (steps 30/31/32)
+  const consultOn = !petSalon && automation?.consult_enabled !== false;
   const [quoteIds, setQuoteIds] = useState([]);
   const [quoteDemo, setQuoteDemo] = useState(false);
   const [quotePhotoNote, setQuotePhotoNote] = useState("");
@@ -573,7 +576,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
     setStep(n);
   }
   // the quote form (20) goes back to the services (2)
-  const prevStep = (cur) => (cur === 20 ? 2 : cur - 1);
+  const prevStep = (cur) => (cur === 20 || cur === 30 ? 2 : cur - 1);
   function goBack() {
     const target = prevStep(step);
     if (target <= 1 && hasGuard()) { window.history.back(); return; } // popstate handler applies it
@@ -607,7 +610,7 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
       if (petFormOpenRef.current) { setGender(null); onSectionChange(null); }
       return;
     }
-    if (cur === 7 || cur === 21) { resetState(); return; } // never step back into an already-submitted screen
+    if (cur === 7 || cur === 21 || cur === 32) { resetState(); return; } // never step back into an already-submitted screen
     const target = prevStep(cur);
     applyBackStep(target);
     if (target > 1 || (target === 1 && petSalon)) window.history.pushState({ salonBookingFlow: true }, "");
@@ -768,6 +771,30 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           }}
         />
       )}
+      {step === 30 && section && (
+        <QuoteServicePicker
+          consult
+          services={sectionServices}
+          section={section}
+          pet={pet}
+          selected={quoteIds}
+          onToggle={(id) => setQuoteIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].slice(0, 6)))}
+          onBack={goBack}
+          onContinue={() => goTo(31)}
+        />
+      )}
+      {step === 31 && section && (
+        <ConsultForm
+          gender={gender}
+          section={section}
+          services={sectionServices.filter((s) => quoteIds.includes(s.id))}
+          onBack={goBack}
+          onSent={({ phone: p, photoNote }) => { setQuotePhotoNote(photoNote || ""); setPhone(p); setQuoteDemo(!SUPABASE_ENABLED); goTo(32); }}
+        />
+      )}
+      {step === 32 && (
+        <QuoteSent consult demo={quoteDemo} photoNote={quotePhotoNote} onNew={reset} onTrack={onTrack ? () => onTrack(phone) : null} />
+      )}
       {step === 21 && (
         <QuoteSent petName={pet.name.trim()} demo={quoteDemo} photoNote={quotePhotoNote} onNew={reset} onTrack={onTrack ? () => onTrack(phone) : null} />
       )}
@@ -787,6 +814,23 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
           <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>
             {petSalon ? `قیمت و مدت‌ها برای جثهٔ «${PET_SIZE_LABEL[pet.size] || ""}» محاسبه شده است` : "خدمت مورد نظرتان را انتخاب کنید"}
           </p>
+
+          {consultOn && (
+            <button type="button" className="tap card mb-3" data-card="consult-entry" onClick={() => { setQuoteIds([]); goTo(30); }}
+              style={{ padding: 14, display: "flex", alignItems: "center", gap: 12, textAlign: "right", width: "100%",
+                borderColor: `color-mix(in oklch, ${section.color} 45%, transparent)`, background: `color-mix(in oklch, ${section.color} 7%, var(--color-surface))` }}>
+              <div style={{ width: 40, height: 40, borderRadius: "var(--radius-md)", background: section.color, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <MessageSquareText size={19} color="white" />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 800, color: "var(--color-heading)", fontSize: 14 }}>مشاوره و تعیین قیمت</div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 2, lineHeight: 1.7 }}>
+                  مطمئن نیستید چه خدمتی لازم دارید یا قیمتش چقدر می‌شود؟ شرایطتان را بگویید تا آرایشگر بررسی کند و قیمت بدهد.
+                </div>
+              </div>
+              <ChevronLeft size={18} color={section.color} />
+            </button>
+          )}
 
           {categories.length > 2 && (
             <div className="flex gap-2 scrollbar-none mb-3" style={{ overflowX: "auto", paddingBottom: 4 }}>
