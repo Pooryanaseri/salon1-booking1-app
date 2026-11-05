@@ -97,15 +97,17 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
   const [quotesPending, setQuotesPending] = useState(0);
   // v2.61: checked every minute too — a new request pops up even without SMS
   const seenQuotes = React.useRef(null);
+  // v2.68: beauty salons get consultation requests through the same list
+  const consultOn = !petSalon && automation?.consult_enabled !== false;
   useEffect(() => {
-    if (!petSalon) return undefined;
+    if (!petSalon && !consultOn) return undefined;
     let alive = true;
     const check = () => fetchQuotes().then((list) => {
       if (!alive) return;
       const pending = list.filter((q) => q.status === "pending");
       if (seenQuotes.current) {
         const fresh = pending.filter((q) => !seenQuotes.current.has(q.id));
-        if (fresh.length) notify(`درخواست قیمت جدید: ${fresh[0].pet_name || ""}${fresh.length > 1 ? ` و ${toFa(fresh.length - 1)} مورد دیگر` : ""} — «نوبت‌ها ← استعلام قیمت»`);
+        if (fresh.length) notify(`${petSalon ? "درخواست قیمت" : "درخواست مشاوره"} جدید: ${fresh[0].pet_name || fresh[0].services_label || ""}${fresh.length > 1 ? ` و ${toFa(fresh.length - 1)} مورد دیگر` : ""} — «نوبت‌ها ← ${petSalon ? "استعلام قیمت" : "مشاوره و قیمت"}»`);
       }
       seenQuotes.current = new Set(pending.map((q) => q.id));
       setQuotesPending(pending.length);
@@ -117,7 +119,7 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     document.addEventListener("visibilitychange", onShow);
     return () => { alive = false; clearInterval(t); document.removeEventListener("visibilitychange", onShow); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [petSalon]);
+  }, [petSalon, consultOn]);
 
   // v2.48: new shop orders (badge on the tab)
   const [ordersPending, setOrdersPending] = useState(0);
@@ -154,6 +156,8 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
     { id: "dashboard", group: "today", label: currentStylist ? "نوبت‌های من" : "نوبت‌های امروز", Icon: LayoutList },
     ...(manager ? [{ id: "actions", group: "assistant", label: "دستیار هوشمند", badge: actionCount, Icon: Sparkles }] : []),
     ...(petSalon ? [{ id: "quotes", group: "today", label: "استعلام قیمت", badge: quotesPending, Icon: QuoteIcon }] : []),
+    // v2.68: the manager always sees it (to switch it on or off); stylists while it is on
+    ...(!petSalon && (manager || consultOn) ? [{ id: "quotes", group: "today", label: "مشاوره و قیمت", badge: consultOn ? quotesPending : 0, Icon: QuoteIcon }] : []),
     ...(petSalon ? [{ id: "pets", group: "today", label: "حیوانات", Icon: PawPrint }] : []),
     { id: "loyalty", group: "clients", label: "باشگاه و تخفیف", Icon: Gift },
     ...(manager ? [{ id: "sms", group: "clients", label: "پیامک", Icon: MessageSquareText }] : []),
@@ -273,8 +277,9 @@ export function PanelView({ bookings, services, setServices, stylists, addStylis
       {subTab === "dashboard" && (
         <DashboardTab bookings={bookings} services={services} stylists={stylists} defaultStaffId={currentStylistId} workingHours={workingHours} timeOff={timeOff} updateBooking={updateBooking} waitlist={waitlist} removeWaitlistEntry={removeWaitlistEntry} pets={pets} setPets={setPets} notify={notify} automation={automation} />
       )}
-      {subTab === "quotes" && petSalon && (
-        <QuotesTab services={services} stylists={stylists} pets={pets} automation={automation} notify={notify} onPendingChange={setQuotesPending} />
+      {subTab === "quotes" && (
+        <QuotesTab services={services} stylists={stylists} pets={pets} automation={automation} notify={notify} onPendingChange={setQuotesPending}
+          isManager={!currentStylist} onAutomationChange={onAutomationChange} />
       )}
       {subTab === "shop" && (
         <ShopTab isManager={!currentStylist} notify={notify} onPendingChange={setOrdersPending} onShopEnabledChange={onShopEnabledChange} stylists={stylists} />

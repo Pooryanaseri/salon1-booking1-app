@@ -34,7 +34,7 @@ export function MyQuotes({ quotes, token, onChanged, notify }) {
   return (
     <div className="card fade-in mt-4" style={{ padding: 14 }}>
       <p className="flex items-center gap-1.5 mb-2" style={{ fontSize: 13.5, fontWeight: 800, color: "var(--color-heading)" }}>
-        <MessageSquareText size={15} /> استعلام‌های قیمت
+        <MessageSquareText size={15} /> {quotes.some((q) => q.kind === "consult") ? "مشاوره‌ها و استعلام‌های قیمت" : "استعلام‌های قیمت"}
       </p>
       <div className="flex flex-col gap-2">
         {quotes.map((q) => {
@@ -42,7 +42,7 @@ export function MyQuotes({ quotes, token, onChanged, notify }) {
           return (
             <div key={q.id} style={{ padding: "10px 0", borderTop: "1px dashed var(--color-border)" }}>
               <div className="flex items-center justify-between gap-2">
-                <span style={{ fontWeight: 700, fontSize: 13.5 }}>{q.pet_name} · {q.services_label}</span>
+                <span style={{ fontWeight: 700, fontSize: 13.5 }}>{q.kind === "consult" ? `مشاوره: ${q.services_label}` : [q.pet_name, q.services_label].filter(Boolean).join(" · ")}</span>
                 <span style={{ fontSize: 11.5, fontWeight: 700, color: st.color, whiteSpace: "nowrap" }}>{st.label}</span>
               </div>
               {q.status === "quoted" && (

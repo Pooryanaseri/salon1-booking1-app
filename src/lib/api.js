@@ -874,6 +874,11 @@ export async function fetchAutomationSettings() {
     if (Number.isFinite(pet?.pet_aggressive_surcharge_percent)) out.pet_aggressive_surcharge_percent = pet.pet_aggressive_surcharge_percent;
     if (["all", "unpriced", "off"].includes(pet?.pet_quote_mode)) out.pet_quote_mode = pet.pet_quote_mode;
     if (Number.isFinite(pet?.pet_quote_valid_days)) out.pet_quote_valid_days = pet.pet_quote_valid_days;
+  } else {
+    // v2.68 consultation (beauty salons); an older database has no such column → off
+    const { data: c, error: cErr } = await supabase.from("app_settings").select("consult_enabled, pet_quote_valid_days").eq("salon_id", getCurrentSalonId()).maybeSingle();
+    out.consult_enabled = !cErr && c?.consult_enabled !== false;
+    if (Number.isFinite(c?.pet_quote_valid_days)) out.pet_quote_valid_days = c.pet_quote_valid_days;
   }
   return out;
 }
@@ -1283,7 +1288,7 @@ export async function fetchRecentCampaignPhones(days = 14) {
 
 /* ------------------------------------------------ v2.46: price quotes ---- */
 // Demo mode keeps quotes in memory so the whole flow can be tried out.
-const demoQuotes = [];
+export const demoQuotes = []; // v2.68: consultation requests join here too
 const demoId = () => `demo-q-${Math.random().toString(36).slice(2, 10)}`;
 
 /** Customer: ask the salon for a price. → {ok, id} | {ok:false, error} */
