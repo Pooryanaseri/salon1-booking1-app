@@ -677,9 +677,6 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
             <div className="flex flex-wrap gap-1.5" style={{ marginTop: 12 }}>
               <span className="hero-chip"><Clock size={12} /> رزرو در کمتر از یک دقیقه</span>
               <span className="hero-chip"><Bell size={12} /> یادآوری پیامکی</span>
-              <a className="hero-chip" href={`/${salonSlug()}/about`} style={{ color: "white", textDecoration: "none" }}><Info size={12} /> درباره سالن</a>
-              <a className="hero-chip" href={`/${salonSlug()}/gift`} style={{ color: "white", textDecoration: "none" }}><Gift size={12} /> کارت هدیه</a>
-              {!petSalon && <a className="hero-chip" href={`/${salonSlug()}/events`} style={{ color: "white", textDecoration: "none" }}><Sparkles size={12} /> رزرو مراسم و عروس</a>}
             </div>
           </div>
           <h2 style={{ fontSize: 17, marginBottom: 12 }}>{petSalon ? "نوبت برای سگ یا گربه؟" : "بخش مورد نظر را انتخاب کنید"}</h2>
@@ -716,6 +713,42 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
                 </button>
               );
             })}
+          </div>
+
+          {/* v2.69: the salon's other services as big cards (they were small chips in the header) */}
+          <h2 style={{ fontSize: 17, margin: "22px 0 12px" }}>خدمات ویژهٔ سالن</h2>
+          <div className="flex flex-col gap-3" data-home="specials">
+            {!petSalon && (
+              <SpecialCard href={`/${salonSlug()}/events`} Icon={Sparkles} color="var(--color-female-500)" featured
+                title="رزرو مراسم عروس و داماد"
+                text="میکاپ و شینیون عروس، گریم داماد، نامزدی و جشن‌ها. تاریخ و خدمات را بگویید تا سالن پیش‌فاکتور و زمان را برایتان بفرستد." cta="ثبت درخواست مراسم" />
+            )}
+            {consultOn && (
+              <div className="card" style={{ padding: 16, borderColor: "color-mix(in oklch, var(--color-accent-500) 35%, transparent)" }} data-home="consult">
+                <div className="flex items-center gap-3">
+                  <div style={{ width: 48, height: 48, borderRadius: "var(--radius-lg)", background: "var(--color-accent-500)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <MessageSquareText size={22} color="white" />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 800, fontSize: 15.5, color: "var(--color-heading)" }}>مشاوره و تعیین قیمت</div>
+                    <div className="muted" style={{ fontSize: 12.5, marginTop: 2, lineHeight: 1.8 }}>شرایط مو و پوستتان را بگویید؛ آرایشگر بررسی می‌کند و قیمت دقیق را پیامک می‌کند.</div>
+                  </div>
+                </div>
+                <div className="flex gap-2" style={{ marginTop: 12 }}>
+                  {sectionsFor(businessType).map((g) => (
+                    <button key={g} type="button" className="tap ghost-btn flex-1" style={{ padding: "10px 8px", fontSize: 13, fontWeight: 700, color: SECTION_META[g].color }}
+                      onClick={() => { setCategory("all"); onSectionChange(g); setGender(g); setQuoteIds([]); goTo(30); }}>
+                      مشاوره {SECTION_META[g].short || SECTION_META[g].label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <SpecialCard href={`/${salonSlug()}/gift`} Icon={Gift} color="var(--color-success)"
+              title="کارت هدیه"
+              text="هدیه‌ای برای عزیزانتان: مبلغ را انتخاب و پرداخت کنید؛ کد کارت برای گیرنده پیامک می‌شود و تا یک سال برای هر خدمت این سالن قابل استفاده است." cta="خرید کارت هدیه" />
+            <SpecialCard href={`/${salonSlug()}/about`} Icon={Info} color="var(--color-info)" compact
+              title="درباره سالن" text="آدرس، ساعات کاری، نمونه‌کارها و نظر مشتری‌ها" />
           </div>
           {packagesOffer.length > 0 && (
             <div className="card mt-4" style={{ padding: 14 }}>
@@ -1413,5 +1446,24 @@ export function BookingFlow({ services, stylists, bookings, workingHours, staffW
         </div>
       )}
     </div>
+  );
+}
+
+/* v2.69 — a big, clearly tappable card on the first screen. */
+function SpecialCard({ href, Icon, color, title, text, cta, featured = false, compact = false }) {
+  return (
+    <a href={href} className="tap card" data-special={title}
+      style={{ padding: compact ? 14 : 16, display: "flex", alignItems: "center", gap: 12, textDecoration: "none", color: "inherit",
+        background: featured ? `linear-gradient(135deg, color-mix(in oklch, ${color} 16%, var(--color-surface)), var(--color-surface))` : undefined,
+        borderColor: `color-mix(in oklch, ${color} ${featured ? 50 : 30}%, transparent)` }}>
+      <div style={{ width: compact ? 40 : 48, height: compact ? 40 : 48, borderRadius: "var(--radius-lg)", background: featured ? color : `color-mix(in oklch, ${color} 15%, var(--color-surface))`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <Icon size={compact ? 19 : 22} color={featured ? "white" : color} />
+      </div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 800, fontSize: compact ? 14.5 : 15.5, color: "var(--color-heading)" }}>{title}</div>
+        <div className="muted" style={{ fontSize: 12.5, marginTop: 2, lineHeight: 1.8 }}>{text}</div>
+        {cta && <div style={{ fontSize: 12.5, fontWeight: 800, color, marginTop: 6 }}>{cta} ←</div>}
+      </div>
+    </a>
   );
 }
